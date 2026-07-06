@@ -21,6 +21,7 @@ class CommentRenderer {
     this.roomId = options.roomId;
     this.session = options.session || 'persist:douyin';
     this.outputDir = options.outputDir; // 帧保存目录
+    this.debugDir = options.debugDir || options.outputDir; // 调试截图保存目录
     this.targetFps = options.fps || 10; // 评论区帧率（不需要太高）
 
     this.captureWindow = null;
@@ -83,9 +84,10 @@ class CommentRenderer {
       const debugSize = debugImage.getSize();
       logger.info(`[CommentRenderer] 页面捕获尺寸: ${debugSize.width}x${debugSize.height}`);
       
-      // 保存调试截图到临时目录
-      const debugPath = path.join(this.tempDir, 'debug_full_page.png');
+      // 保存调试截图到调试目录（不会被清理）
+      const debugPath = path.join(this.debugDir, 'debug_full_page.png');
       const fs = require('fs');
+      fs.mkdirSync(this.debugDir, { recursive: true });
       fs.writeFileSync(debugPath, debugImage.toPNG());
       logger.info(`[CommentRenderer] 调试截图已保存: ${debugPath}`);
       
@@ -96,7 +98,7 @@ class CommentRenderer {
         width: 400,
         height: debugSize.height
       });
-      const rightPath = path.join(this.tempDir, 'debug_right_side.png');
+      const rightPath = path.join(this.debugDir, 'debug_right_side.png');
       fs.writeFileSync(rightPath, rightCrop.toPNG());
       logger.info(`[CommentRenderer] 右侧截图已保存: ${rightPath}`);
     } catch (e) {

@@ -142,6 +142,7 @@ class Recorder {
         roomId: this.roomId,
         session: this.session,
         outputDir: this._commentFramesDir,
+        debugDir: path.dirname(this.outputFile), // 调试截图保存到输出目录（不会被清理）
         fps: Math.min(config.fps || 10, 15)
       });
       await this.commentRenderer.init();
