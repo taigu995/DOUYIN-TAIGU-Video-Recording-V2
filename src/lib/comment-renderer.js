@@ -78,31 +78,37 @@ class CommentRenderer {
     // 后续通过裁剪获取评论区区域
     logger.info('[CommentRenderer] 不注入CSS，使用完整页面捕获+右侧裁剪');
 
-    // 诊断：保存完整页面截图用于调试
+    // 捕获页面尺寸（用于后续裁剪计算）
+    let capturedSize = { width: 1920, height: 1040 }; // 默认值
     try {
-      const debugImage = await this.captureWindow.webContents.capturePage();
-      const debugSize = debugImage.getSize();
-      logger.info(`[CommentRenderer] 页面捕获尺寸: ${debugSize.width}x${debugSize.height}`);
-      
-      // 保存调试截图到调试目录（不会被清理）
-      const debugPath = path.join(this.debugDir, 'debug_full_page.png');
+      const probeImage = await this.captureWindow.webContents.capturePage();
+      capturedSize = probeImage.getSize();
+      logger.info(`[CommentRenderer] 页面捕获尺寸: ${capturedSize.width}x${capturedSize.height}`);
+    } catch (e) {
+      logger.warn('[CommentRenderer] 页面尺寸探测失败，使用默认值:', e.message);
+    }
+
+    // 保存调试截图
+    try {
       const fs = require('fs');
       fs.mkdirSync(this.debugDir, { recursive: true });
+
+      const debugImage = await this.captureWindow.webContents.capturePage();
+      const debugPath = path.join(this.debugDir, 'debug_full_page.png');
       fs.writeFileSync(debugPath, debugImage.toPNG());
       logger.info(`[CommentRenderer] 调试截图已保存: ${debugPath}`);
-      
-      // 同时保存右侧400px的截图
+
       const rightCrop = await this.captureWindow.webContents.capturePage({
-        x: debugSize.width - 400,
+        x: capturedSize.width - 400,
         y: 0,
         width: 400,
-        height: debugSize.height
+        height: capturedSize.height
       });
       const rightPath = path.join(this.debugDir, 'debug_right_side.png');
       fs.writeFileSync(rightPath, rightCrop.toPNG());
       logger.info(`[CommentRenderer] 右侧截图已保存: ${rightPath}`);
     } catch (e) {
-      logger.warn('[CommentRenderer] 诊断捕获失败:', e.message);
+      logger.warn('[CommentRenderer] 调试截图保存失败:', e.message);
     }
 
     // 使用捕获尺寸计算默认裁剪区域（页面右侧400px）
