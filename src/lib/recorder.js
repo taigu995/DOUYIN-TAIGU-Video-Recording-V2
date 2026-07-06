@@ -10,7 +10,7 @@
  *
  * 布局: [Stream 1280x720 | Comment 360x720] = 1640x720
  */
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const path = require('path');
@@ -402,17 +402,24 @@ class Recorder {
    */
   _probeVideoResolution(filePath) {
     try {
-      const output = execSync(
-        `"${getFFmpegPath()}" -i "${filePath}" 2>&1`,
-        { encoding: 'utf8', timeout: 10000 }
-      );
-      // 匹配 Video: ..., 1088x1920 或 1920x1080
-      const match = output.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
-      if (match) {
-        return { width: parseInt(match[1]), height: parseInt(match[2]) };
-      }
+      // 使用 execFileSync 避免 Windows 路径中特殊字符(中文/emoji)的 shell 转义问题
+      // ffmpeg -i 不指定输出会返回非零退出码，信息在 stderr 中
+      execFileSync(getFFmpegPath(), ['-i', filePath], {
+        encoding: 'utf8',
+        timeout: 10000,
+        windowsHide: true
+      });
     } catch (e) {
-      logger.warn('[Recorder] 探测视频分辨率失败:', e.message);
+      // ffmpeg -i 总是返回非零退出码，分辨率信息在 stderr 中
+      // 注意：Video: 和分辨率可能不在同一行，需要用 [\s\S] 跨行匹配
+      try {
+        const errOutput = e.stderr || e.stdout || e.message || '';
+        const match = errOutput.match(/Video:[\s\S]*?(\d{2,5})x(\d{2,5})/);
+        if (match) {
+          return { width: parseInt(match[1]), height: parseInt(match[2]) };
+        }
+      } catch (e2) { /* ignore */ }
+      logger.warn('[Recorder] 探测视频分辨率失败:', e.message?.substring(0, 200));
     }
     return { width: 1920, height: 1080 }; // 默认横屏
   }
@@ -436,20 +443,15 @@ class Recorder {
     logger.info(`[Merge] 直播流分辨率: ${streamRes.width}x${streamRes.height}, 方向: ${isPortrait ? '竖屏' : '横屏'}`);
 
     // 计算缩放后的直播流尺寸（保持宽高比，以 TARGET_HEIGHT 为基准）
-    let streamScaleW, streamScaleH;
-    if (isPortrait) {
-      // 竖屏：按高度缩放，宽度按比例计算
-      streamScaleH = TARGET_HEIGHT;
-      streamScaleW = Math.round(TARGET_HEIGHT * streamRes.width / streamRes.height);
-    } else {
-      // 横屏：按高度缩放，宽度按比例计算
-      streamScaleH = TARGET_HEIGHT;
-      streamScaleW = Math.round(TARGET_HEIGHT * streamRes.width / streamRes.height);
-    }
+    // 宽度向上取偶数，确保 FFmpeg 编码兼容
+    const streamScaleH = TARGET_HEIGHT;
+    const streamScaleW = Math.ceil(TARGET_HEIGHT * streamRes.width / streamRes.height / 2) * 2;
 
-    // 评论区高度与直播流对齐，宽度固定
+    // 评论区高度与直播流对齐，宽度按评论帧原始宽高比缩放（而非固定比例）
     const commentScaleH = streamScaleH;
-    const commentScaleW = Math.round(COMMENT_WIDTH * commentScaleH / COMMENT_HEIGHT);
+    const commentAspectW = commentInfo.width || COMMENT_WIDTH;
+    const commentAspectH = commentInfo.height || COMMENT_HEIGHT;
+    const commentScaleW = Math.ceil(commentAspectW * commentScaleH / commentAspectH / 2) * 2;
 
     const totalWidth = streamScaleW + commentScaleW;
     const outputHeight = streamScaleH;

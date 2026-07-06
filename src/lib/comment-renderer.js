@@ -70,13 +70,14 @@ class CommentRenderer {
     });
 
     // 等待页面完全加载
-    await new Promise(resolve => setTimeout(resolve, 6000));
+    logger.info('[CommentRenderer] 等待页面加载完成...');
+    await new Promise(resolve => setTimeout(resolve, 8000));
 
-    // 注入 CSS：仅显示右侧评论区
+    // 注入 CSS：隐藏视频播放器，保留评论区
     await this._injectCommentOnlyCSS();
 
     // 等待 CSS 生效和评论区渲染
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     // 探测评论区实际位置
     const commentRect = await this._detectCommentAreaPosition();
@@ -84,17 +85,26 @@ class CommentRenderer {
       this._commentRect = commentRect;
       logger.info(`[CommentRenderer] 评论区位置: x=${commentRect.x}, y=${commentRect.y}, w=${commentRect.width}, h=${commentRect.height}`);
     } else {
-      // 默认：页面右侧
+      // 默认：页面右侧 400px
       this._commentRect = { x: PAGE_WIDTH - 400, y: 0, width: 400, height: PAGE_HEIGHT };
-      logger.warn('[CommentRenderer] 未探测到评论区位置，使用默认右侧区域');
+      logger.warn('[CommentRenderer] 未探测到评论区位置，使用默认右侧区域 (x=1520, y=0, w=400, h=1080)');
+    }
+
+    // 诊断：捕获一帧用于调试
+    try {
+      const debugImage = await this.captureWindow.webContents.capturePage();
+      const debugSize = debugImage.getSize();
+      logger.info(`[CommentRenderer] 页面捕获尺寸: ${debugSize.width}x${debugSize.height}`);
+    } catch (e) {
+      logger.warn('[CommentRenderer] 诊断捕获失败:', e.message);
     }
 
     logger.info('[CommentRenderer] 初始化完成，仅显示评论区');
   }
 
   /**
-   * 注入 CSS，隐藏除右侧评论区以外的所有内容
-   * 策略：先隐藏所有元素，再逐个显示评论区及其祖先容器
+   * 注入 CSS，隐藏视频播放器和无关区域，保留评论区自然显示
+   * 策略：只隐藏视频播放器/导航/工具栏，评论区保持页面自然布局
    */
   async _injectCommentOnlyCSS() {
     if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
@@ -105,7 +115,74 @@ class CommentRenderer {
           // 移除旧样式
           document.querySelectorAll('style[data-comment-renderer]').forEach(s => s.remove());
 
-          // Step 1: 查找评论区容器
+          const style = document.createElement('style');
+          style.setAttribute('data-comment-renderer', 'true');
+          style.textContent = \`
+            /* 基础重置 */
+            html, body {
+              margin: 0 !important;
+              padding: 0 !important;
+              overflow: hidden !important;
+              background: #121212 !important;
+            }
+
+            /* 隐藏顶部导航栏 */
+            header, nav,
+            [class*="header"], [class*="Header"],
+            [class*="navbar"], [class*="NavBar"],
+            [class*="top-bar"], [class*="TopBar"],
+            [data-e2e="top-nav"] {
+              display: none !important;
+              height: 0 !important;
+              min-height: 0 !important;
+              max-height: 0 !important;
+              overflow: hidden !important;
+            }
+
+            /* 隐藏视频播放器区域 - 使用多种选择器覆盖 */
+            [class*="video"], [class*="Video"],
+            [class*="player"], [class*="Player"],
+            [data-e2e="live-player"], [data-e2e="live-video"],
+            video, [class*="xgplayer"], [class*="xg-player"],
+            [class*="scaffold-left"], [class*="scaffold-main"] {
+              display: none !important;
+            }
+
+            /* 隐藏底部工具栏和输入框 */
+            [class*="toolbar"], [class*="ToolBar"],
+            [class*="bottom-bar"], [class*="BottomBar"],
+            [class*="footer"], [class*="Footer"],
+            [class*="chat-input"], [class*="ChatInput"],
+            [class*="input-area"], [class*="InputArea"],
+            [class*="gift-panel"], [class*="GiftPanel"],
+            [class*="gift-enter"], [class*="GiftEnter"] {
+              display: none !important;
+            }
+
+            /* 隐藏浮动弹幕层（视频上方的canvas弹幕） */
+            canvas {
+              display: none !important;
+            }
+
+            /* 隐藏左侧推荐区域 */
+            [class*="recommend"], [class*="Recommend"],
+            [class*="related"], [class*="Related"] {
+              display: none !important;
+            }
+
+            /* 隐藏滚动条 */
+            ::-webkit-scrollbar { display: none !important; }
+            * { scrollbar-width: none !important; }
+          \`;
+          document.head.appendChild(style);
+
+          // 通过 JS 持续隐藏视频播放器（动态创建的元素）
+          document.querySelectorAll('video').forEach(v => {
+            v.style.setProperty('display', 'none', 'important');
+            try { v.pause(); } catch(e) {}
+          });
+
+          // 查找评论区容器（用于确定裁剪区域）
           const commentSelectors = [
             '[class*="chat-list"]', '[class*="ChatList"]',
             '[class*="chat-room"]', '[class*="ChatRoom"]',
@@ -144,11 +221,9 @@ class CommentRenderer {
             const pageCenterX = window.innerWidth / 2;
             for (const div of allDivs) {
               const rect = div.getBoundingClientRect();
-              // 只考虑右侧的元素
               if (rect.left < pageCenterX) continue;
               if (rect.width < 80 || rect.height < 100) continue;
               const area = rect.width * rect.height;
-              // 排除全屏容器
               if (area > window.innerWidth * window.innerHeight * 0.8) continue;
               if (area > bestArea) {
                 bestArea = area;
@@ -158,88 +233,38 @@ class CommentRenderer {
             if (bestDiv) commentContainer = bestDiv;
           }
 
-          if (!commentContainer) {
-            // 实在找不到评论区，不注入任何样式
+          if (commentContainer) {
+            const rect = commentContainer.getBoundingClientRect();
+            window.__commentRect = {
+              x: Math.round(rect.left),
+              y: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            };
+            window.__commentRendererFound = true;
+          } else {
             window.__commentRendererFound = false;
-            return;
           }
 
-          window.__commentRendererFound = true;
-
-          // Step 2: 收集评论区及其所有祖先元素
-          const keepVisible = new Set();
-          let node = commentContainer;
-          while (node && node !== document.documentElement) {
-            keepVisible.add(node);
-            node = node.parentElement;
-          }
-          // 也包含 commentContainer 的所有子元素
-          commentContainer.querySelectorAll('*').forEach(child => keepVisible.add(child));
-          keepVisible.add(commentContainer);
-
-          // Step 3: 注入样式 - 隐藏所有，显示评论区路径
-          const style = document.createElement('style');
-          style.setAttribute('data-comment-renderer', 'true');
-          style.textContent = \`
-            /* 隐藏所有元素 */
-            body * {
-              visibility: hidden !important;
-              display: revert !important;
-            }
-            /* 显示评论区及其祖先 */
-            html, body {
-              visibility: visible !important;
-              margin: 0 !important;
-              padding: 0 !important;
-              overflow: hidden !important;
-              background: #1a1a1a !important;
-            }
-          \`;
-          document.head.appendChild(style);
-
-          // Step 4: 通过 inline style 强制显示评论区路径上的所有元素
-          keepVisible.forEach(el => {
-            el.style.setProperty('visibility', 'visible', 'important');
-            el.style.setProperty('display', '', 'important');
-            el.style.setProperty('opacity', '1', 'important');
-          });
-
-          // Step 5: 隐藏视频播放器（可能在评论区路径内）
-          commentContainer.querySelectorAll('video').forEach(v => {
-            v.style.setProperty('display', 'none', 'important');
-            try { v.pause(); } catch(e) {}
-          });
-
-          // Step 6: 隐藏滚动条但允许评论区内部滚动
-          commentContainer.style.setProperty('overflow', 'auto', 'important');
-
-          // 标记找到的评论区信息
-          const rect = commentContainer.getBoundingClientRect();
-          window.__commentRect = {
-            x: Math.round(rect.left),
-            y: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
-          };
-
-          // Step 7: MutationObserver 持续维护
+          // MutationObserver 持续隐藏视频播放器
           if (window._commentObserver) {
             window._commentObserver.disconnect();
           }
-          window._commentObserver = new MutationObserver((mutations) => {
-            // 新添加的元素如果在评论区内，确保可见
-            for (const mutation of mutations) {
-              for (const node of mutation.addedNodes) {
-                if (node.nodeType === 1 && commentContainer.contains(node)) {
-                  node.style.setProperty('visibility', 'visible', 'important');
-                }
-              }
-            }
-            // 持续隐藏视频
-            commentContainer.querySelectorAll('video').forEach(v => {
+          window._commentObserver = new MutationObserver(() => {
+            document.querySelectorAll('video').forEach(v => {
               v.style.setProperty('display', 'none', 'important');
               try { v.pause(); } catch(e) {}
             });
+            // 更新评论区位置
+            if (commentContainer && commentContainer.isConnected) {
+              const rect = commentContainer.getBoundingClientRect();
+              window.__commentRect = {
+                x: Math.round(rect.left),
+                y: Math.round(rect.top),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+              };
+            }
           });
           window._commentObserver.observe(document.body, {
             childList: true,
@@ -403,7 +428,9 @@ class CommentRenderer {
       frameCount: this.frameCount,
       outputDir: this.outputDir,
       fps: actualFps,
-      duration: duration
+      duration: duration,
+      width: this._commentRect ? this._commentRect.width : COMMENT_WIDTH,
+      height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT
     };
   }
 
