@@ -23,30 +23,18 @@ echo Please install Node.js v18+: https://nodejs.org/
 pause
 exit /b 1
 
-:: Step 2: Check pnpm
+:: Step 2: Check npm global bin
 :check_pnpm
-echo [2/5] Checking pnpm ...
-where pnpm >nul 2>&1
-if %errorlevel% neq 0 goto :install_pnpm
-echo       pnpm found
-goto :install_deps
-
-:install_pnpm
-echo       Installing pnpm ...
-call npm install -g pnpm
-if %errorlevel% neq 0 (
-    echo [ERROR] pnpm install failed. Please run: npm install -g pnpm
-    pause
-    exit /b 1
-)
+echo [2/5] Preparing build environment ...
 :: Refresh PATH - add npm global bin to PATH
 for /f "tokens=*" %%i in ('npm config get prefix') do set "PATH=%%i;%PATH%"
-echo       pnpm installed
+echo       Environment ready
 
 :: Step 3: Install dependencies
 :install_deps
 echo [3/5] Installing dependencies ...
-call npx pnpm install
+:: Use npm instead of pnpm for install to avoid build script restrictions
+call npm install --legacy-peer-deps
 if %errorlevel% neq 0 (
     echo [ERROR] Dependencies install failed!
     pause
