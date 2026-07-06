@@ -467,11 +467,11 @@ class Recorder {
       '-framerate', String(commentInfo.fps),
       '-start_number', '0',
       '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
+      '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
       '-c:v', 'libx264',
       '-preset', 'ultrafast',
       '-crf', '18',
       '-pix_fmt', 'yuv420p',
-      '-s', `${commentScaleW}x${commentScaleH}`,
       '-y',
       commentVideoFile
     ], 'Merge-Comment');
@@ -481,13 +481,18 @@ class Recorder {
     }
 
     // Phase 2: 合并直播流 + 评论区视频
+    // 使用 setsar=1 强制正方形像素，避免非正方形像素导致播放器显示变形
+    // 添加 2px 宽的分隔线区分直播区和评论区
+    const separatorW = 2;
+    const totalWithSep = streamScaleW + separatorW + commentScaleW;
     await this._runFFmpeg(resolvedPath, [
       '-i', this._tempStreamFile,
       '-i', commentVideoFile,
       '-filter_complex',
-        `[0:v]scale=${streamScaleW}:${streamScaleH}[stream];` +
-        `[1:v]scale=${commentScaleW}:${commentScaleH}[comments];` +
-        `[stream][comments]overlay=${streamScaleW}:0:shortest=1[out]`,
+        `[0:v]scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
+        `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+        `[stream]drawbox=x=${streamScaleW - separatorW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+        `[stream_sep][comments]overlay=${streamScaleW}:0:shortest=1[out]`,
       '-map', '[out]',
       '-map', '0:a?',
       '-c:v', 'libx264',
