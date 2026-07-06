@@ -74,12 +74,16 @@ class CommentRenderer {
     logger.info('[CommentRenderer] 等待页面加载完成...');
     await new Promise(resolve => setTimeout(resolve, 8000));
 
-    // 不注入任何CSS，直接捕获完整页面
-    // 后续通过裁剪获取评论区区域
-    logger.info('[CommentRenderer] 不注入CSS，使用完整页面捕获+右侧裁剪');
+    // 通过 DOM 探测评论区实际位置（不注入CSS，保持页面自然布局）
+    let detectedRect = await this._detectCommentAreaFromDOM();
+    if (detectedRect) {
+      logger.info(`[CommentRenderer] DOM探测评论区: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
+    } else {
+      logger.info('[CommentRenderer] DOM探测失败，使用右侧区域估算');
+    }
 
-    // 捕获页面尺寸（用于后续裁剪计算）
-    let capturedSize = { width: 1920, height: 1040 }; // 默认值
+    // 捕获页面尺寸
+    let capturedSize = { width: 1920, height: 1040 };
     try {
       const probeImage = await this.captureWindow.webContents.capturePage();
       capturedSize = probeImage.getSize();
@@ -87,6 +91,30 @@ class CommentRenderer {
     } catch (e) {
       logger.warn('[CommentRenderer] 页面尺寸探测失败，使用默认值:', e.message);
     }
+
+    // 计算裁剪区域：优先用 DOM 探测结果，否则用右侧估算
+    if (detectedRect && detectedRect.width > 80 && detectedRect.height > 100) {
+      // DOM 探测成功：使用探测到的评论区位置，扩展到页面底部
+      this._commentRect = {
+        x: detectedRect.x,
+        y: 0,
+        width: detectedRect.width,
+        height: capturedSize.height
+      };
+    } else {
+      // 回退：估算页面右侧区域（排除视频播放器）
+      // 抖音直播页面布局：视频约占左侧60-70%，评论区在右侧30-40%
+      const estimatedCommentWidth = Math.round(capturedSize.width * 0.30);
+      const cropW = Math.max(300, Math.min(estimatedCommentWidth, 600));
+      const cropX = capturedSize.width - cropW;
+      this._commentRect = {
+        x: cropX,
+        y: 0,
+        width: cropW,
+        height: capturedSize.height
+      };
+    }
+    logger.info(`[CommentRenderer] 评论区裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
 
     // 保存调试截图
     try {
@@ -96,32 +124,22 @@ class CommentRenderer {
       const debugImage = await this.captureWindow.webContents.capturePage();
       const debugPath = path.join(this.debugDir, 'debug_full_page.png');
       fs.writeFileSync(debugPath, debugImage.toPNG());
-      logger.info(`[CommentRenderer] 调试截图已保存: ${debugPath}`);
+      logger.info(`[CommentRenderer] 完整页面截图已保存: ${debugPath}`);
 
-      const rightCrop = await this.captureWindow.webContents.capturePage({
-        x: capturedSize.width - 500,
-        y: 0,
-        width: 500,
-        height: capturedSize.height
-      });
-      const rightPath = path.join(this.debugDir, 'debug_right_side.png');
-      fs.writeFileSync(rightPath, rightCrop.toPNG());
-      logger.info(`[CommentRenderer] 右侧截图已保存: ${rightPath}`);
+      const r = this._commentRect;
+      const safeW = Math.min(r.width, capturedSize.width - r.x);
+      const safeH = Math.min(r.height, capturedSize.height - r.y);
+      if (safeW > 0 && safeH > 0) {
+        const commentCrop = await this.captureWindow.webContents.capturePage({
+          x: r.x, y: r.y, width: safeW, height: safeH
+        });
+        const commentPath = path.join(this.debugDir, 'debug_comment_area.png');
+        fs.writeFileSync(commentPath, commentCrop.toPNG());
+        logger.info(`[CommentRenderer] 评论区截图已保存: ${commentPath}`);
+      }
     } catch (e) {
       logger.warn('[CommentRenderer] 调试截图保存失败:', e.message);
     }
-
-    // 使用捕获尺寸计算默认裁剪区域（页面右侧500px）
-    const cropW = 500;
-    const cropH = capturedSize.height;
-    const cropX = Math.max(0, capturedSize.width - cropW);
-    this._commentRect = {
-      x: cropX,
-      y: 0,
-      width: cropW,
-      height: cropH
-    };
-    logger.info(`[CommentRenderer] 评论区裁剪区域: x=${cropX}, y=0, w=${cropW}, h=${cropH}`);
 
     logger.info('[CommentRenderer] 初始化完成');
   }
@@ -317,6 +335,126 @@ class CommentRenderer {
       }
     } catch (e) {
       logger.warn('[CommentRenderer] 探测评论区位置失败:', e.message);
+    }
+    return null;
+  }
+
+  /**
+   * 通过 DOM 探测评论区容器的实际位置（不依赖 CSS 注入）
+   * 策略：查找页面右侧的聊天/评论容器元素
+   */
+  async _detectCommentAreaFromDOM() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
+
+    try {
+      const result = await this.captureWindow.webContents.executeJavaScript(`
+        (function() {
+          const pageW = document.documentElement.clientWidth || window.innerWidth;
+          const pageH = document.documentElement.clientHeight || window.innerHeight;
+          const pageCenterX = pageW / 2;
+
+          // 策略1: 通过常见评论区选择器查找
+          const commentSelectors = [
+            '[class*="chat-list"]', '[class*="ChatList"]',
+            '[class*="chat-room"]', '[class*="ChatRoom"]',
+            '[class*="room-chat"]', '[class*="RoomChat"]',
+            '[class*="live-chat"]', '[class*="LiveChat"]',
+            '[class*="side-chat"]', '[class*="chat-container"]',
+            '[class*="ChatContainer"]',
+            '[class*="message-list"]', '[class*="MessageList"]',
+            '[class*="webcast-chatroom"]',
+            '[data-e2e="live-chat"]', '[data-e2e="chat-room"]',
+            '[class*="comment-list"]', '[class*="CommentList"]',
+            '[class*="danmu-list"]',
+            '[class*="interact-container"]', '[class*="InteractContainer"]',
+            '[class*="scaffold-right"]', '[class*="ScaffoldRight"]',
+            '[class*="right-side"]', '[class*="RightSide"]',
+            '[class*="side-panel"]', '[class*="SidePanel"]',
+            '[class*="live-side"]', '[class*="LiveSide"]'
+          ];
+
+          for (const sel of commentSelectors) {
+            try {
+              const els = document.querySelectorAll(sel);
+              for (const el of els) {
+                const rect = el.getBoundingClientRect();
+                // 评论区应在页面右侧、宽度>80、高度>200
+                if (rect.left > pageCenterX && rect.width > 80 && rect.height > 200) {
+                  return {
+                    x: Math.round(rect.left),
+                    y: 0,
+                    width: Math.round(rect.width),
+                    height: pageH,
+                    selector: sel,
+                    strategy: 'selector'
+                  };
+                }
+              }
+            } catch(e) {}
+          }
+
+          // 策略2: 查找页面右侧面积最大的可见 div（排除 video 和 canvas）
+          let best = null;
+          let bestArea = 0;
+          const allDivs = document.querySelectorAll('div');
+          for (const div of allDivs) {
+            const rect = div.getBoundingClientRect();
+            // 必须在页面右侧
+            if (rect.left < pageCenterX) continue;
+            if (rect.width < 80 || rect.height < 200) continue;
+            // 排除过大的元素（可能是 body 容器）
+            const area = rect.width * rect.height;
+            if (area > pageW * pageH * 0.85) continue;
+            // 排除 video/canvas 元素
+            if (div.querySelector('video') || div.querySelector('canvas')) continue;
+            // 排除 display:none 的元素
+            const style = window.getComputedStyle(div);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+            if (area > bestArea) {
+              bestArea = area;
+              best = {
+                x: Math.round(rect.left),
+                y: 0,
+                width: Math.round(rect.width),
+                height: pageH,
+                strategy: 'largest-right-div'
+              };
+            }
+          }
+          if (best) return best;
+
+          // 策略3: 查找页面右侧包含聊天消息文本的元素
+          const chatKeywords = ['欢迎来到', '直播间', '聊天', '消息'];
+          for (const div of allDivs) {
+            const rect = div.getBoundingClientRect();
+            if (rect.left < pageCenterX || rect.width < 80 || rect.height < 200) continue;
+            const text = div.textContent || '';
+            const hasChatText = chatKeywords.some(kw => text.includes(kw));
+            if (hasChatText) {
+              const area = rect.width * rect.height;
+              if (area < pageW * pageH * 0.7) {
+                return {
+                  x: Math.round(rect.left),
+                  y: 0,
+                  width: Math.round(rect.width),
+                  height: pageH,
+                  strategy: 'chat-text'
+                };
+              }
+            }
+          }
+
+          return null;
+        })();
+      `);
+
+      if (result && result.width > 80 && result.height > 100) {
+        logger.info(`[CommentRenderer] DOM探测策略: ${result.strategy || 'unknown'}, selector: ${result.selector || 'N/A'}`);
+        return { x: result.x, y: result.y, width: result.width, height: result.height };
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] DOM探测失败:', e.message);
     }
     return null;
   }
