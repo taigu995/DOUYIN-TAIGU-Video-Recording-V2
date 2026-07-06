@@ -716,6 +716,17 @@ class StreamManager {
     streamState.status = streamState.isLive ? 'live' : 'offline';
     this.notifyUpdate();
 
+    // 停止录制后，如果自动录制开启且直播在线，立即重新录制
+    if (streamState.autoRecord && streamState.isLive) {
+      logger.info(`[StreamManager] 自动录制开启，直播在线，自动重新录制: ${streamState.name}`);
+      // 延迟1秒再重新录制，确保上一次录制完全清理
+      setTimeout(() => {
+        if (streamState.autoRecord && streamState.isLive && !streamState.recorder) {
+          this.startRecording(streamState);
+        }
+      }, 1000);
+    }
+
     return resultData;
   }
 
