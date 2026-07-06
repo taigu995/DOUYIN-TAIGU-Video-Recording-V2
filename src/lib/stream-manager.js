@@ -582,7 +582,10 @@ class StreamManager {
         if (status === 'recording') {
           streamState.status = 'recording';
           streamState.currentRecordingStart = Date.now();
-          logger.info(`[StreamManager] 录制状态变更 -> recording: ${streamState.info.streamerName}`);
+          logger.info(`[StreamManager] 录制状态变更 -> recording: ${streamState.info.streamerName} (模式: ${data.mode || 'stream+comment'})`);
+        } else if (status === 'merging') {
+          streamState.status = 'merging';
+          logger.info(`[StreamManager] 正在合并视频和评论区: ${streamState.info.streamerName}, 评论帧数: ${data.commentFrames}, FPS: ${data.commentFps ? data.commentFps.toFixed(1) : 'N/A'}`);
         } else if (status === 'stopped') {
           streamState.status = streamState.isLive ? 'live' : 'offline';
           // 保存录制记录
@@ -592,7 +595,10 @@ class StreamManager {
               endTime: Date.now(),
               outputFile: data.outputFile,
               fileSize: data.fileSize || 0,
-              streamerName: streamState.info.streamerName
+              streamerName: streamState.info.streamerName,
+              merged: data.merged || false,
+              commentFrames: data.commentFrames || 0,
+              hasAudio: data.hasAudio || false
             };
             if (!streamState.info.recordingHistory) {
               streamState.info.recordingHistory = [];
@@ -603,7 +609,7 @@ class StreamManager {
               streamState.info.recordingHistory = streamState.info.recordingHistory.slice(0, 50);
             }
             updateStream(streamState.info.roomId, { recordingHistory: streamState.info.recordingHistory });
-            logger.info(`[StreamManager] 录制完成: ${data.outputFile}, 大小: ${data.fileSize} bytes, 帧数: ${data.frameCount}`);
+            logger.info(`[StreamManager] 录制完成: ${data.outputFile}, 大小: ${data.fileSize} bytes, 合并: ${data.merged}, 评论帧: ${data.commentFrames}`);
           }
           streamState.currentRecordingStart = null;
         } else if (status === 'error') {
@@ -649,7 +655,7 @@ class StreamManager {
     const recorder = streamState.recorder;
     const outputFile = recorder.outputFile;
     const startTime = streamState.currentRecordingStart || recorder.startTime;
-    const hasAudio = recorder._audioCaptureSuccess || false;
+    const hasAudio = recorder.hasAudio || false;
     
     await recorder.stopRecording();
     
@@ -681,6 +687,8 @@ class StreamManager {
           fileSize: fileSize,
           streamerName: streamState.info.streamerName,
           hasAudio: hasAudio,
+          merged: lastResult ? lastResult.merged : false,
+          commentFrames: lastResult ? (lastResult.commentFrames || 0) : 0,
           mergeResult: lastResult ? lastResult.mergeResult : null
         };
         streamState.info.recordingHistory.unshift(record);
@@ -688,7 +696,7 @@ class StreamManager {
           streamState.info.recordingHistory = streamState.info.recordingHistory.slice(0, 50);
         }
         updateStream(streamState.info.roomId, { recordingHistory: streamState.info.recordingHistory });
-        logger.info(`[StreamManager] 录制记录已保存: ${outputFile}, 大小: ${fileSize} bytes`);
+        logger.info(`[StreamManager] 录制记录已保存: ${outputFile}, 大小: ${fileSize} bytes, 合并: ${record.merged}`);
       }
     }
     
@@ -697,6 +705,8 @@ class StreamManager {
     // 在销毁 recorder 之前读取结果
     const resultData = {
       hasAudio,
+      merged: lastResult ? lastResult.merged : false,
+      commentFrames: lastResult ? (lastResult.commentFrames || 0) : 0,
       mergeResult: lastResult ? lastResult.mergeResult : null,
       outputFile
     };

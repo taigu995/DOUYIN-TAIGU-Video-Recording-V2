@@ -483,7 +483,7 @@ function renderStreamsList(streams) {
   }
 
   elements.streamCount.textContent = `${streams.length} 个直播间`;
-  const recordingCount = streams.filter(s => s.status === 'recording').length;
+  const recordingCount = streams.filter(s => s.status === 'recording' || s.status === 'merging').length;
   elements.recordingCount.textContent = `录制中: ${recordingCount}`;
 
   elements.streamsList.innerHTML = '';
@@ -515,13 +515,14 @@ function createStreamCard(stream) {
     live: { text: '直播中', dotClass: 'live', textClass: 'live' },
     offline: { text: '未开播', dotClass: '', textClass: '' },
     recording: { text: '录制中', dotClass: 'recording', textClass: 'recording' },
+    merging: { text: '合并中...', dotClass: 'recording', textClass: 'recording' },
     error: { text: '异常', dotClass: 'error', textClass: '' }
   };
 
   const status = statusMap[stream.status] || statusMap.checking;
   const initial = (stream.streamerName || '?')[0];
-  const isRecording = stream.status === 'recording';
-  const isLive = stream.isLive || stream.status === 'live' || stream.status === 'recording';
+  const isRecording = stream.status === 'recording' || stream.status === 'merging';
+  const isLive = stream.isLive || stream.status === 'live' || stream.status === 'recording' || stream.status === 'merging';
 
   // 录制时长
   let durationText = '';
@@ -1001,7 +1002,7 @@ function renderDemoMode() {
 
 // 定时更新录制时长
 setInterval(() => {
-  const recordingStreams = streamsData.filter(s => s.status === 'recording');
+  const recordingStreams = streamsData.filter(s => s.status === 'recording' || s.status === 'merging');
   if (recordingStreams.length > 0) {
     recordingStreams.forEach(stream => {
       const card = document.querySelector(`[data-room-id="${stream.roomId}"]`);
