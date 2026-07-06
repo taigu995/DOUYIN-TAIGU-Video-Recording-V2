@@ -11,9 +11,9 @@ const { getLogger } = require('./logger');
 const logger = getLogger();
 
 // 评论区渲染配置
-const COMMENT_WIDTH = 360;   // 评论区宽度
-const COMMENT_HEIGHT = 720;  // 评论区高度（与主视频对齐）
-const CAPTURE_QUALITY = 85;  // JPEG 压缩质量 (1-100)
+const COMMENT_WIDTH = 500;   // 评论区宽度（捕获区域宽度）
+const COMMENT_HEIGHT = 1080; // 评论区高度（与主视频对齐）
+const CAPTURE_QUALITY = 92;  // JPEG 压缩质量 (1-100)
 
 class CommentRenderer {
   constructor(options) {
@@ -99,9 +99,9 @@ class CommentRenderer {
       logger.info(`[CommentRenderer] 调试截图已保存: ${debugPath}`);
 
       const rightCrop = await this.captureWindow.webContents.capturePage({
-        x: capturedSize.width - 400,
+        x: capturedSize.width - 500,
         y: 0,
-        width: 400,
+        width: 500,
         height: capturedSize.height
       });
       const rightPath = path.join(this.debugDir, 'debug_right_side.png');
@@ -111,8 +111,8 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 调试截图保存失败:', e.message);
     }
 
-    // 使用捕获尺寸计算默认裁剪区域（页面右侧400px）
-    const cropW = 400;
+    // 使用捕获尺寸计算默认裁剪区域（页面右侧500px）
+    const cropW = 500;
     const cropH = capturedSize.height;
     const cropX = Math.max(0, capturedSize.width - cropW);
     this._commentRect = {
@@ -372,8 +372,8 @@ class CommentRenderer {
           cropW = Math.min(r.width, imgSize.width - cropX);
           cropH = Math.min(r.height, imgSize.height - cropY);
         } else {
-          // 兜底：取页面右侧 400px
-          const fallbackW = 400;
+          // 兜底：取页面右侧 500px
+          const fallbackW = 500;
           cropX = Math.max(0, imgSize.width - fallbackW);
           cropY = 0;
           cropW = fallbackW;

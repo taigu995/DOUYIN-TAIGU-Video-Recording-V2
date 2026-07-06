@@ -23,7 +23,7 @@ const { CommentRenderer, COMMENT_WIDTH, COMMENT_HEIGHT } = require('./comment-re
 const logger = getLogger();
 
 // 主视频目标高度（用于缩放）
-const TARGET_HEIGHT = 720;
+const TARGET_HEIGHT = 1080;
 
 // 获取 FFmpeg 可执行文件路径（处理 asar 打包情况）
 function getFFmpegPath() {
@@ -469,8 +469,8 @@ class Recorder {
       '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
       '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
       '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '18',
+      '-preset', 'medium',
+      '-crf', '15',
       '-pix_fmt', 'yuv420p',
       '-y',
       commentVideoFile
