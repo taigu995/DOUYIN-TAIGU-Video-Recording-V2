@@ -22,9 +22,8 @@ const { CommentRenderer, COMMENT_WIDTH, COMMENT_HEIGHT } = require('./comment-re
 
 const logger = getLogger();
 
-// 主视频分辨率
-const STREAM_WIDTH = 1280;
-const STREAM_HEIGHT = 720;
+// 主视频目标高度（用于缩放）
+const TARGET_HEIGHT = 720;
 
 // 获取 FFmpeg 可执行文件路径（处理 asar 打包情况）
 function getFFmpegPath() {
@@ -399,16 +398,63 @@ class Recorder {
   }
 
   /**
+   * 探测视频文件分辨率
+   */
+  _probeVideoResolution(filePath) {
+    try {
+      const output = execSync(
+        `"${getFFmpegPath()}" -i "${filePath}" 2>&1`,
+        { encoding: 'utf8', timeout: 10000 }
+      );
+      // 匹配 Video: ..., 1088x1920 或 1920x1080
+      const match = output.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+      if (match) {
+        return { width: parseInt(match[1]), height: parseInt(match[2]) };
+      }
+    } catch (e) {
+      logger.warn('[Recorder] 探测视频分辨率失败:', e.message);
+    }
+    return { width: 1920, height: 1080 }; // 默认横屏
+  }
+
+  /**
    * 合并直播流视频和评论区帧序列
    *
    * 流程:
-   *   1. 将评论区 JPEG 帧编码为视频 (comment_video.mp4)
-   *   2. 使用 overlay 滤镜将评论区叠加到直播流右侧
-   *   3. 音频从直播流直接复制
+   *   1. 探测直播流原始分辨率
+   *   2. 将评论区 JPEG 帧编码为视频 (comment_video.mp4)
+   *   3. 根据直播流方向（横屏/竖屏）计算布局，使用 overlay 拼接
+   *   4. 音频从直播流直接复制
    */
   async _mergeStreamAndComments(commentInfo) {
     const resolvedPath = getFFmpegPath();
     const commentVideoFile = path.join(this._tempDir, 'comment_video.mp4');
+
+    // 探测直播流原始分辨率
+    const streamRes = this._probeVideoResolution(this._tempStreamFile);
+    const isPortrait = streamRes.height > streamRes.width;
+    logger.info(`[Merge] 直播流分辨率: ${streamRes.width}x${streamRes.height}, 方向: ${isPortrait ? '竖屏' : '横屏'}`);
+
+    // 计算缩放后的直播流尺寸（保持宽高比，以 TARGET_HEIGHT 为基准）
+    let streamScaleW, streamScaleH;
+    if (isPortrait) {
+      // 竖屏：按高度缩放，宽度按比例计算
+      streamScaleH = TARGET_HEIGHT;
+      streamScaleW = Math.round(TARGET_HEIGHT * streamRes.width / streamRes.height);
+    } else {
+      // 横屏：按高度缩放，宽度按比例计算
+      streamScaleH = TARGET_HEIGHT;
+      streamScaleW = Math.round(TARGET_HEIGHT * streamRes.width / streamRes.height);
+    }
+
+    // 评论区高度与直播流对齐，宽度固定
+    const commentScaleH = streamScaleH;
+    const commentScaleW = Math.round(COMMENT_WIDTH * commentScaleH / COMMENT_HEIGHT);
+
+    const totalWidth = streamScaleW + commentScaleW;
+    const outputHeight = streamScaleH;
+
+    logger.info(`[Merge] 布局: 直播 ${streamScaleW}x${streamScaleH} + 评论 ${commentScaleW}x${commentScaleH} = ${totalWidth}x${outputHeight}`);
 
     // Phase 1: 将评论区帧编码为视频
     logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps`);
@@ -422,7 +468,7 @@ class Recorder {
       '-preset', 'ultrafast',
       '-crf', '18',
       '-pix_fmt', 'yuv420p',
-      '-s', `${COMMENT_WIDTH}x${COMMENT_HEIGHT}`,
+      '-s', `${commentScaleW}x${commentScaleH}`,
       '-y',
       commentVideoFile
     ], 'Merge-Comment');
@@ -432,18 +478,13 @@ class Recorder {
     }
 
     // Phase 2: 合并直播流 + 评论区视频
-    const totalWidth = STREAM_WIDTH + COMMENT_WIDTH;
-    const outputHeight = STREAM_HEIGHT;
-
-    logger.info(`[Merge] 合并视频: ${STREAM_WIDTH}x${outputHeight} + ${COMMENT_WIDTH}x${outputHeight} = ${totalWidth}x${outputHeight}`);
-
     await this._runFFmpeg(resolvedPath, [
       '-i', this._tempStreamFile,
       '-i', commentVideoFile,
       '-filter_complex',
-        `[0:v]scale=${STREAM_WIDTH}:${STREAM_HEIGHT}[stream];` +
-        `[1:v]scale=${COMMENT_WIDTH}:${COMMENT_HEIGHT}[comments];` +
-        `[stream][comments]overlay=${STREAM_WIDTH}:0:shortest=1[out]`,
+        `[0:v]scale=${streamScaleW}:${streamScaleH}[stream];` +
+        `[1:v]scale=${commentScaleW}:${commentScaleH}[comments];` +
+        `[stream][comments]overlay=${streamScaleW}:0:shortest=1[out]`,
       '-map', '[out]',
       '-map', '0:a?',
       '-c:v', 'libx264',

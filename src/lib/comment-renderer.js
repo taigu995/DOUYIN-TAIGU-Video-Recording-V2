@@ -40,10 +40,9 @@ class CommentRenderer {
       fs.mkdirSync(this.outputDir, { recursive: true });
     }
 
-    // 创建离屏窗口 - 尺寸设为直播间完整页面，评论区在右侧
-    // 窗口宽度需要足够大以包含完整页面（视频区+评论区）
-    const PAGE_WIDTH = 1640;
-    const PAGE_HEIGHT = 720;
+    // 创建离屏窗口 - 使用较宽的桌面分辨率，确保评论区在右侧
+    const PAGE_WIDTH = 1920;
+    const PAGE_HEIGHT = 1080;
 
     this.captureWindow = new BrowserWindow({
       width: PAGE_WIDTH,
@@ -71,19 +70,31 @@ class CommentRenderer {
     });
 
     // 等待页面完全加载
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 6000));
 
     // 注入 CSS：仅显示右侧评论区
     await this._injectCommentOnlyCSS();
 
-    // 等待 CSS 生效
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // 等待 CSS 生效和评论区渲染
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // 探测评论区实际位置
+    const commentRect = await this._detectCommentAreaPosition();
+    if (commentRect) {
+      this._commentRect = commentRect;
+      logger.info(`[CommentRenderer] 评论区位置: x=${commentRect.x}, y=${commentRect.y}, w=${commentRect.width}, h=${commentRect.height}`);
+    } else {
+      // 默认：页面右侧
+      this._commentRect = { x: PAGE_WIDTH - 400, y: 0, width: 400, height: PAGE_HEIGHT };
+      logger.warn('[CommentRenderer] 未探测到评论区位置，使用默认右侧区域');
+    }
 
     logger.info('[CommentRenderer] 初始化完成，仅显示评论区');
   }
 
   /**
    * 注入 CSS，隐藏除右侧评论区以外的所有内容
+   * 策略：先隐藏所有元素，再逐个显示评论区及其祖先容器
    */
   async _injectCommentOnlyCSS() {
     if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
@@ -94,125 +105,140 @@ class CommentRenderer {
           // 移除旧样式
           document.querySelectorAll('style[data-comment-renderer]').forEach(s => s.remove());
 
+          // Step 1: 查找评论区容器
+          const commentSelectors = [
+            '[class*="chat-list"]', '[class*="ChatList"]',
+            '[class*="chat-room"]', '[class*="ChatRoom"]',
+            '[class*="room-chat"]', '[class*="RoomChat"]',
+            '[class*="live-chat"]', '[class*="LiveChat"]',
+            '[class*="side-chat"]', '[class*="chat-container"]',
+            '[class*="ChatContainer"]',
+            '[class*="message-list"]', '[class*="MessageList"]',
+            '[class*="webcast-chatroom"]',
+            '[data-e2e="live-chat"]', '[data-e2e="chat-room"]',
+            '[class*="comment-list"]', '[class*="CommentList"]',
+            '[class*="danmu-list"]',
+            '[class*="interact"]', '[class*="Interact"]'
+          ];
+
+          let commentContainer = null;
+          for (const sel of commentSelectors) {
+            try {
+              const els = document.querySelectorAll(sel);
+              for (const el of els) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 80 && rect.height > 100) {
+                  commentContainer = el;
+                  break;
+                }
+              }
+            } catch(e) {}
+            if (commentContainer) break;
+          }
+
+          // 如果通过 class 没找到，尝试找页面右侧最大的可见 div
+          if (!commentContainer) {
+            const allDivs = document.querySelectorAll('div');
+            let bestDiv = null;
+            let bestArea = 0;
+            const pageCenterX = window.innerWidth / 2;
+            for (const div of allDivs) {
+              const rect = div.getBoundingClientRect();
+              // 只考虑右侧的元素
+              if (rect.left < pageCenterX) continue;
+              if (rect.width < 80 || rect.height < 100) continue;
+              const area = rect.width * rect.height;
+              // 排除全屏容器
+              if (area > window.innerWidth * window.innerHeight * 0.8) continue;
+              if (area > bestArea) {
+                bestArea = area;
+                bestDiv = div;
+              }
+            }
+            if (bestDiv) commentContainer = bestDiv;
+          }
+
+          if (!commentContainer) {
+            // 实在找不到评论区，不注入任何样式
+            window.__commentRendererFound = false;
+            return;
+          }
+
+          window.__commentRendererFound = true;
+
+          // Step 2: 收集评论区及其所有祖先元素
+          const keepVisible = new Set();
+          let node = commentContainer;
+          while (node && node !== document.documentElement) {
+            keepVisible.add(node);
+            node = node.parentElement;
+          }
+          // 也包含 commentContainer 的所有子元素
+          commentContainer.querySelectorAll('*').forEach(child => keepVisible.add(child));
+          keepVisible.add(commentContainer);
+
+          // Step 3: 注入样式 - 隐藏所有，显示评论区路径
           const style = document.createElement('style');
           style.setAttribute('data-comment-renderer', 'true');
           style.textContent = \`
-            /* 基础重置 */
+            /* 隐藏所有元素 */
+            body * {
+              visibility: hidden !important;
+              display: revert !important;
+            }
+            /* 显示评论区及其祖先 */
             html, body {
+              visibility: visible !important;
               margin: 0 !important;
               padding: 0 !important;
               overflow: hidden !important;
-              width: 100vw !important;
-              height: 100vh !important;
-              background: #000 !important;
+              background: #1a1a1a !important;
             }
-
-            /* 隐藏顶部导航栏 */
-            header, nav, [class*="header"], [class*="Header"],
-            [class*="navbar"], [class*="NavBar"], [class*="top-bar"],
-            [class*="TopBar"], [data-e2e="top-nav"] {
-              display: none !important;
-              visibility: hidden !important;
-            }
-
-            /* 隐藏左侧视频播放区域 */
-            [class*="video-container"], [class*="VideoContainer"],
-            [class*="player-container"], [class*="PlayerContainer"],
-            [class*="live-player"], [class*="LivePlayer"],
-            [class*="video-area"], [class*="VideoArea"],
-            [class*="main-content"], [class*="MainContent"],
-            [data-e2e="live-player"], [data-e2e="live-video"],
-            video, [class*="xgplayer"], [class*="xg-player"] {
-              display: none !important;
-              visibility: hidden !important;
-            }
-
-            /* 隐藏底部工具栏 */
-            [class*="toolbar"], [class*="ToolBar"],
-            [class*="bottom-bar"], [class*="BottomBar"],
-            [class*="footer"], [class*="Footer"],
-            [class*="input-area"], [class*="InputArea"],
-            [class*="chat-input"], [class*="ChatInput"] {
-              display: none !important;
-              visibility: hidden !important;
-            }
-
-            /* 隐藏浮动弹幕层（视频上方的弹幕） */
-            [class*="danmu"]:not([class*="chat"]):not([class*="comment"]),
-            [class*="barrage"]:not([class*="chat"]):not([class*="comment"]),
-            [class*="Danmu"]:not([class*="chat"]):not([class*="comment"]),
-            canvas[class*="dm"] {
-              display: none !important;
-              visibility: hidden !important;
-            }
-
-            /* 隐藏滚动条 */
-            ::-webkit-scrollbar { display: none !important; }
-            * { scrollbar-width: none !important; }
-
-            /* 强制页面不滚动 */
-            * { overflow: hidden !important; }
           \`;
           document.head.appendChild(style);
 
-          // 尝试通过 JS 进一步隐藏非评论区元素
-          // 保留评论区相关的元素
-          const commentSelectors = [
-            '[class*="chat"]', '[class*="Chat"]',
-            '[class*="comment"]', '[class*="Comment"]',
-            '[class*="danmu-list"]', '[class*="message-list"]',
-            '[class*="MessageList"]', '[class*="chat-list"]',
-            '[class*="ChatList"]', '[class*="room-chat"]',
-            '[class*="RoomChat"]', '[class*="side-chat"]',
-            '[class*="live-chat"]', '[class*="LiveChat"]',
-            '[class*="chat-room"]', '[class*="ChatRoom"]',
-            '[class*="interact"]', '[class*="Interact"]',
-            '[class*="gift"]', '[class*="Gift"]',
-            '[class*="rank"]', '[class*="Rank"]',
-            '[class*="audience"]', '[class*="Audience"]',
-            '[class*="viewer"]', '[class*="Viewer"]',
-            '[class*="right-side"]', '[class*="RightSide"]',
-            '[class*="sidebar"]', '[class*="Sidebar"]'
-          ];
+          // Step 4: 通过 inline style 强制显示评论区路径上的所有元素
+          keepVisible.forEach(el => {
+            el.style.setProperty('visibility', 'visible', 'important');
+            el.style.setProperty('display', '', 'important');
+            el.style.setProperty('opacity', '1', 'important');
+          });
 
-          // 找到评论区容器并移到最右侧
-          let commentContainer = null;
-          for (const sel of commentSelectors) {
-            const el = document.querySelector(sel);
-            if (el && el.getBoundingClientRect().width > 100) {
-              commentContainer = el;
-              break;
-            }
-          }
+          // Step 5: 隐藏视频播放器（可能在评论区路径内）
+          commentContainer.querySelectorAll('video').forEach(v => {
+            v.style.setProperty('display', 'none', 'important');
+            try { v.pause(); } catch(e) {}
+          });
 
-          // 如果找到了评论区容器，确保它可见
-          if (commentContainer) {
-            // 向上找到最外层的右侧容器
-            let parent = commentContainer;
-            while (parent.parentElement && parent.parentElement !== document.body) {
-              const rect = parent.parentElement.getBoundingClientRect();
-              if (rect.width > 500) break; // 找到了包含评论区的父容器
-              parent = parent.parentElement;
-            }
-          }
+          // Step 6: 隐藏滚动条但允许评论区内部滚动
+          commentContainer.style.setProperty('overflow', 'auto', 'important');
 
-          // 强制滚动到顶部
-          window.scrollTo(0, 0);
+          // 标记找到的评论区信息
+          const rect = commentContainer.getBoundingClientRect();
+          window.__commentRect = {
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          };
 
-          // 阻止滚动
-          window.addEventListener('scroll', () => {
-            window.scrollTo(0, 0);
-          }, { passive: true });
-
-          // 使用 MutationObserver 持续清理不需要的元素
+          // Step 7: MutationObserver 持续维护
           if (window._commentObserver) {
             window._commentObserver.disconnect();
           }
-          window._commentObserver = new MutationObserver(() => {
-            // 持续隐藏视频播放器（抖音可能会动态创建）
-            document.querySelectorAll('video').forEach(v => {
-              v.style.display = 'none';
-              v.pause();
+          window._commentObserver = new MutationObserver((mutations) => {
+            // 新添加的元素如果在评论区内，确保可见
+            for (const mutation of mutations) {
+              for (const node of mutation.addedNodes) {
+                if (node.nodeType === 1 && commentContainer.contains(node)) {
+                  node.style.setProperty('visibility', 'visible', 'important');
+                }
+              }
+            }
+            // 持续隐藏视频
+            commentContainer.querySelectorAll('video').forEach(v => {
+              v.style.setProperty('display', 'none', 'important');
+              try { v.pause(); } catch(e) {}
             });
           });
           window._commentObserver.observe(document.body, {
@@ -225,6 +251,25 @@ class CommentRenderer {
     } catch (e) {
       logger.warn('[CommentRenderer] 注入 CSS 失败:', e.message);
     }
+  }
+
+  /**
+   * 探测评论区在页面中的实际位置
+   */
+  async _detectCommentAreaPosition() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
+
+    try {
+      const rect = await this.captureWindow.webContents.executeJavaScript(`
+        window.__commentRect || null
+      `);
+      if (rect && rect.width > 50 && rect.height > 50) {
+        return rect;
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] 探测评论区位置失败:', e.message);
+    }
+    return null;
   }
 
   /**
@@ -269,16 +314,26 @@ class CommentRenderer {
         const image = await this.captureWindow.webContents.capturePage();
         const imgSize = image.getSize();
 
-        // 裁剪到评论区区域（页面右侧）
-        // 页面宽度 1640，评论区从 x=1280 开始，宽度 360
-        const cropX = Math.max(0, imgSize.width - COMMENT_WIDTH);
-        const cropY = 0;
-        const cropW = Math.min(COMMENT_WIDTH, imgSize.width - cropX);
-        const cropH = Math.min(COMMENT_HEIGHT, imgSize.height);
+        // 使用探测到的评论区位置进行裁剪
+        let cropX, cropY, cropW, cropH;
+        if (this._commentRect) {
+          const r = this._commentRect;
+          cropX = Math.max(0, r.x);
+          cropY = Math.max(0, r.y);
+          cropW = Math.min(r.width, imgSize.width - cropX);
+          cropH = Math.min(r.height, imgSize.height - cropY);
+        } else {
+          // 兜底：取页面右侧 400px
+          const fallbackW = 400;
+          cropX = Math.max(0, imgSize.width - fallbackW);
+          cropY = 0;
+          cropW = fallbackW;
+          cropH = imgSize.height;
+        }
 
         let croppedImage;
-        if (cropX >= imgSize.width || cropW <= 0 || cropH <= 0) {
-          // 如果裁剪区域无效，使用整个页面
+        if (cropW <= 10 || cropH <= 10 || cropX >= imgSize.width) {
+          // 裁剪区域无效，使用整个页面
           croppedImage = image;
         } else {
           croppedImage = image.crop({
