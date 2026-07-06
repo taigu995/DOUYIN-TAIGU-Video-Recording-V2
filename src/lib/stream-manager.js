@@ -614,14 +614,14 @@ class StreamManager {
           streamState.currentRecordingStart = null;
 
           // 录制结束后，如果自动录制开启且直播在线，立即重新检测并录制
-          if (streamState.autoRecord && streamState.isLive) {
+          if (streamState.info.autoRecord && streamState.isLive) {
             logger.info(`[StreamManager] 录制结束，自动录制开启，立即重新检测直播状态: ${streamState.info.streamerName}`);
             setTimeout(() => {
               // 重新检测直播状态
               this.checkLiveStatus(streamState).then(() => {
-                if (streamState.isLive && streamState.autoRecord && !streamState.recorder) {
+                if (streamState.isLive && streamState.info.autoRecord && !streamState.recorder) {
                   logger.info(`[StreamManager] 直播仍在进行中，自动重新录制: ${streamState.info.streamerName}`);
-                  this.startRecording(streamState);
+                  this.startRecording(streamState.info.roomId);
                 }
               }).catch(err => {
                 logger.error(`[StreamManager] 重新检测直播状态失败: ${err.message}`);
@@ -733,12 +733,12 @@ class StreamManager {
     this.notifyUpdate();
 
     // 停止录制后，如果自动录制开启且直播在线，立即重新录制
-    if (streamState.autoRecord && streamState.isLive) {
-      logger.info(`[StreamManager] 自动录制开启，直播在线，自动重新录制: ${streamState.name}`);
+    if (streamState.info.autoRecord && streamState.isLive) {
+      logger.info(`[StreamManager] 自动录制开启，直播在线，自动重新录制: ${streamState.info.streamerName}`);
       // 延迟1秒再重新录制，确保上一次录制完全清理
       setTimeout(() => {
-        if (streamState.autoRecord && streamState.isLive && !streamState.recorder) {
-          this.startRecording(streamState);
+        if (streamState.info.autoRecord && streamState.isLive && !streamState.recorder) {
+          this.startRecording(streamState.info.roomId);
         }
       }, 1000);
     }
@@ -797,7 +797,7 @@ class StreamManager {
         // 检测完成后，如果直播中且未在录制，立即开始录制
         if (state.info.autoRecord && state.isLive && !state.recorder) {
           logger.info(`[StreamManager] 检测到直播中，立即开始录制: ${roomId}`);
-          this.startRecording(state);
+          this.startRecording(roomId);
         }
       }).catch(err => {
         logger.error(`[StreamManager] 自动录制状态检测失败: ${err.message}`);

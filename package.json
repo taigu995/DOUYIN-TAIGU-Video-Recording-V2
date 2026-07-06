@@ -10,11 +10,12 @@
     "preview": "npx serve src -l ${DEPLOY_RUN_PORT}"
   },
   "dependencies": {
-    "fluent-ffmpeg": "^2.1.3",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "electron-store": "^8.2.0"
+    "electron-store": "^8.2.0",
+    "fluent-ffmpeg": "^2.1.3"
   },
   "devDependencies": {
+    "archiver": "^8.0.0",
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8"
   },
@@ -32,7 +33,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.jpeg",
