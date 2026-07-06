@@ -42,8 +42,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "抖音直播录制",
-      "include": "build/uninstaller.nsh"
+      "shortcutName": "抖音直播录制"
     },
     "files": [
       "main.js",
