@@ -612,6 +612,22 @@ class StreamManager {
             logger.info(`[StreamManager] 录制完成: ${data.outputFile}, 大小: ${data.fileSize} bytes, 合并: ${data.merged}, 评论帧: ${data.commentFrames}`);
           }
           streamState.currentRecordingStart = null;
+
+          // 录制结束后，如果自动录制开启且直播在线，立即重新检测并录制
+          if (streamState.autoRecord && streamState.isLive) {
+            logger.info(`[StreamManager] 录制结束，自动录制开启，立即重新检测直播状态: ${streamState.info.streamerName}`);
+            setTimeout(() => {
+              // 重新检测直播状态
+              this.checkLiveStatus(streamState).then(() => {
+                if (streamState.isLive && streamState.autoRecord && !streamState.recorder) {
+                  logger.info(`[StreamManager] 直播仍在进行中，自动重新录制: ${streamState.info.streamerName}`);
+                  this.startRecording(streamState);
+                }
+              }).catch(err => {
+                logger.error(`[StreamManager] 重新检测直播状态失败: ${err.message}`);
+              });
+            }, 2000);
+          }
         } else if (status === 'error') {
           streamState.status = 'error';
           logger.error(`[StreamManager] 录制错误 (${streamState.info.streamerName}): ${data && data.error}`);
