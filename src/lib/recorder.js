@@ -136,9 +136,20 @@ class Recorder {
       logger.info(`[Recorder] 输出文件: ${this.outputFile}`);
       logger.info(`[Recorder] 临时目录: ${this._tempDir}`);
 
-      // Step 1: 获取直播流 URL
+      // Step 1: 初始化评论区渲染器（加载直播页面，共享登录态）
+      logger.info('[Recorder] 初始化评论区渲染器...');
+      this.commentRenderer = new CommentRenderer({
+        liveUrl: this.liveUrl,
+        roomId: this.roomId,
+        session: this.session,
+        outputDir: this._commentFramesDir,
+        fps: Math.min(config.fps || 10, 15)
+      });
+      await this.commentRenderer.init();
+
+      // Step 2: 从页面上下文中提取直播流URL（利用已加载的页面和登录态）
       logger.info('[Recorder] 正在获取直播流URL...');
-      const streamInfo = await this._extractStreamUrl();
+      const streamInfo = await this._extractStreamUrl(this.commentRenderer.window);
 
       if (!streamInfo || !streamInfo.url) {
         throw new Error('无法获取直播流URL，请确保已登录抖音且直播间正在直播');
@@ -147,37 +158,19 @@ class Recorder {
       this._streamUrl = streamInfo.url;
       logger.info(`[Recorder] 获取到直播流: ${streamInfo.type}, 来源: ${streamInfo.source}`);
 
-      // Step 2: 启动 FFmpeg 录制直播流 (stream copy)
+      // Step 3: 启动 FFmpeg 录制直播流 (stream copy)
       logger.info('[Recorder] 启动 FFmpeg 流媒体直录...');
       this._startStreamRecording();
 
-      // Step 3: 初始化评论区渲染器并开始捕获
-      logger.info('[Recorder] 初始化评论区渲染器...');
-      this.commentRenderer = new CommentRenderer({
-        liveUrl: this.liveUrl,
-        roomId: this.roomId,
-        session: this.session,
-        outputDir: this._commentFramesDir,
-        fps: Math.min(config.fps || 10, 15) // 评论区不需要太高帧率
-      });
-
-      await this.commentRenderer.init();
+      // Step 4: 开始评论区帧捕获
       this.commentRenderer.startCapture();
 
-      // 录制已开始
+      // 录制状态 - 计时器将在 FFmpeg 输出第一帧时启动
       this.recording = true;
       this.hasAudio = true;
+      this._firstFrameReceived = false;
 
-      logger.info(`[Recorder] 录制已开始: ${this.streamerName} -> ${this.outputFile}`);
-
-      this.onStatusChange('recording', {
-        roomId: this.roomId,
-        streamerName: this.streamerName,
-        outputFile: this.outputFile,
-        startTime: this.startTime,
-        hasAudio: this.hasAudio,
-        mode: 'stream+comment'
-      });
+      logger.info(`[Recorder] FFmpeg 已启动，等待第一帧输出...`);
     } catch (err) {
       logger.error(`[Recorder] 启动录制失败: ${err.message}`, err);
       this.recording = false;
@@ -224,6 +217,21 @@ class Recorder {
     this.ffmpegProcess.stderr.on('data', (data) => {
       const msg = data.toString().trim();
       if (msg) logger.info(`[FFmpeg-Stream] ${msg}`);
+
+      // 检测第一帧输出，此时才真正开始录制和计时
+      if (!this._firstFrameReceived && /frame=\s*\d+/.test(msg)) {
+        this._firstFrameReceived = true;
+        this.startTime = new Date(); // 从第一帧开始计时
+        logger.info(`[Recorder] 录制实际开始（第一帧已输出）: ${this.streamerName} -> ${this.outputFile}`);
+        this.onStatusChange('recording', {
+          roomId: this.roomId,
+          streamerName: this.streamerName,
+          outputFile: this.outputFile,
+          startTime: this.startTime,
+          hasAudio: this.hasAudio,
+          mode: 'stream+comment'
+        });
+      }
     });
 
     this.ffmpegProcess.on('close', (code) => {
@@ -505,9 +513,10 @@ class Recorder {
 
   /**
    * 从抖音直播页面提取直播流URL
-   * 优先使用API方式，回退到DOM解析
+   * 优先使用API方式，回退到页面内fetch，最后DOM解析
+   * @param {BrowserWindow} existingWindow - 可选，已加载直播页面的窗口
    */
-  async _extractStreamUrl() {
+  async _extractStreamUrl(existingWindow = null) {
     // 方法1: 通过抖音API获取直播流URL
     try {
       const apiUrl = `https://live.douyin.com/webcast/room/web/enter/?aid=6383&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=120.0.0.0&web_rid=${this.roomId}`;
@@ -612,6 +621,75 @@ class Recorder {
       }
     } catch (apiErr) {
       logger.warn('[Recorder] API方式获取直播流失败:', apiErr.message);
+    }
+
+    // 方法1.5: 通过页面内fetch提取（利用页面cookies，最可靠）
+    if (this.captureWindow && !this.captureWindow.isDestroyed()) {
+      try {
+        logger.info('[Recorder] 尝试通过页面fetch获取直播流URL...');
+        const pageResult = await this.captureWindow.webContents.executeJavaScript(`
+          (async () => {
+            try {
+              const resp = await fetch('https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&datak=0&web_rid=${this.roomId}', {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json' }
+              });
+              const json = await resp.json();
+              const roomData = json.data || json;
+              const roomInfo = roomData.data && roomData.data[0] ? roomData.data[0] : roomData;
+
+              const findStreamUrl = (obj, depth) => {
+                if (!obj || typeof obj !== 'object' || depth > 10) return null;
+                if (obj.stream_url && (obj.stream_url.flv_pull_url || obj.stream_url.hls_pull_url_map)) {
+                  return obj.stream_url;
+                }
+                for (const key of Object.keys(obj)) {
+                  const result = findStreamUrl(obj[key], depth + 1);
+                  if (result) return result;
+                }
+                return null;
+              };
+
+              let streamUrl = findStreamUrl(roomInfo);
+              if (!streamUrl && roomData.data) {
+                const arr = Array.isArray(roomData.data) ? roomData.data : [roomData.data];
+                for (const item of arr) {
+                  streamUrl = findStreamUrl(item);
+                  if (streamUrl) break;
+                }
+              }
+
+              if (streamUrl) {
+                const flvUrls = streamUrl.flv_pull_url || {};
+                const hlsUrls = streamUrl.hls_pull_url_map || {};
+                const qualityOrder = ['FULL_HD1', 'HD1', 'SD1', 'SD2', 'LD1'];
+                let flvUrl = null;
+                for (const q of qualityOrder) { if (flvUrls[q]) { flvUrl = flvUrls[q]; break; } }
+                if (!flvUrl) flvUrl = Object.values(flvUrls)[0];
+                let hlsUrl = null;
+                for (const q of qualityOrder) { if (hlsUrls[q]) { hlsUrl = hlsUrls[q]; break; } }
+                if (!hlsUrl) hlsUrl = Object.values(hlsUrls)[0];
+                const finalUrl = flvUrl || hlsUrl;
+                if (finalUrl) {
+                  return { url: finalUrl, type: flvUrl ? 'flv' : 'hls', source: 'page_fetch' };
+                }
+              }
+              return null;
+            } catch (e) {
+              return { error: e.message };
+            }
+          })()
+        `);
+
+        if (pageResult && pageResult.url && !pageResult.error) {
+          logger.info(`[Recorder] 页面fetch获取直播流成功 (来源: ${pageResult.source || 'page_fetch'}, 类型: ${pageResult.type})`);
+          return pageResult;
+        } else {
+          logger.warn(`[Recorder] 页面fetch失败: ${pageResult ? pageResult.error || '无数据' : 'null'}`);
+        }
+      } catch (pageErr) {
+        logger.warn('[Recorder] 页面fetch获取直播流失败:', pageErr.message);
+      }
     }
 
     // 方法2: 通过页面DOM提取（回退方案）
