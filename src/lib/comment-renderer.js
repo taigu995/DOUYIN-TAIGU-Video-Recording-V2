@@ -537,6 +537,12 @@ class CommentRenderer {
           this.outputDir,
           `frame_${String(this.frameCount).padStart(6, '0')}.jpg`
         );
+        
+        // 确保目录存在（防御性检查）
+        if (!fs.existsSync(this.outputDir)) {
+          fs.mkdirSync(this.outputDir, { recursive: true });
+        }
+        
         fs.writeFileSync(framePath, jpegData);
 
         this.frameCount++;

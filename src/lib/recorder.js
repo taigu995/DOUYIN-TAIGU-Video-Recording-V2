@@ -129,8 +129,23 @@ class Recorder {
       this._tempDir = path.join(sessionFolder, '.temp');
       this._tempStreamFile = path.join(this._tempDir, 'stream.mp4');
       this._commentFramesDir = path.join(this._tempDir, 'comments');
-      fs.mkdirSync(this._tempDir, { recursive: true });
-      fs.mkdirSync(this._commentFramesDir, { recursive: true });
+      
+      try {
+        fs.mkdirSync(this._tempDir, { recursive: true });
+        fs.mkdirSync(this._commentFramesDir, { recursive: true });
+        // 验证目录是否创建成功
+        if (!fs.existsSync(this._tempDir)) {
+          throw new Error(`临时目录创建失败: ${this._tempDir}`);
+        }
+        if (!fs.existsSync(this._commentFramesDir)) {
+          throw new Error(`评论帧目录创建失败: ${this._commentFramesDir}`);
+        }
+        logger.info(`[Recorder] 临时目录已创建: ${this._tempDir}`);
+        logger.info(`[Recorder] 评论帧目录已创建: ${this._commentFramesDir}`);
+      } catch (err) {
+        logger.error(`[Recorder] 创建临时目录失败: ${err.message}`);
+        throw err;
+      }
 
       logger.info(`[Recorder] 输出文件: ${this.outputFile}`);
       logger.info(`[Recorder] 临时目录: ${this._tempDir}`);
@@ -190,6 +205,12 @@ class Recorder {
    */
   _startStreamRecording() {
     const resolvedPath = getFFmpegPath();
+
+    // 确保临时目录存在（FFmpeg 无法自动创建目录）
+    if (!fs.existsSync(this._tempDir)) {
+      logger.error(`[Recorder] 临时目录不存在: ${this._tempDir}`);
+      fs.mkdirSync(this._tempDir, { recursive: true });
+    }
 
     const args = [
       // 网络超时设置
