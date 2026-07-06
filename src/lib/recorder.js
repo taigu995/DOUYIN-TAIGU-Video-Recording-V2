@@ -148,8 +148,10 @@ class Recorder {
       await this.commentRenderer.init();
 
       // Step 2: 从页面上下文中提取直播流URL（利用已加载的页面和登录态）
+      // 将评论区窗口设为 captureWindow，供 _extractStreamUrl 的页面fetch方式使用
+      this.captureWindow = this.commentRenderer.captureWindow;
       logger.info('[Recorder] 正在获取直播流URL...');
-      const streamInfo = await this._extractStreamUrl(this.commentRenderer.window);
+      const streamInfo = await this._extractStreamUrl();
 
       if (!streamInfo || !streamInfo.url) {
         throw new Error('无法获取直播流URL，请确保已登录抖音且直播间正在直播');
