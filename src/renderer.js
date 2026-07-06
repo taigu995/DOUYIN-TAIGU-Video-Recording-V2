@@ -250,9 +250,9 @@ function bindEvents() {
     githubLink.addEventListener('click', (e) => {
       e.preventDefault();
       if (isElectron) {
-        window.electronAPI.openInBrowser('https://github.com/taigu995/DOUYIN-TAIGU-TEST');
+        window.electronAPI.openInBrowser('https://github.com/taigu995/DOUYIN-TAIGU-Video-Recording-V2');
       } else {
-        window.open('https://github.com/taigu995/DOUYIN-TAIGU-TEST', '_blank');
+        window.open('https://github.com/taigu995/DOUYIN-TAIGU-Video-Recording-V2', '_blank');
       }
     });
   }
