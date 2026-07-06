@@ -157,7 +157,7 @@ function buildLiveUrl(roomId) {
 
 /**
  * 生成录制文件名
- * 格式：[主播名称][年-月-日-时-分-秒].mp4
+ * 格式：主播名称_年-月-日_时-分-秒.mp4
  */
 function generateFileName(streamerName) {
   const now = new Date();

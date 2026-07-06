@@ -115,14 +115,14 @@ class Recorder {
       const timeStrShort = `${pad(now.getHours())}-${pad(now.getMinutes())}`;
       const safeName = (this.streamerName || '未知主播').replace(/[<>:"/\\|?*]/g, '_');
 
-      // 会话文件夹: [主播名称][年-月-日][时-分-秒]
-      const sessionFolder = path.join(streamerFolder, `[${safeName}][${dateStr}][${timeStrFull}]`);
+      // 会话文件夹: 主播名称_年-月-日_时-分-秒（避免使用方括号，FFmpeg会将其解释为通配符）
+      const sessionFolder = path.join(streamerFolder, `${safeName}_${dateStr}_${timeStrFull}`);
       if (!fs.existsSync(sessionFolder)) {
         fs.mkdirSync(sessionFolder, { recursive: true });
       }
 
       // 最终输出文件
-      const fileName = `[${safeName}][${dateStr}][${timeStrShort}]`;
+      const fileName = `${safeName}_${dateStr}_${timeStrShort}`;
       this.outputFile = path.join(sessionFolder, `${fileName}.${config.fileFormat || 'mp4'}`);
 
       // 创建临时目录
