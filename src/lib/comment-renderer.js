@@ -105,14 +105,17 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 诊断捕获失败:', e.message);
     }
 
-    // 设置默认裁剪区域（页面右侧）
+    // 使用捕获尺寸计算默认裁剪区域（页面右侧400px）
+    const cropW = 400;
+    const cropH = capturedSize.height;
+    const cropX = Math.max(0, capturedSize.width - cropW);
     this._commentRect = {
-      x: Math.max(0, this.pageWidth - 400),
+      x: cropX,
       y: 0,
-      width: 400,
-      height: this.pageHeight
+      width: cropW,
+      height: cropH
     };
-    logger.info(`[CommentRenderer] 评论区裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
+    logger.info(`[CommentRenderer] 评论区裁剪区域: x=${cropX}, y=0, w=${cropW}, h=${cropH}`);
 
     logger.info('[CommentRenderer] 初始化完成');
   }
