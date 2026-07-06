@@ -1,5 +1,5 @@
 /**
- * 抖音直播录制工具 - Electron 主进程
+ * 抖音直播录制工具V2 - Electron 主进程
  * 负责窗口管理、IPC通信、系统托盘
  */
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, session, nativeImage, shell } = require('electron');
@@ -41,7 +41,7 @@ function createMainWindow() {
     height: 700,
     minWidth: 750,
     minHeight: 500,
-    title: '抖音直播录制工具',
+    title: '抖音直播录制工具V2',
     icon: iconPath,
     resizable: true,
     autoHideMenuBar: true,
@@ -84,7 +84,7 @@ function createTray() {
   const icon = nativeImage.createFromPath(trayIconPath).resize({ width: 16, height: 16 });
 
   tray = new Tray(icon);
-  tray.setToolTip('抖音直播录制工具');
+  tray.setToolTip('抖音直播录制工具V2');
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -470,7 +470,7 @@ function setupIPC() {
   // 获取输出文件夹路径
   ipcMain.handle('get-default-folder', async () => {
     const { app } = require('electron');
-    return path.join(app.getPath('videos'), '抖音直播录制');
+    return path.join(app.getPath('videos'), '抖音直播录制工具V2');
   });
 
   // 获取日志文件路径

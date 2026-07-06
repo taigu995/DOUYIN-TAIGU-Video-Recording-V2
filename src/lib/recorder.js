@@ -8,7 +8,7 @@
  *   Phase 2 (录制结束后):
  *     - FFmpeg overlay 拼接: 左侧直播画面 + 右侧评论区 → 最终 MP4
  *
- * 布局: [Stream 1280x720 | Comment 360x720] = 1640x720
+ * 布局: [Stream 1920x1080 | Comment 420x1080] = 2340x1080
  */
 const { spawn, execSync, execFileSync } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
@@ -745,9 +745,10 @@ class Recorder {
     }
 
     // 方法2: 通过页面DOM提取（回退方案）
+    let tempWin = null;
     try {
       const { BrowserWindow } = require('electron');
-      const tempWin = new BrowserWindow({
+      tempWin = new BrowserWindow({
         show: false,
         width: 800,
         height: 600,
@@ -815,14 +816,17 @@ class Recorder {
         })()
       `);
 
-      if (!tempWin.isDestroyed()) tempWin.destroy();
-
       if (domResult && domResult.url) {
         logger.info(`[Recorder] DOM提取直播流成功 (来源: ${domResult.source})`);
         return domResult;
       }
     } catch (domErr) {
       logger.warn('[Recorder] DOM方式提取直播流失败:', domErr.message);
+    } finally {
+      // 确保临时窗口始终被销毁，防止资源泄漏
+      if (tempWin && !tempWin.isDestroyed()) {
+        try { tempWin.destroy(); } catch (e) { /* ignore */ }
+      }
     }
 
     logger.warn('[Recorder] 所有方式均未能提取到直播流URL');
@@ -922,7 +926,7 @@ class Recorder {
    */
   getDefaultOutputFolder() {
     const { app } = require('electron');
-    return path.join(app.getPath('videos'), '抖音直播录制');
+    return path.join(app.getPath('videos'), '抖音直播录制工具V2');
   }
 
   /**
