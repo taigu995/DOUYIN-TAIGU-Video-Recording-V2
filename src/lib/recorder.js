@@ -481,8 +481,8 @@ class Recorder {
     }
 
     // Phase 2: 合并直播流 + 评论区视频
-    // 使用 setsar=1 强制正方形像素，避免非正方形像素导致播放器显示变形
-    // 添加 2px 宽的分隔线区分直播区和评论区
+    // 使用 pad 显式扩展画布到 totalWidth，再 overlay 评论区
+    // 兼容旧版 FFmpeg（overlay 不会自动扩展画布的问题）
     const separatorW = 2;
     const totalWithSep = streamScaleW + separatorW + commentScaleW;
     await this._runFFmpeg(resolvedPath, [
@@ -491,8 +491,9 @@ class Recorder {
       '-filter_complex',
         `[0:v]scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
         `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-        `[stream]drawbox=x=${streamScaleW - separatorW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-        `[stream_sep][comments]overlay=${streamScaleW}:0:shortest=1[out]`,
+        `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+        `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+        `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:shortest=1[out]`,
       '-map', '[out]',
       '-map', '0:a?',
       '-c:v', 'libx264',
