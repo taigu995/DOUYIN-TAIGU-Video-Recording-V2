@@ -73,33 +73,46 @@ class CommentRenderer {
     logger.info('[CommentRenderer] 等待页面加载完成...');
     await new Promise(resolve => setTimeout(resolve, 8000));
 
-    // 注入 CSS：隐藏视频播放器，保留评论区
-    await this._injectCommentOnlyCSS();
+    // 不注入任何CSS，直接捕获完整页面
+    // 后续通过裁剪获取评论区区域
+    logger.info('[CommentRenderer] 不注入CSS，使用完整页面捕获+右侧裁剪');
 
-    // 等待 CSS 生效和评论区渲染
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // 探测评论区实际位置
-    const commentRect = await this._detectCommentAreaPosition();
-    if (commentRect) {
-      this._commentRect = commentRect;
-      logger.info(`[CommentRenderer] 评论区位置: x=${commentRect.x}, y=${commentRect.y}, w=${commentRect.width}, h=${commentRect.height}`);
-    } else {
-      // 默认：页面右侧 400px
-      this._commentRect = { x: PAGE_WIDTH - 400, y: 0, width: 400, height: PAGE_HEIGHT };
-      logger.warn('[CommentRenderer] 未探测到评论区位置，使用默认右侧区域 (x=1520, y=0, w=400, h=1080)');
-    }
-
-    // 诊断：捕获一帧用于调试
+    // 诊断：保存完整页面截图用于调试
     try {
       const debugImage = await this.captureWindow.webContents.capturePage();
       const debugSize = debugImage.getSize();
       logger.info(`[CommentRenderer] 页面捕获尺寸: ${debugSize.width}x${debugSize.height}`);
+      
+      // 保存调试截图到临时目录
+      const debugPath = path.join(this.tempDir, 'debug_full_page.png');
+      const fs = require('fs');
+      fs.writeFileSync(debugPath, debugImage.toPNG());
+      logger.info(`[CommentRenderer] 调试截图已保存: ${debugPath}`);
+      
+      // 同时保存右侧400px的截图
+      const rightCrop = await this.captureWindow.webContents.capturePage({
+        x: debugSize.width - 400,
+        y: 0,
+        width: 400,
+        height: debugSize.height
+      });
+      const rightPath = path.join(this.tempDir, 'debug_right_side.png');
+      fs.writeFileSync(rightPath, rightCrop.toPNG());
+      logger.info(`[CommentRenderer] 右侧截图已保存: ${rightPath}`);
     } catch (e) {
       logger.warn('[CommentRenderer] 诊断捕获失败:', e.message);
     }
 
-    logger.info('[CommentRenderer] 初始化完成，仅显示评论区');
+    // 设置默认裁剪区域（页面右侧）
+    this._commentRect = {
+      x: Math.max(0, this.pageWidth - 400),
+      y: 0,
+      width: 400,
+      height: this.pageHeight
+    };
+    logger.info(`[CommentRenderer] 评论区裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
+
+    logger.info('[CommentRenderer] 初始化完成');
   }
 
   /**
