@@ -14,20 +14,6 @@ __pycache__/
 .env
 .cozeproj/reduction
 
-# Electron build outputs
-out/
-release/
-*.exe
-*.dmg
-*.AppImage
-
-# Logs
-logs/
-*.log
-
-# OS files
-Thumbs.db
-
 # JS/TS bundlers & build outputs
 .next
 .nuxt
