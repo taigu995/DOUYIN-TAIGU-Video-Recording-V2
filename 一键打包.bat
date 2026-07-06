@@ -39,11 +39,14 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
+:: Refresh PATH - add npm global bin to PATH
+for /f "tokens=*" %%i in ('npm config get prefix') do set "PATH=%%i;%PATH%"
+echo       pnpm installed
 
 :: Step 3: Install dependencies
 :install_deps
 echo [3/5] Installing dependencies ...
-call pnpm install
+call npx pnpm install
 if %errorlevel% neq 0 (
     echo [ERROR] Dependencies install failed!
     pause
