@@ -143,7 +143,7 @@ class Recorder {
         session: this.session,
         outputDir: this._commentFramesDir,
         debugDir: path.dirname(this.outputFile), // 调试截图保存到输出目录（不会被清理）
-        fps: Math.min(config.fps || 10, 15)
+        fps: 30 // 默认使用30fps，覆盖绝大多数直播间的帧率
       });
       await this.commentRenderer.init();
 

@@ -8,7 +8,6 @@ const defaults = {
   outputFolder: '',       // 录制文件保存路径（空则使用默认）
   checkInterval: 30,      // 直播状态检测间隔（秒）
   videoQuality: 'origin', // 画质：origin=原画
-  fps: 10,                // 评论区捕获帧率（流媒体直录不需要高帧率）
   fileFormat: 'mp4',      // 输出格式
   autoStart: true,        // 检测到开播自动开始录制
   launchAtLogin: false,   // 开机自启动
@@ -39,7 +38,6 @@ function getConfig() {
     outputFolder: s.get('outputFolder'),
     checkInterval: s.get('checkInterval'),
     videoQuality: s.get('videoQuality'),
-    fps: s.get('fps'),
     fileFormat: s.get('fileFormat'),
     autoStart: s.get('autoStart'),
     launchAtLogin: s.get('launchAtLogin'),

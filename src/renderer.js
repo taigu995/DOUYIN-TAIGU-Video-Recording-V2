@@ -29,7 +29,6 @@ const elements = {
   btnBrowse: document.getElementById('btn-browse'),
   outputFolder: document.getElementById('output-folder'),
   checkInterval: document.getElementById('check-interval'),
-  fps: document.getElementById('fps'),
   autoStart: document.getElementById('auto-start'),
   minimizeToTray: document.getElementById('minimize-to-tray'),
   launchAtLogin: document.getElementById('launch-at-login'),
@@ -117,7 +116,6 @@ async function init() {
     const config = await window.electronAPI.getConfig();
     elements.outputFolder.value = config.outputFolder || '';
     elements.checkInterval.value = config.checkInterval || 30;
-    elements.fps.value = config.fps || 30;
     elements.autoStart.checked = config.autoStart !== false;
     elements.minimizeToTray.checked = config.minimizeToTray !== false;
     elements.launchAtLogin.checked = config.launchAtLogin === true;
@@ -335,7 +333,6 @@ async function handleSaveSettings() {
   if (isElectron) {
     await window.electronAPI.setConfig('outputFolder', elements.outputFolder.value);
     await window.electronAPI.setConfig('checkInterval', parseInt(elements.checkInterval.value) || 30);
-    await window.electronAPI.setConfig('fps', parseInt(elements.fps.value) || 30);
     await window.electronAPI.setConfig('autoStart', elements.autoStart.checked);
     await window.electronAPI.setConfig('minimizeToTray', elements.minimizeToTray.checked);
     await window.electronAPI.setConfig('launchAtLogin', elements.launchAtLogin.checked);

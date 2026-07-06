@@ -789,6 +789,21 @@ class StreamManager {
 
     logger.info(`[StreamManager] 切换自动录制: ${roomId} -> ${state.info.autoRecord}`);
     this.notifyUpdate();
+
+    // 如果开启自动录制，立即重新检测直播状态
+    if (state.info.autoRecord) {
+      logger.info(`[StreamManager] 自动录制已开启，立即检测直播状态: ${roomId}`);
+      this.checkLiveStatus(state).then(() => {
+        // 检测完成后，如果直播中且未在录制，立即开始录制
+        if (state.info.autoRecord && state.isLive && !state.recorder) {
+          logger.info(`[StreamManager] 检测到直播中，立即开始录制: ${roomId}`);
+          this.startRecording(state);
+        }
+      }).catch(err => {
+        logger.error(`[StreamManager] 自动录制状态检测失败: ${err.message}`);
+      });
+    }
+
     return state.info.autoRecord;
   }
 
