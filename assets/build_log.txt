@@ -1,0 +1,73 @@
+﻿============================================================
+  Douyin Live Recorder - Build Log
+  Time: 07/05/2026 16:40:21
+  Directory: F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder
+============================================================
+
+[2026-07-05 16:40:21] [STEP] Step 1/5: Detecting Node.js...
+[2026-07-05 16:40:21] [OK] Node.js detected: v24.18.0
+[2026-07-05 16:40:21] [STEP] Step 2/5: Detecting pnpm...
+[2026-07-05 16:40:21] [WARN] pnpm not found. Installing via npm...
+[2026-07-05 16:40:22] [INFO] 
+[2026-07-05 16:40:22] [INFO] changed 1 package in 946ms
+[2026-07-05 16:40:22] [INFO] 
+[2026-07-05 16:40:22] [INFO] 1 package is looking for funding
+[2026-07-05 16:40:22] [INFO]   run `npm fund` for details
+[2026-07-05 16:40:23] [OK] pnpm installed: v11.10.0
+[2026-07-05 16:40:23] [STEP] Step 3/5: Installing project dependencies...
+[2026-07-05 16:40:23] [STEP] Configuring npmmirror for faster downloads...
+[2026-07-05 16:40:24] [OK] Mirror configured: npmmirror.com
+[2026-07-05 16:40:24] [STEP] Running npm install (first time may take several minutes)...
+[2026-07-05 16:40:50] [WARN] npm warn Unknown project config "onlyBuiltDependencies". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[2026-07-05 16:40:50] [WARN] npm warn Unknown project config "electron_mirror". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated are-we-there-yet@3.0.1: This package is no longer supported.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated @npmcli/move-file@2.0.1: This functionality has been moved to @npmcli/fs
+[2026-07-05 16:40:50] [WARN] npm warn deprecated npmlog@6.0.2: This package is no longer supported.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+[2026-07-05 16:40:50] [WARN] npm warn deprecated gauge@4.0.4: This package is no longer supported.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+[2026-07-05 16:40:50] [WARN] npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+[2026-07-05 16:40:50] [WARN] npm warn deprecated glob@8.1.0: Glob versions prior to v9 are no longer supported
+[2026-07-05 16:40:50] [WARN] npm warn deprecated fluent-ffmpeg@2.1.3: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+[2026-07-05 16:40:50] [INFO] 
+[2026-07-05 16:40:50] [INFO] added 433 packages in 25s
+[2026-07-05 16:40:50] [INFO] 
+[2026-07-05 16:40:50] [INFO] 72 packages are looking for funding
+[2026-07-05 16:40:50] [INFO]   run `npm fund` for details
+[2026-07-05 16:40:50] [WARN] npm warn allow-scripts 1 package has install scripts not yet covered by allowScripts:
+[2026-07-05 16:40:50] [WARN] npm warn allow-scripts   electron@33.4.11 (postinstall: node install.js)
+[2026-07-05 16:40:50] [WARN] npm warn allow-scripts
+[2026-07-05 16:40:50] [WARN] npm warn allow-scripts Run `npm approve-scripts --allow-scripts-pending` to review, or `npm approve-scripts <pkg>` to allow.
+[2026-07-05 16:40:50] [OK] Dependencies installed successfully
+[2026-07-05 16:40:50] [STEP] Step 4/5: Building EXE package...
+[2026-07-05 16:40:50] [STEP] Running electron-builder (first build downloads Electron binary)...
+[2026-07-05 16:41:00] [WARN] npm warn Unknown project config "onlyBuiltDependencies". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[2026-07-05 16:41:00] [WARN] npm warn Unknown project config "electron_mirror". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+[2026-07-05 16:41:00] [INFO] 
+[2026-07-05 16:41:00] [INFO] > douyin-live-recorder@1.0.0 build
+[2026-07-05 16:41:00] [INFO] > electron-builder --win
+[2026-07-05 16:41:00] [INFO] 
+[2026-07-05 16:41:00] [INFO]   • electron-builder  version=25.1.8 os=10.0.19045
+[2026-07-05 16:41:00] [INFO]   • loaded configuration  file=package.json ("build" field)
+[2026-07-05 16:41:00] [INFO]   • author is missed in the package.json  appPackageFile=F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\package.json
+[2026-07-05 16:41:00] [INFO]   • executing @electron/rebuild  electronVersion=33.4.11 arch=x64 buildFromSource=false appDir=./
+[2026-07-05 16:41:00] [INFO]   • installing native dependencies  arch=x64
+[2026-07-05 16:41:00] [INFO]   • completed installing native dependencies
+[2026-07-05 16:41:00] [STEP]   • packaging       platform=win32 arch=x64 electron=33.4.11 appOutDir=dist\win-unpacked
+[2026-07-05 16:41:00] [INFO]   • downloading     url=https://npmmirror.com/mirrors/electron/v33.4.11/electron-v33.4.11-win32-x64.zip size=115 MB parts=8
+[2026-07-05 16:41:00] [INFO]   • downloaded      url=https://npmmirror.com/mirrors/electron/v33.4.11/electron-v33.4.11-win32-x64.zip duration=5.155s
+[2026-07-05 16:41:00] [ERROR]   ⨯ UNKNOWN: unknown error, open 'F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\dist\win-unpacked\抖音直播录制.exe'  failedTask=build stackTrace=Error: UNKNOWN: unknown error, open 'F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\dist\win-unpacked\抖音直播录制.exe'
+[2026-07-05 16:41:00] [INFO]     at open (node:internal/fs/promises:640:25)
+[2026-07-05 16:41:00] [INFO]     at writeFile (node:internal/fs/promises:1260:14)
+[2026-07-05 16:41:00] [INFO]     at addWinAsarIntegrity (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\electron\electronWin.ts:39:3)
+[2026-07-05 16:41:00] [INFO]     at beforeCopyExtraFiles (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\electron\ElectronFramework.ts:83:7)
+[2026-07-05 16:41:00] [INFO]     at WinPackager.doPack (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\platformPackager.ts:302:7)
+[2026-07-05 16:41:00] [INFO]     at WinPackager.pack (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\platformPackager.ts:138:5)
+[2026-07-05 16:41:00] [INFO]     at Packager.doBuild (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\packager.ts:459:9)
+[2026-07-05 16:41:00] [INFO]     at executeFinally (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\builder-util\src\promise.ts:12:14)
+[2026-07-05 16:41:00] [INFO]     at Packager.build (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\app-builder-lib\src\packager.ts:393:31)
+[2026-07-05 16:41:00] [INFO]     at executeFinally (F:\0.LUZHIRUNJIAN\1.RUANJIAN\douyin-live-recorder\douyin-live-recorder\node_modules\builder-util\src\promise.ts:12:14)
+[2026-07-05 16:41:00] [ERROR] Build failed! Check build_log.txt for details
+[2026-07-05 16:41:00] [STEP] Step 5/5: Checking output...
+[2026-07-05 16:41:00] [STEP] Build process finished at 07/05/2026 16:41:00. Success: False
