@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('./src/lib/logger');
 const logger = getLogger();
-const { config } = require('./src/lib/config');
+const { getConfig, setConfig, getAll, setAll, getStreams, addStream: configAddStream, removeStream: configRemoveStream, updateStream: configUpdateStream, getAccounts: configGetAccounts, addAccount, removeAccount: configRemoveAccount, updateAccount: configUpdateAccount } = require('./src/lib/config');
 const { StreamManager } = require('./src/lib/stream-manager');
 const accountManager = require('./src/lib/account-manager');
 
@@ -33,9 +33,11 @@ let tray = null;
 let streamManager = null;
 // accountManager 已通过 require 导入
 
-// 账号管理器已作为模块导入，无需初始化实例
+// 初始化账号管理器
 function initAccountManager() {
-  logger.info('AccountManager module loaded');
+  const savedAccounts = configGetAccounts();
+  accountManager.init(savedAccounts);
+  logger.info(`AccountManager initialized with ${savedAccounts.length} accounts`);
 }
 
 // 创建主窗口
@@ -171,7 +173,7 @@ function setupIPC() {
 
   ipcMain.handle('login-account', async () => {
     try {
-      const account = await accountManager.loginAccount();
+      const account = await accountManager.loginAccount(mainWindow);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('login-status-changed', {
           isLoggedIn: true,
@@ -189,7 +191,7 @@ function setupIPC() {
   ipcMain.handle('logout-account', async (event, accountId) => {
     try {
       // 检查账号是否被某个直播间使用
-      const streams = config.getStreams();
+      const streams = getStreams();
       const usedBy = streams.find(s => s.accountId === accountId);
       if (usedBy) {
         return { success: false, error: `账号正在被直播间「${usedBy.customName || usedBy.roomId}」使用，请先取消分配` };
@@ -245,19 +247,51 @@ function setupIPC() {
 
   // ========== 直播间管理 ==========
   ipcMain.handle('get-streams', () => {
-    return config.getStreams();
+    return getStreams();
   });
 
   // 预览直播间信息（解析后返回，不添加）
   ipcMain.handle('preview-stream', async (event, { input, customName }) => {
     try {
-      const { extractRoomId, fetchStreamerName } = require('./src/lib/douyin-utils');
-      const roomId = await extractRoomId(input);
-      if (!roomId) {
-        return { success: false, error: '无法解析直播间链接' };
+      const { extractInput, extractNameFromText, resolveShortUrl, buildLiveUrl } = require('./src/lib/douyin-utils');
+      
+      // 1. 解析输入
+      const parsed = extractInput(input);
+      if (!parsed) {
+        return { success: false, error: '未能识别有效的抖音直播间信息' };
       }
-      const streamerName = customName || await fetchStreamerName(roomId);
-      return { success: true, roomId, streamerName };
+
+      // 2. 获取 roomId
+      let roomId;
+      if (parsed.type === 'roomId') {
+        roomId = parsed.value;
+      } else {
+        const url = parsed.value;
+        if (url.includes('v.douyin.com')) {
+          const resolved = await resolveShortUrl(url);
+          roomId = resolved.roomId;
+        } else if (url.includes('live.douyin.com')) {
+          const match = url.match(/live\.douyin\.com\/([A-Za-z0-9_]+)/);
+          roomId = match ? match[1] : null;
+        }
+      }
+
+      if (!roomId) {
+        return { success: false, error: '无法解析直播间ID' };
+      }
+
+      // 3. 获取主播名称
+      let streamerName = customName || extractNameFromText(input);
+      if (!streamerName) {
+        // 通过 API 获取主播名称
+        try {
+          streamerName = await streamManager.fetchStreamerNameFromAPI(roomId);
+        } catch (e) {
+          streamerName = `主播${roomId}`;
+        }
+      }
+
+      return { success: true, roomId, streamerName: streamerName || `主播${roomId}` };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -265,12 +299,12 @@ function setupIPC() {
 
   ipcMain.handle('add-stream', async (event, { input, customName, accountId, commentFps, recordMode }) => {
     try {
-      const stream = await streamManager.addStream(input, customName);
+      const stream = await streamManager.addStreamByInput(input, customName);
       // 设置直播间专属配置
       if (accountId) stream.accountId = accountId;
       if (commentFps) stream.commentFps = commentFps;
       if (recordMode) stream.recordMode = recordMode;
-      config.updateStream(stream.roomId, stream);
+      configUpdateStream(stream.roomId, stream);
       return { success: true, stream };
     } catch (error) {
       return { success: false, error: error.message };
@@ -278,21 +312,21 @@ function setupIPC() {
   });
 
   ipcMain.handle('remove-stream', (event, roomId) => {
-    streamManager.removeStream(roomId);
+    streamManager.removeStreamById(roomId);
     return { success: true };
   });
 
   ipcMain.handle('update-stream', (event, { roomId, updates }) => {
     // 如果更新 accountId，检查防呆
     if (updates.accountId) {
-      const streams = config.getStreams();
+      const streams = getStreams();
       const conflict = streams.find(s => s.roomId !== roomId && s.accountId === updates.accountId);
       if (conflict) {
         const conflictName = conflict.customName || conflict.roomId;
         return { success: false, error: `该账号已被直播间「${conflictName}」使用` };
       }
     }
-    streamManager.updateStream(roomId, updates);
+    streamManager.updateStreamInfo(roomId, updates);
     return { success: true };
   });
 
@@ -321,12 +355,11 @@ function setupIPC() {
 
   // ========== 配置管理 ==========
   ipcMain.handle('get-config', () => {
-    return config.getAll();
+    return getAll();
   });
 
   ipcMain.handle('save-config', (event, newConfig) => {
-    config.setAll(newConfig);
-    streamManager.updateConfig(newConfig);
+    setAll(newConfig);
     return { success: true };
   });
 
@@ -342,7 +375,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('open-output-dir', async () => {
-    const outputDir = config.outputDir;
+    const outputDir = getConfig().outputFolder;
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
@@ -367,6 +400,59 @@ function setupIPC() {
   ipcMain.handle('get-version', () => {
     return app.getVersion();
   });
+
+  // ========== 新增 IPC 处理器 ==========
+
+  // 获取所有直播间状态
+  ipcMain.handle('get-all-status', () => {
+    return streamManager.getAllStatus();
+  });
+
+  // 获取录制历史
+  ipcMain.handle('get-recording-history', (event, roomId) => {
+    return streamManager.getRecordingHistory(roomId);
+  });
+
+  // 设置单个配置项
+  ipcMain.handle('set-config', (event, { key, value }) => {
+    setConfig(key, value);
+    return { success: true };
+  });
+
+  // 获取默认保存路径
+  ipcMain.handle('get-default-folder', () => {
+    return path.join(app.getPath('videos'), '抖音直播录制工具V2');
+  });
+
+  // 获取日志内容
+  ipcMain.handle('get-log-content', () => {
+    return logger.getRecentLogs(500);
+  });
+
+  // 获取日志文件路径
+  ipcMain.handle('get-log-path', () => {
+    return { path: logger.getLogPath() };
+  });
+
+  // 导出日志
+  ipcMain.handle('export-logs', async () => {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出日志',
+      defaultPath: `douyin-recorder-logs-${Date.now()}.log`,
+      filters: [{ name: 'Log Files', extensions: ['log'] }]
+    });
+    if (result.canceled) return { success: false };
+    
+    const content = logger.getRecentLogs(10000);
+    fs.writeFileSync(result.filePath, content, 'utf8');
+    return { success: true, path: result.filePath };
+  });
+
+  // 清空日志
+  ipcMain.handle('clear-logs', () => {
+    logger.clear();
+    return { success: true };
+  });
 }
 
 // 应用就绪
@@ -389,26 +475,15 @@ app.whenReady().then(async () => {
   initAccountManager();
 
   // 初始化 StreamManager
-  streamManager = new StreamManager(config.getAll(), accountManager, () => {
+  streamManager = new StreamManager(getAll(), accountManager, () => {
     // 状态变化时推送最新列表到前端
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('streams-update', streamManager.getAllStreams());
+      mainWindow.webContents.send('streams-update', streamManager.getAllStatus());
     }
   });
 
   // 恢复已保存的直播间
-  const savedStreams = config.getStreams();
-  for (const stream of savedStreams) {
-    await streamManager.addStream(stream.roomId, stream.customName);
-    // 恢复直播间专属配置
-    if (stream.accountId || stream.commentFps || stream.recordMode) {
-      const updates = {};
-      if (stream.accountId) updates.accountId = stream.accountId;
-      if (stream.commentFps) updates.commentFps = stream.commentFps;
-      if (stream.recordMode) updates.recordMode = stream.recordMode;
-      streamManager.updateStream(stream.roomId, updates);
-    }
-  }
+  await streamManager.restoreStreams();
 
   setupCSP();
   createWindow();
@@ -441,7 +516,7 @@ app.on('activate', () => {
 // 退出前清理
 app.on('before-quit', () => {
   if (streamManager) {
-    streamManager.destroy();
+    streamManager.destroyAll();
   }
 });
 

@@ -166,9 +166,30 @@ function getAccountUsage(accountId) {
   return stream ? stream.roomId : null;
 }
 
+/**
+ * 获取全部配置（同 getConfig）
+ */
+function getAll() {
+  return getConfig();
+}
+
+/**
+ * 批量更新配置
+ */
+function setAll(newConfig) {
+  const s = initStore();
+  for (const key of Object.keys(newConfig)) {
+    if (key !== 'streams' && key !== 'accounts') {
+      s.set(key, newConfig[key]);
+    }
+  }
+}
+
 module.exports = {
   getConfig,
   setConfig,
+  getAll,
+  setAll,
   getStreams,
   addStream,
   removeStream,

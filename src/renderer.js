@@ -539,6 +539,16 @@ async function clearLogs() {
 }
 
 // ========== 渲染直播间列表 ==========
+async function loadStreams() {
+  try {
+    const status = await window.electronAPI.getAllStatus();
+    streamsData = status || [];
+    renderStreamsList(streamsData);
+  } catch (e) {
+    console.error('加载直播间列表失败:', e);
+  }
+}
+
 function renderStreamsList(streams) {
   if (!streams || streams.length === 0) {
     elements.streamsList.innerHTML = '';

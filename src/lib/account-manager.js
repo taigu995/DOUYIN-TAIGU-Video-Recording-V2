@@ -4,6 +4,7 @@
  */
 const crypto = require('crypto');
 const { getLogger } = require('./logger');
+const { getAccounts: getConfigAccounts, setConfig } = require('./config');
 const logger = getLogger();
 
 // 账号列表（内存缓存，持久化由 config 管理）
@@ -11,8 +12,25 @@ let accounts = [];
 
 // 初始化：从 config 加载账号列表
 function init(savedAccounts) {
-  accounts = savedAccounts || [];
+  accounts = savedAccounts || getConfigAccounts() || [];
   logger.info(`[AccountManager] 初始化，已加载 ${accounts.length} 个账号`);
+}
+
+// 持久化账号列表到 config
+function _persistAccounts() {
+  try {
+    // 只保存可序列化的字段（排除 session 对象等）
+    const serializable = accounts.map(a => ({
+      id: a.id,
+      nickname: a.nickname,
+      avatar: a.avatar || '',
+      createdAt: a.createdAt,
+      partition: a.partition
+    }));
+    setConfig('accounts', serializable);
+  } catch (err) {
+    logger.warn(`[AccountManager] 持久化账号列表失败: ${err.message}`);
+  }
 }
 
 // 获取所有账号
@@ -97,6 +115,7 @@ function loginAccount(mainWindow) {
           };
 
           accounts.push(accountInfo);
+          _persistAccounts();
           logger.info(`[AccountManager] 账号登录成功: ${accountInfo.nickname} (${accountId})`);
 
           // 延迟关闭登录窗口
@@ -228,6 +247,7 @@ async function removeAccount(accountId) {
   }
 
   accounts.splice(idx, 1);
+  _persistAccounts();
   return true;
 }
 
@@ -237,6 +257,7 @@ function updateAccount(accountId, updates) {
   if (!account) return false;
   
   Object.assign(account, updates);
+  _persistAccounts();
   return true;
 }
 

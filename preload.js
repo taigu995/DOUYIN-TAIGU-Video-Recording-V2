@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkAccountStatus: (accountId) => ipcRenderer.invoke('check-account-status', accountId),
   checkLoginStatus: () => ipcRenderer.invoke('check-login-status'),
   logout: () => ipcRenderer.invoke('logout'),
+  // renderer.js 使用的别名
+  getLoginStatus: () => ipcRenderer.invoke('check-login-status'),
+  openLogin: () => ipcRenderer.invoke('login-account'),
+  clearLogin: () => ipcRenderer.invoke('logout'),
 
   // ========== 直播间管理 ==========
   previewStream: (input, customName) => ipcRenderer.invoke('preview-stream', { input, customName }),
@@ -23,21 +27,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startRecording: (roomId) => ipcRenderer.invoke('start-recording', roomId),
   stopRecording: (roomId) => ipcRenderer.invoke('stop-recording', roomId),
   getStreams: () => ipcRenderer.invoke('get-streams'),
+  getAllStatus: () => ipcRenderer.invoke('get-all-status'),
+  getRecordingHistory: (roomId) => ipcRenderer.invoke('get-recording-history', roomId),
 
   // ========== 配置管理 ==========
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  setConfig: (key, value) => ipcRenderer.invoke('set-config', { key, value }),
+  getDefaultFolder: () => ipcRenderer.invoke('get-default-folder'),
 
   // ========== 文件/目录操作 ==========
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
+  selectFolder: () => ipcRenderer.invoke('select-output-dir'),
   openOutputDir: () => ipcRenderer.invoke('open-output-dir'),
   openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
   openInBrowser: (url) => ipcRenderer.invoke('open-in-browser', url),
   getVersion: () => ipcRenderer.invoke('get-version'),
 
+  // ========== 日志管理 ==========
+  getLogContent: () => ipcRenderer.invoke('get-log-content'),
+  getLogPath: () => ipcRenderer.invoke('get-log-path'),
+  exportLogs: () => ipcRenderer.invoke('export-logs'),
+  clearLogs: () => ipcRenderer.invoke('clear-logs'),
+
   // ========== 事件监听 ==========
   onStreamsUpdated: (callback) => {
-    ipcRenderer.on('streams-updated', (event, data) => callback(data));
+    ipcRenderer.on('streams-update', (event, data) => callback(data));
   },
   onLoginStatusChanged: (callback) => {
     ipcRenderer.on('login-status-changed', (event, data) => callback(data));
