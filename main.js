@@ -2,7 +2,7 @@
  * 抖音直播录制工具V2 - 主进程
  * 基于 Electron 的桌面应用，支持多账号、多直播间录制
  */
-const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('./src/lib/logger');
@@ -32,6 +32,9 @@ let mainWindow = null;
 let tray = null;
 let streamManager = null;
 // accountManager 已通过 require 导入
+
+// 初始化退出标志
+app.isQuitting = false;
 
 // 初始化账号管理器
 function initAccountManager() {
@@ -74,9 +77,12 @@ function createWindow() {
   }, 5000);
 
   mainWindow.on('close', (event) => {
-    if (!app.isQuitting) {
+    const cfg = getConfig();
+    const minimizeToTray = cfg.minimizeToTray;
+    if (!app.isQuitting && minimizeToTray) {
       event.preventDefault();
       mainWindow.hide();
+      logger.info('窗口已隐藏到系统托盘');
     }
   });
 
@@ -106,14 +112,37 @@ async function setupWindowCookies() {
 
 // 创建系统托盘
 function createTray() {
-  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  // 优先使用 16x16 小图标用于托盘（Windows 推荐尺寸）
+  let iconPath = path.join(__dirname, 'assets', 'tray-icon-16.png');
   if (!fs.existsSync(iconPath)) {
-    logger.warn(`图标文件不存在: ${iconPath}`);
+    // 回退到 32x32 图标
+    iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+  }
+  if (!fs.existsSync(iconPath)) {
+    // 回退到原始图标
+    iconPath = path.join(__dirname, 'assets', 'icon.png');
+  }
+  if (!fs.existsSync(iconPath)) {
+    logger.warn(`图标文件不存在: ${iconPath}，无法创建系统托盘`);
     return;
   }
 
-  tray = new Tray(iconPath);
-  tray.setToolTip('抖音直播录制工具V2');
+  try {
+    // 使用 nativeImage 创建图标，从文件读取 buffer 更可靠
+    const imageBuffer = fs.readFileSync(iconPath);
+    const icon = nativeImage.createFromBuffer(imageBuffer);
+    if (icon.isEmpty()) {
+      logger.error(`图标文件为空或格式无效: ${iconPath}`);
+      return;
+    }
+    tray = new Tray(icon);
+    tray.setToolTip('抖音直播录制工具V2');
+    logger.info(`系统托盘已创建，图标: ${iconPath}，尺寸: ${icon.getSize().width}x${icon.getSize().height}`);
+  } catch (err) {
+    logger.error(`创建系统托盘失败: ${err.message}`);
+    logger.error(err.stack);
+    return;
+  }
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -542,6 +571,11 @@ app.on('activate', () => {
 
 // 退出前清理
 app.on('before-quit', () => {
+  app.isQuitting = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   if (streamManager) {
     streamManager.destroyAll();
   }
