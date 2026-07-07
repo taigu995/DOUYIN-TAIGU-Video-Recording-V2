@@ -9,7 +9,7 @@ const { getLogger } = require('./src/lib/logger');
 const logger = getLogger();
 const { config } = require('./src/lib/config');
 const { StreamManager } = require('./src/lib/stream-manager');
-const { AccountManager } = require('./src/lib/account-manager');
+const accountManager = require('./src/lib/account-manager');
 
 // 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
@@ -31,12 +31,11 @@ logger.setLogDir(path.join(userDataPath, 'logs'));
 let mainWindow = null;
 let tray = null;
 let streamManager = null;
-let accountManager = null;
+// accountManager 已通过 require 导入
 
-// 初始化账号管理器
+// 账号管理器已作为模块导入，无需初始化实例
 function initAccountManager() {
-  accountManager = new AccountManager();
-  logger.info('AccountManager initialized');
+  logger.info('AccountManager module loaded');
 }
 
 // 创建主窗口
@@ -167,12 +166,12 @@ function setupCSP() {
 function setupIPC() {
   // ========== 账号管理 ==========
   ipcMain.handle('get-accounts', () => {
-    return accountManager.getAllAccounts();
+    return accountManager.getAccounts();
   });
 
   ipcMain.handle('login-account', async () => {
     try {
-      const account = await accountManager.login();
+      const account = await accountManager.loginAccount();
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('login-status-changed', {
           isLoggedIn: true,
@@ -196,7 +195,7 @@ function setupIPC() {
         return { success: false, error: `账号正在被直播间「${usedBy.customName || usedBy.roomId}」使用，请先取消分配` };
       }
       
-      await accountManager.logout(accountId);
+      await accountManager.removeAccount(accountId);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('login-status-changed', {
           isLoggedIn: false,
@@ -212,21 +211,21 @@ function setupIPC() {
   });
 
   ipcMain.handle('check-account-status', async (event, accountId) => {
-    const isLoggedIn = await accountManager.isLoggedIn(accountId);
     const account = accountManager.getAccount(accountId);
+    const isLoggedIn = account && account.cookies && account.cookies.length > 0;
     return {
       isLoggedIn,
-      username: isLoggedIn && account ? account.nickname : '',
+      username: isLoggedIn ? account.nickname : '',
       accountId: accountId
     };
   });
 
   // 获取默认账号状态（向后兼容）
   ipcMain.handle('check-login-status', async () => {
-    const accounts = accountManager.getAllAccounts();
+    const accounts = accountManager.getAccounts();
     if (accounts.length > 0) {
       const defaultAccount = accounts[0];
-      const isLoggedIn = await accountManager.isLoggedIn(defaultAccount.id);
+      const isLoggedIn = defaultAccount && defaultAccount.cookies && defaultAccount.cookies.length > 0;
       return {
         isLoggedIn,
         username: isLoggedIn ? defaultAccount.nickname : '',
@@ -237,9 +236,9 @@ function setupIPC() {
   });
 
   ipcMain.handle('logout', async () => {
-    const accounts = accountManager.getAllAccounts();
+    const accounts = accountManager.getAccounts();
     if (accounts.length > 0) {
-      await accountManager.logout(accounts[0].id);
+      await accountManager.removeAccount(accounts[0].id);
     }
     return { success: true };
   });
@@ -250,14 +249,14 @@ function setupIPC() {
   });
 
   // 预览直播间信息（解析后返回，不添加）
-  ipcMain.handle('preview-stream', async (event, input) => {
+  ipcMain.handle('preview-stream', async (event, { input, customName }) => {
     try {
       const { extractRoomId, fetchStreamerName } = require('./src/lib/douyin-utils');
       const roomId = await extractRoomId(input);
       if (!roomId) {
         return { success: false, error: '无法解析直播间链接' };
       }
-      const streamerName = await fetchStreamerName(roomId);
+      const streamerName = customName || await fetchStreamerName(roomId);
       return { success: true, roomId, streamerName };
     } catch (error) {
       return { success: false, error: error.message };
@@ -390,9 +389,10 @@ app.whenReady().then(async () => {
   initAccountManager();
 
   // 初始化 StreamManager
-  streamManager = new StreamManager(config.getAll(), (streams) => {
+  streamManager = new StreamManager(config.getAll(), accountManager, () => {
+    // 状态变化时推送最新列表到前端
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('streams-updated', streams);
+      mainWindow.webContents.send('streams-update', streamManager.getAllStreams());
     }
   });
 

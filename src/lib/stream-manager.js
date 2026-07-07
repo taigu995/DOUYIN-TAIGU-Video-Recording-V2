@@ -12,10 +12,11 @@ const { getLogger } = require('./logger');
 const logger = getLogger();
 
 class StreamManager {
-  constructor() {
+  constructor(config, accountManager, onUpdate) {
     // roomId -> { info, recorder, monitorWindow, status, timer }
     this.streams = new Map();
-    this.onUpdate = null; // UI 更新回调
+    this.accountManager = accountManager;
+    this.onUpdate = onUpdate || null; // UI 更新回调
     logger.info('StreamManager initialized');
   }
 

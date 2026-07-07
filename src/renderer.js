@@ -337,12 +337,15 @@ async function confirmAddStream() {
   if (!pendingPreviewData) return;
   const mode = document.querySelector('input[name="preview-mode"]:checked')?.value || 'stream-only';
   const accountId = document.getElementById('preview-account-select')?.value || null;
+  const commentFps = parseInt(document.getElementById('preview-fps-select')?.value) || 15;
   try {
-    await window.electronAPI.addStream({
-      ...pendingPreviewData,
-      recordMode: mode,
-      accountId: mode === 'with-account' ? accountId : null,
-    });
+    await window.electronAPI.addStream(
+      pendingPreviewData.inputText,
+      pendingPreviewData.customName,
+      mode === 'with-account' ? accountId : null,
+      commentFps,
+      mode
+    );
     showToast('直播间添加成功', 'success');
     hidePreviewModal();
     elements.inputRoomId.value = '';

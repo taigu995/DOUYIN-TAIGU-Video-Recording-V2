@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   logout: () => ipcRenderer.invoke('logout'),
 
   // ========== 直播间管理 ==========
+  previewStream: (input, customName) => ipcRenderer.invoke('preview-stream', { input, customName }),
   addStream: (input, customName, accountId, commentFps, recordMode) => 
     ipcRenderer.invoke('add-stream', { input, customName, accountId, commentFps, recordMode }),
   removeStream: (roomId) => ipcRenderer.invoke('remove-stream', roomId),
