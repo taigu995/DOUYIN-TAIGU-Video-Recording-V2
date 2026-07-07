@@ -32,7 +32,11 @@ class StreamManager {
    */
   notifyUpdate() {
     if (this.onUpdate) {
-      this.onUpdate(this.getAllStatus());
+      const status = this.getAllStatus();
+      logger.debug(`[StreamManager] notifyUpdate: 推送 ${status.length} 个直播间状态到 UI`);
+      this.onUpdate(status);
+    } else {
+      logger.warn(`[StreamManager] notifyUpdate: onUpdate 回调未设置`);
     }
   }
 
@@ -502,11 +506,14 @@ class StreamManager {
 
           // 自动开始录制（检查全局开关和单个直播间开关）
           const config = getConfig();
+          logger.info(`[Monitor] 自动录制检查: 全局开关=${config.autoRecord}, 单间接=${streamState.info.autoRecord !== false}`);
           if (config.autoRecord && streamState.info.autoRecord !== false) {
             logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
             this.startRecording(info.roomId).catch(err => {
               logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
             });
+          } else {
+            logger.info(`[Monitor] 自动录制未开启，跳过自动录制`);
           }
         } else if (!isLive && wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
@@ -638,15 +645,18 @@ class StreamManager {
 
     // 状态变化处理
     if (isLive && !wasLive) {
-      logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
+      logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了! (页面检测)`);
       streamState.status = 'live';
 
       const config = getConfig();
+      logger.info(`[Monitor] 自动录制检查(页面): 全局开关=${config.autoRecord}, 单间开关=${streamState.info.autoRecord !== false}`);
       if (config.autoRecord && streamState.info.autoRecord !== false) {
         logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
         this.startRecording(info.roomId).catch(err => {
           logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
         });
+      } else {
+        logger.info(`[Monitor] 自动录制未开启，跳过自动录制`);
       }
     } else if (!isLive && wasLive) {
       logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);

@@ -528,10 +528,13 @@ app.whenReady().then(async () => {
   initAccountManager();
 
   // 初始化 StreamManager
-  streamManager = new StreamManager(getAll(), accountManager, () => {
+  streamManager = new StreamManager(getAll(), accountManager, (statusList) => {
     // 状态变化时推送最新列表到前端
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('streams-update', streamManager.getAllStatus());
+      logger.debug(`[Main] 推送状态更新到 UI: ${statusList.length} 个直播间`);
+      mainWindow.webContents.send('streams-update', statusList);
+    } else {
+      logger.warn(`[Main] 无法推送状态更新: mainWindow=${!!mainWindow}, isDestroyed=${mainWindow?.isDestroyed()}`);
     }
   });
 

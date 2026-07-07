@@ -132,6 +132,7 @@ async function init() {
 
     // 监听状态更新
     window.electronAPI.onStreamsUpdated((data) => {
+      console.log('[Renderer] 收到状态更新:', data.map(s => ({ roomId: s.roomId, status: s.status, isLive: s.isLive })));
       streamsData = data;
       renderStreamsList(data);
     });
