@@ -285,8 +285,12 @@ let pendingPreviewData = null;
 async function showPreviewModal(data) {
   // 保留 inputText 和 customName（由 handleAddStream 设置）
   pendingPreviewData = { ...pendingPreviewData, ...data };
+  console.log('[Renderer] showPreviewModal: data=', JSON.stringify(data), 'pendingPreviewData=', JSON.stringify(pendingPreviewData));
   const modal = document.getElementById('preview-modal');
-  if (!modal) return;
+  if (!modal) {
+    console.error('[Renderer] showPreviewModal: preview-modal 元素不存在!');
+    return;
+  }
   // 填充信息
   const nameEl = document.getElementById('preview-streamer-name');
   const idEl = document.getElementById('preview-room-id');
@@ -320,10 +324,12 @@ async function showPreviewModal(data) {
       handlePreviewModeChange('stream-only');
     }
   } catch (e) {
+    console.warn('[Renderer] showPreviewModal: 设置录制模式失败', e);
     radios.forEach(r => { r.checked = (r.value === 'stream-only'); });
     handlePreviewModeChange('stream-only');
   }
   modal.style.display = 'flex';
+  console.log('[Renderer] showPreviewModal: 弹窗已显示 (display=flex)');
 }
 
 function hidePreviewModal() {
@@ -340,11 +346,17 @@ function handlePreviewModeChange(mode) {
 }
 
 async function confirmAddStream() {
-  if (!pendingPreviewData) return;
+  if (!pendingPreviewData) {
+    console.error('[Renderer] confirmAddStream: pendingPreviewData 为空!');
+    return;
+  }
+  console.log('[Renderer] confirmAddStream: pendingPreviewData=', JSON.stringify(pendingPreviewData));
   const mode = document.querySelector('input[name="record-mode"]:checked')?.value || 'stream-only';
   const accountId = document.getElementById('preview-account-select')?.value || null;
   const commentFps = parseInt(document.querySelector('input[name="preview-fps"]:checked')?.value) || 15;
+  console.log('[Renderer] confirmAddStream: mode=' + mode + ', accountId=' + accountId + ', fps=' + commentFps + ', inputText=' + pendingPreviewData.inputText);
   try {
+    console.log('[Renderer] 调用 addStream...');
     const result = await window.electronAPI.addStream(
       pendingPreviewData.inputText,
       pendingPreviewData.customName,
@@ -353,6 +365,7 @@ async function confirmAddStream() {
       mode,
       pendingPreviewData.streamerName
     );
+    console.log('[Renderer] addStream 返回:', JSON.stringify(result));
     if (!result || !result.success) {
       showToast('添加失败: ' + (result?.error || '未知错误'), 'error');
       return;
@@ -364,6 +377,7 @@ async function confirmAddStream() {
     elements.inputLiveUrl.value = '';
     loadStreams();
   } catch (err) {
+    console.error('[Renderer] confirmAddStream 错误:', err);
     showToast('添加失败: ' + err.message, 'error');
   }
 }
@@ -379,6 +393,8 @@ async function handleAddStream() {
   else if (profileUrl) inputText = profileUrl;
   else if (liveUrl) inputText = liveUrl;
 
+  console.log('[Renderer] handleAddStream: inputText=' + inputText + ', customName=' + customName);
+
   if (!inputText) {
     showError('请至少输入一个房间号或链接');
     return;
@@ -390,17 +406,22 @@ async function handleAddStream() {
 
   try {
     if (isElectron) {
+      console.log('[Renderer] 调用 previewStream...');
       const previewResult = await window.electronAPI.previewStream(inputText, customName);
+      console.log('[Renderer] previewStream 返回:', JSON.stringify(previewResult));
       if (!previewResult.success) {
         showError(previewResult.error);
         return;
       }
       pendingPreviewData = { inputText, customName, ...previewResult.data };
-      showPreviewModal(previewResult.data);
+      console.log('[Renderer] pendingPreviewData:', JSON.stringify(pendingPreviewData));
+      await showPreviewModal(previewResult.data);
+      console.log('[Renderer] 预览弹窗已显示');
     } else {
       showToast('添加功能仅在桌面应用中可用', 'warning');
     }
   } catch (err) {
+    console.error('[Renderer] handleAddStream 错误:', err);
     showError('解析失败: ' + err.message);
   } finally {
     elements.btnAdd.disabled = false;

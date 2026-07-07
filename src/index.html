@@ -353,13 +353,13 @@
   </div>
 
   <!-- 添加直播间预览确认弹窗 -->
-  <div id="preview-modal" class="modal-overlay" style="display:none;">
-    <div class="modal-content">
-      <div class="modal-header">
+  <div id="preview-modal" class="preview-modal-overlay" style="display:none;">
+    <div class="preview-modal">
+      <div class="preview-modal-header">
         <h3>确认添加直播间</h3>
-        <button id="preview-close" class="modal-close-btn">&times;</button>
+        <button id="preview-close" class="preview-modal-close">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="preview-modal-body">
         <div class="preview-info">
           <div class="preview-info-row">
             <span class="preview-label">主播名称</span>
@@ -432,7 +432,7 @@
           </div>
         </div>
       </div>
-      <div class="modal-footer">
+      <div class="preview-modal-footer">
         <button id="preview-cancel" class="btn btn-ghost">取消</button>
         <button id="preview-confirm" class="btn btn-primary">确认添加</button>
       </div>
