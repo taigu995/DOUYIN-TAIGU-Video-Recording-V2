@@ -41,6 +41,9 @@ class StreamManager {
    * @param {string} inputText - 用户输入（房间号、链接或分享文本）
    */
   async addStreamByInput(inputText, customName, streamerNameFromPreview) {
+    if (!inputText || typeof inputText !== 'string') {
+      throw new Error('输入为空，无法解析直播间信息');
+    }
     logger.info(`Adding stream, input: "${inputText.substring(0, 50)}...", customName: "${customName || ''}", streamerNameFromPreview: "${streamerNameFromPreview || 'none'}"`);
     
     // 1. 智能解析输入

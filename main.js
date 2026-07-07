@@ -311,6 +311,10 @@ function setupIPC() {
 
   ipcMain.handle('add-stream', async (event, { input, customName, accountId, commentFps, recordMode, streamerName }) => {
     try {
+      logger.info(`[IPC] add-stream: input="${(input || '').substring(0, 50)}", streamerName="${streamerName || ''}", mode="${recordMode || ''}"`);
+      if (!input) {
+        return { success: false, error: '输入为空，无法解析直播间信息' };
+      }
       const stream = await streamManager.addStreamByInput(input, customName, streamerName);
       // 设置直播间专属配置
       if (accountId) stream.accountId = accountId;

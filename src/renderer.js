@@ -283,7 +283,8 @@ function bindEvents() {
 let pendingPreviewData = null;
 
 async function showPreviewModal(data) {
-  pendingPreviewData = data;
+  // 保留 inputText 和 customName（由 handleAddStream 设置）
+  pendingPreviewData = { ...pendingPreviewData, ...data };
   const modal = document.getElementById('preview-modal');
   if (!modal) return;
   // 填充信息
