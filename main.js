@@ -188,6 +188,7 @@ function setupIPC() {
         mainWindow.webContents.send('login-status-changed', {
           isLoggedIn: true,
           username: account.nickname,
+          avatar: account.avatar,
           accountId: account.id
         });
       }
@@ -237,10 +238,11 @@ function setupIPC() {
     const accounts = accountManager.getAccounts();
     if (accounts.length > 0) {
       const defaultAccount = accounts[0];
-      const isLoggedIn = defaultAccount && defaultAccount.cookies && defaultAccount.cookies.length > 0;
+      const isLoggedIn = !!defaultAccount.partition;
       return {
         isLoggedIn,
         username: isLoggedIn ? defaultAccount.nickname : '',
+        avatar: isLoggedIn ? defaultAccount.avatar : '',
         accountId: defaultAccount.id
       };
     }
@@ -301,7 +303,7 @@ function setupIPC() {
         }
       }
 
-      return { success: true, roomId, streamerName: streamerName || `主播${roomId}` };
+      return { success: true, data: { roomId, streamerName: streamerName || `主播${roomId}` } };
     } catch (error) {
       return { success: false, error: error.message };
     }
