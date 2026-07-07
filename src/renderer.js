@@ -88,8 +88,8 @@ async function updateLoginStatus() {
   try {
     const status = await window.electronAPI.getLoginStatus();
     
-    if (status.loggedIn) {
-      elements.loginStatusName.textContent = status.name || '抖音用户';
+    if (status.isLoggedIn) {
+      elements.loginStatusName.textContent = status.username || '抖音用户';
       elements.loginStatusBadge.textContent = '已登录';
       elements.loginStatusBadge.className = 'login-status__badge login-status__badge--online';
       elements.loginStatus.className = 'login-status login-status--online';
@@ -98,7 +98,9 @@ async function updateLoginStatus() {
       // 如果有头像，替换图标
       if (status.avatar) {
         const avatarEl = elements.loginStatus.querySelector('.login-status__avatar');
-        avatarEl.innerHTML = `<img src="${status.avatar}" alt="avatar" onerror="this.parentElement.innerHTML='<svg width=\\'16\\' height=\\'16\\' viewBox=\\'0 0 24 24\\' fill=\\'none\\' stroke=\\'currentColor\\' stroke-width=\\'2\\'><path d=\\'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2\\'></path><circle cx=\\'12\\' cy=\\'7\\' r=\\'4\\'></circle></svg>'">`;
+        if (avatarEl) {
+          avatarEl.innerHTML = `<img src="${status.avatar}" alt="avatar" style="width:32px;height:32px;border-radius:50%;">`;
+        }
       }
     } else {
       elements.loginStatusName.textContent = '未登录';
@@ -170,8 +172,13 @@ function bindEvents() {
 
   elements.btnLogin.addEventListener('click', async () => {
     if (isElectron) {
-      await window.electronAPI.openLogin();
-      showToast('已打开登录窗口，请在弹出的窗口中登录抖音', 'info');
+      const result = await window.electronAPI.openLogin();
+      if (result && result.success) {
+        showToast(`登录成功：${result.account.nickname || '抖音用户'}`, 'success');
+        await updateLoginStatus();
+      } else if (result && result.error) {
+        showToast(`登录失败：${result.error}`, 'error');
+      }
     } else {
       showToast('登录功能仅在桌面应用中可用', 'warning');
     }
@@ -186,14 +193,14 @@ function bindEvents() {
   });
 
   // 预览确认弹窗事件
-  const previewCancelBtn = document.getElementById('preview-cancel-btn');
-  const previewConfirmBtn = document.getElementById('preview-confirm-btn');
-  const previewCloseBtn = document.getElementById('preview-close-btn');
+  const previewCancelBtn = document.getElementById('preview-cancel');
+  const previewConfirmBtn = document.getElementById('preview-confirm');
+  const previewCloseBtn = document.getElementById('preview-close');
   if (previewCancelBtn) previewCancelBtn.addEventListener('click', hidePreviewModal);
   if (previewConfirmBtn) previewConfirmBtn.addEventListener('click', confirmAddStream);
   if (previewCloseBtn) previewCloseBtn.addEventListener('click', hidePreviewModal);
   // 录制模式切换
-  document.querySelectorAll('input[name="preview-mode"]').forEach(radio => {
+  document.querySelectorAll('input[name="record-mode"]').forEach(radio => {
     radio.addEventListener('change', (e) => handlePreviewModeChange(e.target.value));
   });
 
@@ -208,38 +215,27 @@ function bindEvents() {
     }
   });
 
-  // 清除登录数据
-  if (elements.btnClearLogin) {
-    elements.btnClearLogin.addEventListener('click', async () => {
+  // 账号管理
+  const btnAddAccount = document.getElementById('btn-add-account');
+  if (btnAddAccount) {
+    btnAddAccount.addEventListener('click', async () => {
       if (!isElectron) {
         showToast('此功能仅在桌面应用中可用', 'warning');
         return;
       }
-      if (!await showConfirm('确定要清除登录数据吗？清除后需要重新登录抖音账号。')) {
-        return;
-      }
-      const result = await window.electronAPI.clearLogin();
-      if (result.success) {
-        showToast(result.message || '登录数据已清除', 'success');
-        // 刷新登录状态
-        setTimeout(updateLoginStatus, 500);
-      } else {
-        showToast('清除失败: ' + (result.error || '未知错误'), 'error');
+      const result = await window.electronAPI.openLogin();
+      if (result && result.success) {
+        showToast(`登录成功：${result.account.nickname || '抖音用户'}`, 'success');
+        await updateLoginStatus();
+        loadAccountList();
+      } else if (result && result.error) {
+        showToast(`登录失败：${result.error}`, 'error');
       }
     });
   }
 
-  // 重新登录
-  if (elements.btnRelogin) {
-    elements.btnRelogin.addEventListener('click', async () => {
-      if (!isElectron) {
-        showToast('此功能仅在桌面应用中可用', 'warning');
-        return;
-      }
-      await window.electronAPI.openLogin();
-      showToast('已打开登录窗口，请重新登录抖音', 'info');
-    });
-  }
+  // 加载账号列表
+  loadAccountList();
 
   // 日志查看器事件
   elements.btnLogs.addEventListener('click', showLogPanel);
@@ -286,58 +282,67 @@ function bindEvents() {
 // ========== 添加直播间（预览确认流程） ==========
 let pendingPreviewData = null;
 
-function showPreviewModal(data) {
+async function showPreviewModal(data) {
   pendingPreviewData = data;
-  const modal = document.getElementById('add-preview-modal');
+  const modal = document.getElementById('preview-modal');
   if (!modal) return;
   // 填充信息
-  document.getElementById('preview-streamer-name').textContent = data.streamerName || '未知';
-  document.getElementById('preview-room-id').textContent = data.roomId || '未知';
+  const nameEl = document.getElementById('preview-streamer-name');
+  const idEl = document.getElementById('preview-room-id');
+  if (nameEl) nameEl.textContent = data.streamerName || '未知';
+  if (idEl) idEl.textContent = data.roomId || '未知';
   // 填充账号列表
   const accountSelect = document.getElementById('preview-account-select');
   if (accountSelect) {
     accountSelect.innerHTML = '<option value="">不选择账号</option>';
-    if (accounts && accounts.length > 0) {
-      accounts.forEach(acc => {
-        const opt = document.createElement('option');
-        opt.value = acc.id;
-        opt.textContent = acc.nickname;
-        accountSelect.appendChild(opt);
-      });
-    }
+    try {
+      const accounts = await window.electronAPI.getAccounts();
+      if (accounts && accounts.length > 0) {
+        accounts.forEach(acc => {
+          const opt = document.createElement('option');
+          opt.value = acc.id;
+          opt.textContent = acc.nickname || '抖音用户';
+          accountSelect.appendChild(opt);
+        });
+      }
+    } catch (e) { /* ignore */ }
   }
   // 默认选择有账号模式（如果有账号）
-  const radioWithAccount = document.getElementById('mode-with-account');
-  const radioStreamOnly = document.getElementById('mode-stream-only');
-  const radioStreamComment = document.getElementById('mode-stream-comment');
-  if (accounts && accounts.length > 0 && radioWithAccount) {
-    radioWithAccount.checked = true;
-    handlePreviewModeChange('with-account');
-  } else if (radioStreamOnly) {
-    radioStreamOnly.checked = true;
+  const radios = document.querySelectorAll('input[name="record-mode"]');
+  try {
+    const accounts = await window.electronAPI.getAccounts();
+    if (accounts && accounts.length > 0) {
+      radios.forEach(r => { r.checked = (r.value === 'with-account'); });
+      handlePreviewModeChange('with-account');
+    } else {
+      radios.forEach(r => { r.checked = (r.value === 'stream-only'); });
+      handlePreviewModeChange('stream-only');
+    }
+  } catch (e) {
+    radios.forEach(r => { r.checked = (r.value === 'stream-only'); });
     handlePreviewModeChange('stream-only');
   }
   modal.style.display = 'flex';
 }
 
 function hidePreviewModal() {
-  const modal = document.getElementById('add-preview-modal');
+  const modal = document.getElementById('preview-modal');
   if (modal) modal.style.display = 'none';
   pendingPreviewData = null;
 }
 
 function handlePreviewModeChange(mode) {
-  const accountGroup = document.getElementById('preview-account-group');
-  if (accountGroup) {
-    accountGroup.style.display = mode === 'with-account' ? 'block' : 'none';
+  const accountSection = document.getElementById('preview-account-section');
+  if (accountSection) {
+    accountSection.style.display = mode === 'with-account' ? 'block' : 'none';
   }
 }
 
 async function confirmAddStream() {
   if (!pendingPreviewData) return;
-  const mode = document.querySelector('input[name="preview-mode"]:checked')?.value || 'stream-only';
+  const mode = document.querySelector('input[name="record-mode"]:checked')?.value || 'stream-only';
   const accountId = document.getElementById('preview-account-select')?.value || null;
-  const commentFps = parseInt(document.getElementById('preview-fps-select')?.value) || 15;
+  const commentFps = parseInt(document.querySelector('input[name="preview-fps"]:checked')?.value) || 15;
   try {
     await window.electronAPI.addStream(
       pendingPreviewData.inputText,
@@ -548,6 +553,51 @@ async function loadStreams() {
     console.error('加载直播间列表失败:', e);
   }
 }
+
+async function loadAccountList() {
+  const listEl = document.getElementById('account-list');
+  if (!listEl) return;
+
+  try {
+    const accounts = await window.electronAPI.getAccounts();
+    if (!accounts || accounts.length === 0) {
+      listEl.innerHTML = '<p class="account-empty-hint">暂无登录账号</p>';
+      return;
+    }
+
+    listEl.innerHTML = accounts.map(acc => `
+      <div class="account-item" data-id="${acc.id}">
+        <div class="account-info">
+          <div class="account-avatar">
+            ${acc.avatar 
+              ? `<img src="${acc.avatar}" alt="avatar" style="width:28px;height:28px;border-radius:50%;">`
+              : `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`
+            }
+          </div>
+          <div class="account-detail">
+            <span class="account-nickname">${acc.nickname || '抖音用户'}</span>
+            <span class="account-id">ID: ${acc.id.substring(0, 8)}...</span>
+          </div>
+        </div>
+        <button class="btn btn-danger btn-sm account-remove-btn" onclick="handleRemoveAccount('${acc.id}')" title="移除账号">移除</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    listEl.innerHTML = '<p class="account-empty-hint">加载账号列表失败</p>';
+  }
+}
+
+window.handleRemoveAccount = async function (accountId) {
+  if (!await showConfirm('确定要移除该账号吗？移除后需要重新登录。')) return;
+  try {
+    await window.electronAPI.removeAccount(accountId);
+    showToast('账号已移除', 'success');
+    await updateLoginStatus();
+    loadAccountList();
+  } catch (e) {
+    showToast('移除失败: ' + e.message, 'error');
+  }
+};
 
 function renderStreamsList(streams) {
   if (!streams || streams.length === 0) {

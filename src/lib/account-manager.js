@@ -146,22 +146,53 @@ function loginAccount(mainWindow) {
   });
 }
 
-// 从页面获取用户昵称
+// 从页面获取用户昵称（导航到个人主页获取）
 async function _fetchNickname(win) {
   try {
+    // 先导航到个人主页
+    await win.webContents.executeJavaScript(`
+      (function() {
+        // 尝试从首页右上角获取用户头像链接中的uid
+        const avatarLink = document.querySelector('a[href*="/user/"]');
+        if (avatarLink) {
+          const match = avatarLink.href.match(/\/user\/([^?/]+)/);
+          if (match) {
+            window.location.href = 'https://www.douyin.com/user/' + match[1];
+            return match[1];
+          }
+        }
+        return null;
+      })()
+    `);
+    
+    // 等待页面导航完成
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
+      win.webContents.once('did-finish-load', () => {
+        clearTimeout(timeout);
+        setTimeout(resolve, 2000); // 额外等待动态内容加载
+      });
+    });
+    
+    // 从个人主页获取昵称
     const nickname = await win.webContents.executeJavaScript(`
       (function() {
-        // 尝试多种选择器获取昵称
         const selectors = [
           '[class*="user-name"]',
-          '[class*="nickname"]',
+          '[class*="nickname"]', 
           '[data-e2e="user-info"] [class*="name"]',
-          '.j5WYzOQs', // 抖音个人主页昵称选择器
+          'h1[class*="name"]',
+          '.j5WYzOQs',
+          '[class*="userName"]',
+          '[class*="user_name"]',
         ];
         for (const sel of selectors) {
           const el = document.querySelector(sel);
           if (el && el.textContent.trim()) return el.textContent.trim();
         }
+        // 最后尝试 document.title
+        const title = document.title || '';
+        if (title.includes('的主页')) return title.replace('的主页', '').replace('抖音', '').trim();
         return null;
       })()
     `);

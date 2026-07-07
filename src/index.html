@@ -175,11 +175,13 @@
         </div>
         <div class="setting-item">
           <label>账号管理</label>
-          <div class="setting-row">
-            <button id="btn-clear-login" class="btn btn-danger btn-sm">清除登录数据</button>
-            <button id="btn-relogin" class="btn btn-secondary btn-sm">重新登录</button>
+          <div id="account-list" class="account-list">
+            <p class="account-empty-hint">暂无登录账号</p>
           </div>
-          <p class="setting-hint">清除登录数据后需要重新登录抖音账号。切换账号时请先清除登录数据。</p>
+          <div class="setting-row" style="margin-top: 8px;">
+            <button id="btn-add-account" class="btn btn-secondary btn-sm">登录新账号</button>
+          </div>
+          <p class="setting-hint">支持登录多个抖音账号，每个直播间可选择使用不同账号录制。</p>
         </div>
         <div class="settings-actions">
           <button id="btn-save-settings" class="btn btn-primary">保存设置</button>
