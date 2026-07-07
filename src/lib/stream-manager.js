@@ -364,10 +364,12 @@ class StreamManager {
         contextIsolation: true,
         partition: 'persist:douyin',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        additionalArguments: ['--mute-audio'],
-        audioPlaybackPolicy: 'never'
+        autoplayPolicy: 'no-user-gesture-required'
       }
     });
+
+    // 静音窗口，防止直播音频外放
+    win.webContents.setAudioMuted(true);
 
     streamState.monitorWindow = win;
 

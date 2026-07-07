@@ -59,16 +59,22 @@ class CommentRenderer {
         contextIsolation: true,
         partition: this.session,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-        additionalArguments: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'],
-        audioPlaybackPolicy: 'never'
+        autoplayPolicy: 'no-user-gesture-required'
       }
     });
+
+    // 静音窗口，防止直播音频外放
+    this.captureWindow.webContents.setAudioMuted(true);
+    logger.info('[CommentRenderer] 窗口音频已静音');
 
     // 加载直播页面
     logger.info(`[CommentRenderer] 加载直播页面: ${this.liveUrl}`);
     await this.captureWindow.loadURL(this.liveUrl, {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
     });
+
+    // 加载后再次确保静音（某些页面可能会重置静音状态）
+    this.captureWindow.webContents.setAudioMuted(true);
 
     // 等待页面完全加载
     logger.info('[CommentRenderer] 等待页面加载完成...');
