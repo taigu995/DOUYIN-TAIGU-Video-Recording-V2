@@ -497,7 +497,10 @@ class StreamManager {
         const wasLive = streamState.isLive;
         streamState.isLive = isLive;
         streamState.lastCheck = Date.now();
-        streamState.status = isLive ? 'live' : 'offline';
+        // 只有在没有录制时才更新状态，避免覆盖 'recording'/'merging' 状态
+        if (!streamState.recorder) {
+          streamState.status = isLive ? 'live' : 'offline';
+        }
 
         // 状态变化处理
         if (isLive && !wasLive) {
@@ -641,7 +644,10 @@ class StreamManager {
     const wasLive = streamState.isLive;
     streamState.isLive = isLive;
     streamState.lastCheck = Date.now();
-    streamState.status = isLive ? 'live' : 'offline';
+    // 只有在没有录制时才更新状态，避免覆盖 'recording'/'merging' 状态
+    if (!streamState.recorder) {
+      streamState.status = isLive ? 'live' : 'offline';
+    }
 
     // 状态变化处理
     if (isLive && !wasLive) {
