@@ -197,8 +197,10 @@ class Recorder {
       logger.info('[Recorder] 启动 FFmpeg 流媒体直录...');
       this._startStreamRecording();
 
-      // Step 4: 开始评论区帧捕获
-      this.commentRenderer.startCapture();
+      // Step 4: 开始评论区帧捕获（仅评论区模式）
+      if (this.commentRenderer) {
+        this.commentRenderer.startCapture();
+      }
 
       // 录制状态 - 计时器将在 FFmpeg 输出第一帧时启动
       this.recording = true;
@@ -869,6 +871,120 @@ class Recorder {
     }
 
     logger.warn('[Recorder] 所有方式均未能提取到直播流URL');
+    return null;
+  }
+
+  /**
+   * 不依赖渲染进程获取直播流 URL（用于 stream-only / stream+comment-no-login 模式）
+   * 通过 Douyin API 获取，无需登录 cookies
+   */
+  async _getStreamUrlWithoutRenderer() {
+    const roomId = this.roomId;
+    logger.info(`[Recorder] 无渲染模式获取直播流URL, roomId: ${roomId}`);
+
+    // 方式1: 通过 Douyin API 获取（无需 cookies）
+    try {
+      const apiUrl = `https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=120.0.0.0&web_rid=${roomId}`;
+      
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': `https://live.douyin.com/${roomId}`,
+      };
+
+      // 如果有 session，尝试获取 cookies
+      if (this.session) {
+        try {
+          const { session } = require('electron');
+          const ses = session.fromPartition(this.session);
+          const cookies = await ses.cookies.get({ domain: '.douyin.com' });
+          const cookieStr = cookies
+            .filter(c => c.value && c.name)
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ');
+          if (cookieStr) headers.Cookie = cookieStr;
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const response = await fetch(apiUrl, { headers });
+      const data = await response.json();
+
+      if (data && data.data && data.data.length > 0) {
+        const roomData = data.data[0];
+        const streamUrl = roomData.stream_url?.flv_pull_url?.FULL_HD1 ||
+                         roomData.stream_url?.flv_pull_url?.HD1 ||
+                         roomData.stream_url?.flv_pull_url?.SD1 ||
+                         roomData.stream_url?.flv_pull_url?.SD2 ||
+                         null;
+        
+        if (streamUrl) {
+          logger.info(`[Recorder] API获取直播流成功 (无渲染模式)`);
+          return { url: streamUrl, type: 'flv', source: 'api_no_renderer' };
+        }
+      }
+    } catch (err) {
+      logger.warn(`[Recorder] API获取直播流失败 (无渲染模式): ${err.message}`);
+    }
+
+    // 方式2: 创建临时窗口提取（回退方案）
+    try {
+      const { BrowserWindow, session } = require('electron');
+      const tempSession = this.session ? session.fromPartition(this.session) : session.defaultSession;
+      
+      const tempWin = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          session: tempSession,
+          nodeIntegration: false,
+          contextIsolation: true,
+          offscreen: true
+        }
+      });
+
+      try {
+        await tempWin.loadURL(`https://live.douyin.com/${roomId}`, {
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          httpReferrer: 'https://www.douyin.com/'
+        });
+
+        await new Promise(r => setTimeout(r, 5000));
+
+        const result = await tempWin.webContents.executeJavaScript(`
+          (function() {
+            try {
+              // 从 video 元素获取
+              const videos = document.querySelectorAll('video');
+              for (const video of videos) {
+                const src = video.src || video.currentSrc;
+                if (src && (src.includes('.flv') || src.includes('live') || src.includes('.m3u8'))) {
+                  return { url: src, type: src.includes('.m3u8') ? 'hls' : 'flv', source: 'temp_win_video' };
+                }
+              }
+              // 从页面源码搜索
+              const pageText = document.documentElement.innerHTML;
+              const flvMatch = pageText.match(/https?:\\/\\/[^"'\\s]+\\.flv[^"'\\s]*/);
+              if (flvMatch) return { url: flvMatch[0], type: 'flv', source: 'temp_win_page' };
+              return null;
+            } catch (e) {
+              return { error: e.message };
+            }
+          })()
+        `);
+
+        if (result && result.url) {
+          logger.info(`[Recorder] 临时窗口提取直播流成功 (来源: ${result.source})`);
+          return result;
+        }
+      } finally {
+        if (!tempWin.isDestroyed()) tempWin.destroy();
+      }
+    } catch (err) {
+      logger.warn(`[Recorder] 临时窗口提取直播流失败 (无渲染模式): ${err.message}`);
+    }
+
+    logger.warn('[Recorder] 无渲染模式所有方式均未能提取到直播流URL');
     return null;
   }
 

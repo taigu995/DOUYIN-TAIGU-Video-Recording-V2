@@ -139,6 +139,7 @@ async function init() {
     // 监听登录状态变化
     window.electronAPI.onLoginStatusChanged(() => {
       updateLoginStatus();
+      loadAccountList();
       showToast('登录状态已更新', 'success');
     });
 

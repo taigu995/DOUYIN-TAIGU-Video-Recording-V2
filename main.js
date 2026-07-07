@@ -357,10 +357,13 @@ function setupIPC() {
   });
 
   ipcMain.handle('start-recording', async (event, roomId) => {
+    logger.info(`[IPC] start-recording: roomId=${roomId}`);
     try {
-      await streamManager.startRecording(roomId, true);
+      // 不传 force=true，避免强制重置已有录制
+      await streamManager.startRecording(roomId, false);
       return { success: true };
     } catch (error) {
+      logger.error(`[IPC] start-recording 异常: ${error.message}`);
       return { success: false, error: error.message };
     }
   });

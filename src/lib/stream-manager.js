@@ -1107,6 +1107,8 @@ class StreamManager {
         isLive: state.isLive,
         lastCheck: state.lastCheck,
         autoRecord: state.info.autoRecord !== false, // 默认为 true
+        recordMode: state.info.recordMode || 'stream+comment',
+        commentFps: state.info.commentFps || 15,
         recorder: state.recorder ? state.recorder.getStatus() : null
       });
     }
