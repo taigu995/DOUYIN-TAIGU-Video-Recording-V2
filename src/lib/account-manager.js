@@ -56,6 +56,16 @@ function getPartition(accountId) {
   return account ? account.partition : null;
 }
 
+// 获取账号的 session 名称（用于录制时选择 session）
+function getSessionName(accountId) {
+  const account = accounts.find(a => a.id === accountId);
+  if (!account) {
+    // 如果没有指定账号或账号不存在，返回默认 session
+    return 'persist:douyin';
+  }
+  return account.partition;
+}
+
 // 登录新账号：创建独立 session 的 BrowserWindow
 function loginAccount(mainWindow) {
   return new Promise((resolve, reject) => {
@@ -368,6 +378,7 @@ module.exports = {
   getAccounts,
   getAccount,
   getPartition,
+  getSessionName,
   loginAccount,
   removeAccount,
   updateAccount,

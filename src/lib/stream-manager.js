@@ -740,6 +740,7 @@ class StreamManager {
           logger.info(`[StreamManager] 正在合并视频和评论区: ${streamState.info.streamerName}, 评论帧数: ${data.commentFrames}, FPS: ${data.commentFps ? data.commentFps.toFixed(1) : 'N/A'}`);
         } else if (status === 'stopped') {
           streamState.status = streamState.isLive ? 'live' : 'offline';
+          streamState.mergeProgress = null; // 清除合并进度
           // 保存录制记录
           if (streamState.currentRecordingStart && data && data.outputFile) {
             const record = {
@@ -789,6 +790,11 @@ class StreamManager {
       onError: (id, err) => {
         logger.error(`[StreamManager] 录制引擎错误 (${streamState.info.streamerName}): ${err.message}`);
         streamState.status = 'error';
+        this.notifyUpdate();
+      },
+      onProgress: (progressData) => {
+        // 将进度信息存储到 streamState 中，供 UI 读取
+        streamState.mergeProgress = progressData;
         this.notifyUpdate();
       }
     });
@@ -1107,9 +1113,10 @@ class StreamManager {
         isLive: state.isLive,
         lastCheck: state.lastCheck,
         autoRecord: state.info.autoRecord !== false, // 默认为 true
-        recordMode: state.info.recordMode || 'stream+comment',
+        recordMode: state.info.recordMode || 'with-account',
         commentFps: state.info.commentFps || 15,
-        recorder: state.recorder ? state.recorder.getStatus() : null
+        recorder: state.recorder ? state.recorder.getStatus() : null,
+        mergeProgress: state.mergeProgress || null
       });
     }
     return result;

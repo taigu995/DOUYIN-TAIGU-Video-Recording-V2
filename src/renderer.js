@@ -724,13 +724,23 @@ function createStreamCard(stream) {
     `;
   }
 
-  // 合并进度（录制中且正在合并时显示）
+  // 合并进度（合并中时显示）
   let mergeProgressHtml = '';
-  if (isRecording && stream.recorder && stream.recorder.mergeProgress > 0 && stream.recorder.mergeProgress < 100) {
+  if (stream.status === 'merging' && stream.mergeProgress) {
+    const progress = stream.mergeProgress.progress || 0;
+    const phase = stream.mergeProgress.phase || '';
     mergeProgressHtml = `
       <div class="merge-progress">
-        <div class="merge-progress-bar" style="width: ${stream.recorder.mergeProgress}%"></div>
-        <span class="merge-progress-text">合并中 ${stream.recorder.mergeProgress}%</span>
+        <div class="merge-progress-bar" style="width: ${progress}%"></div>
+        <span class="merge-progress-text">${phase} ${progress}%</span>
+      </div>
+    `;
+  } else if (stream.status === 'merging') {
+    // 合并中但没有进度信息时显示简单的加载动画
+    mergeProgressHtml = `
+      <div class="merge-progress">
+        <div class="merge-progress-bar indeterminate"></div>
+        <span class="merge-progress-text">合并中...</span>
       </div>
     `;
   }

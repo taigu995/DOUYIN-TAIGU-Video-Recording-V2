@@ -92,6 +92,7 @@ class Recorder {
 
     this.onStatusChange = options.onStatusChange || (() => {});
     this.onError = options.onError || (() => {});
+    this.onProgress = options.onProgress || (() => {});
   }
 
   /**
@@ -272,7 +273,7 @@ class Recorder {
           outputFile: this.outputFile,
           startTime: this.startTime,
           hasAudio: this.hasAudio,
-          mode: 'stream+comment'
+          mode: this.recordMode
         });
       }
     });
@@ -503,6 +504,9 @@ class Recorder {
     // Phase 1: 将评论区帧编码为视频
     logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps`);
 
+    // 计算评论区视频总时长(毫秒)
+    const commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
+
     await this._runFFmpeg(resolvedPath, [
       '-f', 'image2',
       '-framerate', String(commentInfo.fps),
@@ -515,7 +519,7 @@ class Recorder {
       '-pix_fmt', 'yuv420p',
       '-y',
       commentVideoFile
-    ], 'Merge-Comment');
+    ], 'Merge-Comment', commentDurationMs, '编码评论区');
 
     if (!fs.existsSync(commentVideoFile)) {
       throw new Error('评论区视频编码失败');
@@ -526,6 +530,10 @@ class Recorder {
     // 兼容旧版 FFmpeg（overlay 不会自动扩展画布的问题）
     const separatorW = 2;
     const totalWithSep = streamScaleW + separatorW + commentScaleW;
+
+    // 使用直播流时长作为合并阶段的总时长(如果有)
+    const streamDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : commentDurationMs;
+
     await this._runFFmpeg(resolvedPath, [
       '-i', this._tempStreamFile,
       '-i', commentVideoFile,
@@ -546,7 +554,7 @@ class Recorder {
       '-movflags', '+faststart',
       '-y',
       this.outputFile
-    ], 'Merge-Final');
+    ], 'Merge-Final', streamDurationMs, '合并视频');
 
     if (!fs.existsSync(this.outputFile)) {
       throw new Error('最终视频合并失败');
@@ -559,13 +567,22 @@ class Recorder {
   /**
    * 运行 FFmpeg 命令并等待完成
    */
-  _runFFmpeg(ffmpegPath, args, tag) {
+  /**
+   * 运行 FFmpeg 命令并等待完成
+   * @param {string} ffmpegPath - FFmpeg 路径
+   * @param {string[]} args - 命令参数
+   * @param {string} tag - 日志标签
+   * @param {number} [totalDurationMs] - 总时长(毫秒)，用于计算进度
+   * @param {string} [phaseName] - 阶段名称，用于进度显示
+   */
+  _runFFmpeg(ffmpegPath, args, tag, totalDurationMs = 0, phaseName = '') {
     return new Promise((resolve, reject) => {
       logger.info(`[${tag}] 启动: ${ffmpegPath} ${args.slice(0, 6).join(' ')}...`);
 
       const proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
       let stderr = '';
+      let lastProgressEmit = 0;
       proc.stdout.on('data', (data) => {
         const msg = data.toString().trim();
         if (msg) logger.info(`[${tag}] ${msg}`);
@@ -576,6 +593,33 @@ class Recorder {
         stderr += msg;
         const trimmed = msg.trim();
         if (trimmed) logger.info(`[${tag}] ${trimmed}`);
+
+        // 解析 FFmpeg 进度输出
+        if (totalDurationMs > 0 && phaseName) {
+          const timeMatch = msg.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+          if (timeMatch) {
+            const hours = parseInt(timeMatch[1], 10);
+            const minutes = parseInt(timeMatch[2], 10);
+            const seconds = parseInt(timeMatch[3], 10);
+            const centiseconds = parseInt(timeMatch[4], 10);
+            const currentTimeMs = ((hours * 3600 + minutes * 60 + seconds) * 1000) + (centiseconds * 10);
+            const progress = Math.min(100, Math.round((currentTimeMs / totalDurationMs) * 100));
+
+            // 每 500ms 最多发送一次进度更新
+            const now = Date.now();
+            if (now - lastProgressEmit > 500) {
+              lastProgressEmit = now;
+              this.onProgress({
+                roomId: this.roomId,
+                streamerName: this.streamerName,
+                phase: phaseName,
+                progress: progress,
+                currentTime: currentTimeMs,
+                totalDuration: totalDurationMs
+              });
+            }
+          }
+        }
       });
 
       proc.on('close', (code) => {
@@ -1095,7 +1139,7 @@ class Recorder {
       outputFile: this.outputFile,
       startTime: this.startTime,
       hasAudio: this.hasAudio,
-      mode: 'stream+comment',
+      mode: this.recordMode,
       commentStatus: this.commentRenderer ? this.commentRenderer.getStatus() : null,
       lastRecordingResult: this._lastRecordingResult || null,
       duration: this.startTime ? Date.now() - this.startTime.getTime() : 0
