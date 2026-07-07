@@ -105,6 +105,18 @@ class Logger {
   }
 
   /**
+   * 设置日志目录路径
+   */
+  setLogDir(dir) {
+    this.logDir = dir;
+    this.logFile = path.join(this.logDir, 'app.log');
+    // 确保新目录存在
+    if (!fs.existsSync(this.logDir)) {
+      fs.mkdirSync(this.logDir, { recursive: true });
+    }
+  }
+
+  /**
    * 获取日志目录路径
    */
   getLogDir() {
