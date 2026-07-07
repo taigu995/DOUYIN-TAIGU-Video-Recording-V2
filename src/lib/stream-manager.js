@@ -40,7 +40,7 @@ class StreamManager {
    * 添加直播间
    * @param {string} inputText - 用户输入（房间号、链接或分享文本）
    */
-  async addStreamByInput(inputText, customName) {
+  async addStreamByInput(inputText, customName, streamerNameFromPreview) {
     logger.info(`Adding stream, input: "${inputText.substring(0, 50)}...", customName: "${customName || ''}"`);
     
     // 1. 智能解析输入
@@ -90,9 +90,12 @@ class StreamManager {
     // 4. 构建直播间URL
     const liveUrl = buildLiveUrl(roomId);
 
-    // 5. 创建监控窗口获取主播名称（如果文本中没有提取到，也没有自定义名称）
-    if (!streamerName && !customName) {
+    // 5. 获取主播名称（预览已获取则跳过）
+    if (!streamerName && !customName && !streamerNameFromPreview) {
       streamerName = await this.fetchStreamerName(roomId, liveUrl);
+    }
+    if (streamerNameFromPreview) {
+      streamerName = streamerNameFromPreview;
     }
 
     // 6. 构建最终主播名称：自定义名称优先

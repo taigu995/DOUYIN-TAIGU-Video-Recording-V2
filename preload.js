@@ -19,8 +19,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ========== 直播间管理 ==========
   previewStream: (input, customName) => ipcRenderer.invoke('preview-stream', { input, customName }),
-  addStream: (input, customName, accountId, commentFps, recordMode) => 
-    ipcRenderer.invoke('add-stream', { input, customName, accountId, commentFps, recordMode }),
+  addStream: (input, customName, accountId, commentFps, recordMode, streamerName) => 
+    ipcRenderer.invoke('add-stream', { input, customName, accountId, commentFps, recordMode, streamerName }),
   removeStream: (roomId) => ipcRenderer.invoke('remove-stream', roomId),
   updateStream: (roomId, updates) => ipcRenderer.invoke('update-stream', { roomId, updates }),
   toggleAutoRecord: (roomId) => ipcRenderer.invoke('toggle-auto-record', roomId),

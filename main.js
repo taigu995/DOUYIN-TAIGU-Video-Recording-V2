@@ -309,9 +309,9 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('add-stream', async (event, { input, customName, accountId, commentFps, recordMode }) => {
+  ipcMain.handle('add-stream', async (event, { input, customName, accountId, commentFps, recordMode, streamerName }) => {
     try {
-      const stream = await streamManager.addStreamByInput(input, customName);
+      const stream = await streamManager.addStreamByInput(input, customName, streamerName);
       // 设置直播间专属配置
       if (accountId) stream.accountId = accountId;
       if (commentFps) stream.commentFps = commentFps;

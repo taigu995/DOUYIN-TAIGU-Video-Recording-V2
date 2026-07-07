@@ -349,7 +349,8 @@ async function confirmAddStream() {
       pendingPreviewData.customName,
       mode === 'with-account' ? accountId : null,
       commentFps,
-      mode
+      mode,
+      pendingPreviewData.streamerName
     );
     showToast('直播间添加成功', 'success');
     hidePreviewModal();
