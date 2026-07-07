@@ -119,7 +119,8 @@ class StreamManager {
       // 每直播间独立设置
       accountId: null,       // 录制的账号ID（null=无账号）
       commentFps: 15,        // 评论区帧率
-      recordMode: 'with-account' // with-account | stream-only | stream+comment-no-login
+      recordMode: 'with-account', // with-account | stream-only | stream+comment-no-login
+      autoRecord: true       // 单个直播间自动录制开关（默认开启）
     };
 
     // 7. 保存到配置
@@ -503,7 +504,9 @@ class StreamManager {
           const config = getConfig();
           if (config.autoRecord && streamState.info.autoRecord !== false) {
             logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
-            this.startRecording(info.roomId);
+            this.startRecording(info.roomId).catch(err => {
+              logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
+            });
           }
         } else if (!isLive && wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
@@ -641,7 +644,9 @@ class StreamManager {
       const config = getConfig();
       if (config.autoRecord && streamState.info.autoRecord !== false) {
         logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
-        this.startRecording(info.roomId);
+        this.startRecording(info.roomId).catch(err => {
+          logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
+        });
       }
     } else if (!isLive && wasLive) {
       logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
@@ -774,7 +779,9 @@ class StreamManager {
               this.checkLiveStatus(streamState).then(() => {
                 if (streamState.isLive && streamState.info.autoRecord && !streamState.recorder) {
                   logger.info(`[StreamManager] 直播仍在进行中，自动重新录制: ${streamState.info.streamerName}`);
-                  this.startRecording(streamState.info.roomId);
+                  this.startRecording(streamState.info.roomId).catch(err => {
+                    logger.error(`[StreamManager] 自动重新录制失败: ${err.message}`);
+                  });
                 }
               }).catch(err => {
                 logger.error(`[StreamManager] 重新检测直播状态失败: ${err.message}`);
@@ -896,7 +903,9 @@ class StreamManager {
       // 延迟1秒再重新录制，确保上一次录制完全清理
       setTimeout(() => {
         if (streamState.info.autoRecord && streamState.isLive && !streamState.recorder) {
-          this.startRecording(streamState.info.roomId);
+          this.startRecording(streamState.info.roomId).catch(err => {
+            logger.error(`[StreamManager] 自动重新录制失败: ${err.message}`);
+          });
         }
       }, 1000);
     }
@@ -955,7 +964,9 @@ class StreamManager {
         // 检测完成后，如果直播中且未在录制，立即开始录制
         if (state.info.autoRecord && state.isLive && !state.recorder) {
           logger.info(`[StreamManager] 检测到直播中，立即开始录制: ${roomId}`);
-          this.startRecording(roomId);
+          this.startRecording(roomId).catch(err => {
+            logger.error(`[StreamManager] 自动录制启动失败: ${err.message}`);
+          });
         }
       }).catch(err => {
         logger.error(`[StreamManager] 自动录制状态检测失败: ${err.message}`);
