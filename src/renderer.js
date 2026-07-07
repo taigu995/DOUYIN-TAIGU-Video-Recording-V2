@@ -749,6 +749,20 @@ function createStreamCard(stream) {
             </button>
           </div>
           <div class="stream-room-id">房间号: ${stream.roomId}</div>
+        <div class="stream-mode-row">
+          <select class="stream-record-mode" data-room-id="${stream.roomId}" title="录制模式">
+            <option value="with-account"${stream.recordMode === 'with-account' ? ' selected' : ''}>有账号录制</option>
+            <option value="stream-only"${stream.recordMode === 'stream-only' ? ' selected' : ''}>无账号录制</option>
+            <option value="stream+comment"${stream.recordMode === 'stream+comment' ? ' selected' : ''}>有账号+评论区</option>
+            <option value="stream+comment-no-login"${stream.recordMode === 'stream+comment-no-login' ? ' selected' : ''}>无账号+评论区</option>
+          </select>
+          <select class="stream-comment-fps" data-room-id="${stream.roomId}" title="评论区帧率">
+            <option value="30"${stream.commentFps == 30 ? ' selected' : ''}>30fps</option>
+            <option value="15"${stream.commentFps == 15 ? ' selected' : ''}>15fps</option>
+            <option value="10"${stream.commentFps == 10 ? ' selected' : ''}>10fps</option>
+            <option value="5"${stream.commentFps == 5 ? ' selected' : ''}>5fps</option>
+          </select>
+        </div>
         </div>
       </div>
       <div class="stream-actions">
@@ -787,6 +801,42 @@ function createStreamCard(stream) {
       ${stream.lastCheck ? `<span style="font-size:11px;color:var(--text-muted)">上次检测: ${formatTime(stream.lastCheck)}</span>` : ''}
     </div>
   `;
+
+  // 录制模式切换
+  const modeSelect = card.querySelector('.stream-record-mode');
+  if (modeSelect) {
+    modeSelect.addEventListener('change', async (e) => {
+      const mode = e.target.value;
+      try {
+        const result = await window.electronAPI.updateStream(stream.roomId, { recordMode: mode });
+        if (result && result.success) {
+          showToast(`录制模式已切换: ${e.target.options[e.target.selectedIndex].text}`, 'success');
+        } else {
+          showToast('切换失败: ' + (result?.error || '未知错误'), 'error');
+        }
+      } catch (err) {
+        showToast('切换失败: ' + err.message, 'error');
+      }
+    });
+  }
+
+  // 评论区帧率切换
+  const fpsSelect = card.querySelector('.stream-comment-fps');
+  if (fpsSelect) {
+    fpsSelect.addEventListener('change', async (e) => {
+      const fps = parseInt(e.target.value);
+      try {
+        const result = await window.electronAPI.updateStream(stream.roomId, { commentFps: fps });
+        if (result && result.success) {
+          showToast(`评论区帧率已切换: ${fps}fps`, 'success');
+        } else {
+          showToast('切换失败: ' + (result?.error || '未知错误'), 'error');
+        }
+      } catch (err) {
+        showToast('切换失败: ' + err.message, 'error');
+      }
+    });
+  }
 
   return card;
 }

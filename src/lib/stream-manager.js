@@ -716,9 +716,9 @@ class StreamManager {
       // 纯直播流模式：不需要评论区
       logger.info(`[StreamManager] 纯直播流录制模式`);
     } else if (recordMode === 'stream+comment-no-login') {
-      // 无账号+评论区模式：使用默认session，需要检测并关闭登录弹窗
-      sessionName = 'persist:douyin';
-      logger.info(`[StreamManager] 无账号评论区录制模式（自动关闭登录弹窗）`);
+      // 无账号+评论区模式：使用干净的临时session，不携带任何登录Cookie
+      sessionName = 'clean-session-' + streamState.info.roomId;
+      logger.info(`[StreamManager] 无账号评论区录制模式（使用干净session，自动关闭登录弹窗）`);
     }
 
     const recorder = new Recorder({
@@ -1034,6 +1034,15 @@ class StreamManager {
     }
     if (updates.autoRecord !== undefined) {
       state.info.autoRecord = updates.autoRecord;
+    }
+    if (updates.recordMode !== undefined) {
+      state.info.recordMode = updates.recordMode;
+    }
+    if (updates.commentFps !== undefined) {
+      state.info.commentFps = updates.commentFps;
+    }
+    if (updates.accountId !== undefined) {
+      state.info.accountId = updates.accountId;
     }
 
     // 持久化到配置

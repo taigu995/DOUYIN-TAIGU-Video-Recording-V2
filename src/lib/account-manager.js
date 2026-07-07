@@ -146,16 +146,44 @@ function loginAccount(mainWindow) {
   });
 }
 
-// 从页面获取用户昵称（导航到个人主页获取）
+// 通过API获取用户昵称（更可靠）
+async function _fetchNicknameFromAPI(ses) {
+  try {
+    const result = await ses.executeJavaScript(`
+      fetch('https://www.douyin.com/aweme/v1/web/user/profile/self/', {
+        headers: { 'User-Agent': navigator.userAgent, 'Referer': 'https://www.douyin.com/' },
+        credentials: 'include'
+      }).then(r => r.json()).then(d => {
+        if (d && d.user && d.user.nickname) return d.user.nickname;
+        return null;
+      }).catch(() => null)
+    `);
+    if (result) {
+      logger.info(`[AccountManager] API获取昵称成功: ${result}`);
+      return result;
+    }
+  } catch (err) {
+    logger.warn(`[AccountManager] API获取昵称失败: ${err.message}`);
+  }
+  return null;
+}
+
+// 从页面获取用户昵称（备用方案）
 async function _fetchNickname(win) {
   try {
+    const ses = win.webContents.session;
+    
+    // 先尝试API方式
+    const apiNick = await _fetchNicknameFromAPI(ses);
+    if (apiNick) return apiNick;
+    
+    // 备用：从页面DOM获取
     // 先导航到个人主页
-    await win.webContents.executeJavaScript(`
+    const uid = await win.webContents.executeJavaScript(`
       (function() {
-        // 尝试从首页右上角获取用户头像链接中的uid
         const avatarLink = document.querySelector('a[href*="/user/"]');
         if (avatarLink) {
-          const match = avatarLink.href.match(/\/user\/([^?/]+)/);
+          const match = avatarLink.href.match(/\\/user\\/([^?/]+)/);
           if (match) {
             window.location.href = 'https://www.douyin.com/user/' + match[1];
             return match[1];
@@ -165,12 +193,20 @@ async function _fetchNickname(win) {
       })()
     `);
     
+    if (!uid) {
+      logger.warn(`[AccountManager] 无法获取用户UID，尝试从title获取`);
+      const title = await win.webContents.executeJavaScript(`document.title`);
+      if (title && title.includes('抖音')) {
+        return title.split('抖音')[0].trim() || null;
+      }
+      return null;
+    }
+    
     // 等待页面导航完成
     await new Promise((resolve) => {
-      const timeout = setTimeout(resolve, 5000);
+      const timeout = setTimeout(resolve, 6000);
       win.webContents.once('did-finish-load', () => {
-        clearTimeout(timeout);
-        setTimeout(resolve, 2000); // 额外等待动态内容加载
+        setTimeout(resolve, 3000);
       });
     });
     
@@ -181,21 +217,27 @@ async function _fetchNickname(win) {
           '[class*="user-name"]',
           '[class*="nickname"]', 
           '[data-e2e="user-info"] [class*="name"]',
-          'h1[class*="name"]',
-          '.j5WYzOQs',
+          'h1',
           '[class*="userName"]',
-          '[class*="user_name"]',
         ];
         for (const sel of selectors) {
           const el = document.querySelector(sel);
-          if (el && el.textContent.trim()) return el.textContent.trim();
+          if (el && el.textContent.trim() && el.textContent.trim().length < 30) {
+            return el.textContent.trim();
+          }
         }
-        // 最后尝试 document.title
         const title = document.title || '';
         if (title.includes('的主页')) return title.replace('的主页', '').replace('抖音', '').trim();
+        if (title.includes('抖音')) return title.split('抖音')[0].trim();
         return null;
       })()
     `);
+    
+    if (nickname) {
+      logger.info(`[AccountManager] 页面获取昵称成功: ${nickname}`);
+    } else {
+      logger.warn(`[AccountManager] 页面获取昵称失败，title: ${await win.webContents.executeJavaScript('document.title')}`);
+    }
     return nickname;
   } catch (err) {
     logger.warn(`[AccountManager] 获取昵称失败: ${err.message}`);

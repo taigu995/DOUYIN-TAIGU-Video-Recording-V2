@@ -1747,3 +1747,35 @@ body {
 .account-remove-btn {
   flex-shrink: 0;
 }
+
+/* Stream card dropdowns */
+.stream-dropdowns {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.stream-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.stream-select:hover {
+  border-color: var(--border-primary);
+}
+
+.stream-select:focus {
+  border-color: var(--accent-primary);
+}
+
+.stream-select option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}

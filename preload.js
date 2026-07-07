@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLoginStatus: () => ipcRenderer.invoke('check-login-status'),
   openLogin: () => ipcRenderer.invoke('login-account'),
   clearLogin: () => ipcRenderer.invoke('logout'),
+  removeAccount: (accountId) => ipcRenderer.invoke('logout-account', accountId),
 
   // ========== 直播间管理 ==========
   previewStream: (input, customName) => ipcRenderer.invoke('preview-stream', { input, customName }),
