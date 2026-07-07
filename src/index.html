@@ -350,6 +350,93 @@
     </div>
   </div>
 
+  <!-- 添加直播间预览确认弹窗 -->
+  <div id="preview-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>确认添加直播间</h3>
+        <button id="preview-close" class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="preview-info">
+          <div class="preview-info-row">
+            <span class="preview-label">主播名称</span>
+            <span id="preview-streamer-name" class="preview-value">-</span>
+          </div>
+          <div class="preview-info-row">
+            <span class="preview-label">房间号</span>
+            <span id="preview-room-id" class="preview-value">-</span>
+          </div>
+        </div>
+
+        <div class="preview-section">
+          <h4>录制模式</h4>
+          <div class="record-mode-options">
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="with-account" checked>
+              <div class="record-mode-content">
+                <span class="record-mode-title">有账号录制</span>
+                <span class="record-mode-desc">使用登录账号录制直播画面+评论区弹幕</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream-only">
+              <div class="record-mode-content">
+                <span class="record-mode-title">无账号 - 仅录制直播</span>
+                <span class="record-mode-desc">直接录制直播画面和声音，不录制评论区</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream+comment">
+              <div class="record-mode-content">
+                <span class="record-mode-title">无账号 - 直播+评论区</span>
+                <span class="record-mode-desc">录制直播画面+评论区，自动关闭登录弹窗</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div id="preview-account-section" class="preview-section">
+          <h4>选择录制账号</h4>
+          <select id="preview-account-select" class="preview-select">
+            <option value="">请选择账号...</option>
+          </select>
+          <p id="preview-account-hint" class="preview-hint"></p>
+        </div>
+
+        <div class="preview-section">
+          <h4>评论区帧率</h4>
+          <div class="fps-options">
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="30">
+              <span class="fps-label">30fps</span>
+              <span class="fps-desc">最流畅</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="15" checked>
+              <span class="fps-label">15fps</span>
+              <span class="fps-desc">推荐</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="10">
+              <span class="fps-label">10fps</span>
+              <span class="fps-desc">省资源</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="5">
+              <span class="fps-label">5fps</span>
+              <span class="fps-desc">最省</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="preview-cancel" class="btn btn-ghost">取消</button>
+        <button id="preview-confirm" class="btn btn-primary">确认添加</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast 通知 -->
   <div id="toast-container" class="toast-container"></div>
 

@@ -1,29 +1,14 @@
 /**
- * 抖音直播录制工具V2 - Electron 主进程
- * 负责窗口管理、IPC通信、系统托盘
+ * 抖音直播录制工具V2 - 主进程
+ * 基于 Electron 的桌面应用，支持多账号、多直播间录制
  */
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, session, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { logger } = require('./src/lib/logger');
+const { config } = require('./src/lib/config');
 const { StreamManager } = require('./src/lib/stream-manager');
-const { getConfig, setConfig } = require('./src/lib/config');
-const { getLogger } = require('./src/lib/logger');
-
-// 初始化日志
-const logger = getLogger();
-
-// 全局错误处理
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (reason) => {
-  logger.error('Unhandled Rejection:', reason);
-});
-
-let mainWindow = null;
-let tray = null;
-let streamManager = null;
+const { AccountManager } = require('./src/lib/account-manager');
 
 // 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
@@ -31,62 +16,99 @@ if (!gotTheLock) {
   app.quit();
 }
 
-/**
- * 创建主窗口
- */
-function createMainWindow() {
-  const iconPath = path.join(__dirname, 'build', 'icon.jpeg');
+// 设置用户数据路径
+const userDataPath = path.join(app.getPath('appData'), 'douyin-live-recorder');
+if (!fs.existsSync(userDataPath)) {
+  fs.mkdirSync(userDataPath, { recursive: true });
+}
+app.setPath('userData', userDataPath);
+
+// 设置日志目录
+logger.setLogDir(path.join(userDataPath, 'logs'));
+
+// 全局变量
+let mainWindow = null;
+let tray = null;
+let streamManager = null;
+let accountManager = null;
+
+// 初始化账号管理器
+function initAccountManager() {
+  accountManager = new AccountManager();
+  logger.info('AccountManager initialized');
+}
+
+// 创建主窗口
+function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
-    minWidth: 750,
-    minHeight: 500,
-    title: '抖音直播录制工具V2',
-    icon: iconPath,
-    resizable: true,
-    autoHideMenuBar: true,
-    skipTaskbar: false,  // 确保在任务栏显示
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false
-    }
+      nodeIntegration: false
+    },
+    title: '抖音直播录制工具V2',
+    show: false
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
-  // 最小化时保持在任务栏显示
-  mainWindow.on('minimize', () => {
-    mainWindow.setSkipTaskbar(false);
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
   });
 
-  // 关闭时最小化到托盘
-  mainWindow.on('close', (e) => {
-    const config = getConfig();
-    if (config.minimizeToTray && tray) {
-      e.preventDefault();
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
       mainWindow.hide();
     }
   });
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  // 设置窗口级 Cookie（用于抖音 API 请求）
+  setupWindowCookies();
 }
 
-/**
- * 创建系统托盘
- */
-function createTray() {
-  // 使用应用图标作为托盘图标
-  const trayIconPath = path.join(__dirname, 'build', 'icon.jpeg');
-  const icon = nativeImage.createFromPath(trayIconPath).resize({ width: 16, height: 16 });
+// 设置窗口级 Cookie
+async function setupWindowCookies() {
+  try {
+    const cookies = [
+      { url: 'https://live.douyin.com', name: '__ac_nonce', value: 'dummy_nonce_0' },
+      { url: 'https://live.douyin.com', name: '__ac_signature', value: 'dummy_signature_0' },
+      { url: 'https://live.douyin.com', name: 'ttwid', value: 'dummy_ttwid_0' },
+      { url: 'https://www.douyin.com', name: '__ac_nonce', value: 'dummy_nonce_0' },
+      { url: 'https://www.douyin.com', name: 'ttwid', value: 'dummy_ttwid_0' }
+    ];
+    
+    for (const cookie of cookies) {
+      await mainWindow.webContents.session.cookies.set(cookie);
+    }
+    logger.info('窗口级 Cookie 已设置');
+  } catch (error) {
+    logger.warn(`设置窗口级 Cookie 失败: ${error.message}`);
+  }
+}
 
-  tray = new Tray(icon);
+// 创建系统托盘
+function createTray() {
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  if (!fs.existsSync(iconPath)) {
+    logger.warn(`图标文件不存在: ${iconPath}`);
+    return;
+  }
+
+  tray = new Tray(iconPath);
   tray.setToolTip('抖音直播录制工具V2');
 
   const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '抖音直播录制工具V2',
+      enabled: false
+    },
+    { type: 'separator' },
     {
       label: '显示主窗口',
       click: () => {
@@ -99,483 +121,303 @@ function createTray() {
     { type: 'separator' },
     {
       label: '退出',
-      click: async () => {
-        // 停止所有录制并等待清理完成
-        if (streamManager) {
-          await streamManager.destroyAll();
-        }
-        // 强制清理可能残留的 FFmpeg 进程
-        try {
-          const { execSync } = require('child_process');
-          if (process.platform === 'win32') {
-            execSync('taskkill /F /IM ffmpeg.exe /T 2>nul', { stdio: 'ignore' });
-          }
-        } catch (e) { /* 忽略 */ }
-        tray.destroy();
+      click: () => {
+        app.isQuitting = true;
         app.quit();
       }
     }
   ]);
 
   tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => {
+
+  tray.on('click', () => {
     if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
+      if (mainWindow.isVisible()) {
+        mainWindow.focus();
+      } else {
+        mainWindow.show();
+      }
     }
   });
 }
 
-/**
- * 注册 IPC 处理
- */
+// 设置 CSP
+function setupCSP() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const csp = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https://* data: blob:; " +
+                "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://* https://lf-cdn-tos.bytescm.com https://lf-cdn-tos.bytescm.com; " +
+                "style-src 'self' 'unsafe-inline' https://*; " +
+                "img-src 'self' data: blob: https://* http://*; " +
+                "media-src 'self' data: blob: https://* http://*; " +
+                "connect-src 'self' https://* wss://* ws://* http://*; " +
+                "font-src 'self' data: https://*; " +
+                "frame-src 'self' https://* http://*;";
+
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp]
+      }
+    });
+  });
+}
+
+// 设置 IPC 处理器
 function setupIPC() {
-  // 添加直播间
-  ipcMain.handle('add-stream', async (event, inputText, customName) => {
+  // ========== 账号管理 ==========
+  ipcMain.handle('get-accounts', () => {
+    return accountManager.getAllAccounts();
+  });
+
+  ipcMain.handle('login-account', async () => {
     try {
-      const result = await streamManager.addStreamByInput(inputText, customName);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: err.message };
+      const account = await accountManager.login();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('login-status-changed', {
+          isLoggedIn: true,
+          username: account.nickname,
+          accountId: account.id
+        });
+      }
+      return { success: true, account };
+    } catch (error) {
+      logger.error(`登录失败: ${error.message}`);
+      return { success: false, error: error.message };
     }
   });
 
-  // 修改直播间信息
-  ipcMain.handle('update-stream', async (event, roomId, updates) => {
+  ipcMain.handle('logout-account', async (event, accountId) => {
     try {
-      streamManager.updateStreamInfo(roomId, updates);
+      // 检查账号是否被某个直播间使用
+      const streams = config.getStreams();
+      const usedBy = streams.find(s => s.accountId === accountId);
+      if (usedBy) {
+        return { success: false, error: `账号正在被直播间「${usedBy.customName || usedBy.roomId}」使用，请先取消分配` };
+      }
+      
+      await accountManager.logout(accountId);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('login-status-changed', {
+          isLoggedIn: false,
+          username: '',
+          accountId: null
+        });
+      }
       return { success: true };
-    } catch (err) {
-      return { success: false, error: err.message };
+    } catch (error) {
+      logger.error(`登出失败: ${error.message}`);
+      return { success: false, error: error.message };
     }
   });
 
-  // 删除直播间
-  ipcMain.handle('remove-stream', async (event, roomId) => {
+  ipcMain.handle('check-account-status', async (event, accountId) => {
+    const isLoggedIn = await accountManager.isLoggedIn(accountId);
+    const account = accountManager.getAccount(accountId);
+    return {
+      isLoggedIn,
+      username: isLoggedIn && account ? account.nickname : '',
+      accountId: accountId
+    };
+  });
+
+  // 获取默认账号状态（向后兼容）
+  ipcMain.handle('check-login-status', async () => {
+    const accounts = accountManager.getAllAccounts();
+    if (accounts.length > 0) {
+      const defaultAccount = accounts[0];
+      const isLoggedIn = await accountManager.isLoggedIn(defaultAccount.id);
+      return {
+        isLoggedIn,
+        username: isLoggedIn ? defaultAccount.nickname : '',
+        accountId: defaultAccount.id
+      };
+    }
+    return { isLoggedIn: false, username: '', accountId: null };
+  });
+
+  ipcMain.handle('logout', async () => {
+    const accounts = accountManager.getAllAccounts();
+    if (accounts.length > 0) {
+      await accountManager.logout(accounts[0].id);
+    }
+    return { success: true };
+  });
+
+  // ========== 直播间管理 ==========
+  ipcMain.handle('get-streams', () => {
+    return config.getStreams();
+  });
+
+  // 预览直播间信息（解析后返回，不添加）
+  ipcMain.handle('preview-stream', async (event, input) => {
     try {
-      await streamManager.removeStreamById(roomId);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: err.message };
+      const { extractRoomId, fetchStreamerName } = require('./src/lib/douyin-utils');
+      const roomId = await extractRoomId(input);
+      if (!roomId) {
+        return { success: false, error: '无法解析直播间链接' };
+      }
+      const streamerName = await fetchStreamerName(roomId);
+      return { success: true, roomId, streamerName };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
-  // 切换自动录制开关
-  ipcMain.handle('toggle-auto-record', async (event, roomId) => {
+  ipcMain.handle('add-stream', async (event, { input, customName, accountId, commentFps, recordMode }) => {
     try {
-      const autoRecord = streamManager.toggleAutoRecord(roomId);
-      return { success: true, autoRecord };
-    } catch (err) {
-      return { success: false, error: err.message };
+      const stream = await streamManager.addStream(input, customName);
+      // 设置直播间专属配置
+      if (accountId) stream.accountId = accountId;
+      if (commentFps) stream.commentFps = commentFps;
+      if (recordMode) stream.recordMode = recordMode;
+      config.updateStream(stream.roomId, stream);
+      return { success: true, stream };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
-  // 获取录制记录
-  ipcMain.handle('get-recording-history', async (event, roomId) => {
-    try {
-      const historyData = streamManager.getRecordingHistory(roomId);
-      return { success: true, ...historyData };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
+  ipcMain.handle('remove-stream', (event, roomId) => {
+    streamManager.removeStream(roomId);
+    return { success: true };
   });
 
-  // 开始录制
+  ipcMain.handle('update-stream', (event, { roomId, updates }) => {
+    // 如果更新 accountId，检查防呆
+    if (updates.accountId) {
+      const streams = config.getStreams();
+      const conflict = streams.find(s => s.roomId !== roomId && s.accountId === updates.accountId);
+      if (conflict) {
+        const conflictName = conflict.customName || conflict.roomId;
+        return { success: false, error: `该账号已被直播间「${conflictName}」使用` };
+      }
+    }
+    streamManager.updateStream(roomId, updates);
+    return { success: true };
+  });
+
+  ipcMain.handle('toggle-auto-record', (event, roomId) => {
+    streamManager.toggleAutoRecord(roomId);
+    return { success: true };
+  });
+
   ipcMain.handle('start-recording', async (event, roomId) => {
     try {
-      await streamManager.startRecording(roomId);
+      await streamManager.startRecording(roomId, true);
       return { success: true };
-    } catch (err) {
-      return { success: false, error: err.message };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
-  // 停止录制
   ipcMain.handle('stop-recording', async (event, roomId) => {
     try {
-      const result = await streamManager.stopRecording(roomId);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: err.message };
+      await streamManager.stopRecording(roomId);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
-  // 获取所有直播间状态
-  ipcMain.handle('get-all-status', async () => {
-    return streamManager.getAllStatus();
+  // ========== 配置管理 ==========
+  ipcMain.handle('get-config', () => {
+    return config.getAll();
   });
 
-  // 获取配置
-  ipcMain.handle('get-config', async () => {
-    return getConfig();
-  });
-
-  // 设置配置
-  ipcMain.handle('set-config', async (event, key, value) => {
-    setConfig(key, value);
-
-    // 如果修改了开机自启动设置，同步应用到系统
-    if (key === 'launchAtLogin') {
-      app.setLoginItemSettings({
-        openAtLogin: value === true,
-        path: app.getPath('exe')
-      });
-    }
-
+  ipcMain.handle('save-config', (event, newConfig) => {
+    config.setAll(newConfig);
+    streamManager.updateConfig(newConfig);
     return { success: true };
   });
 
-  // 选择输出文件夹
-  ipcMain.handle('select-folder', async () => {
+  // ========== 文件/目录操作 ==========
+  ipcMain.handle('select-output-dir', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory'],
-      title: '选择录制文件保存位置'
+      properties: ['openDirectory']
     });
-    if (result.canceled) return { canceled: true };
-    return { canceled: false, path: result.filePaths[0] };
-  });
-
-  // 获取登录状态和用户信息
-  ipcMain.handle('get-login-status', async () => {
-    try {
-      const douyinSession = session.fromPartition('persist:douyin');
-      const cookies = await douyinSession.cookies.get({ domain: '.douyin.com' });
-      
-      // 检查是否有登录相关的cookie
-      const hasLoginCookie = cookies.some(c => 
-        c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'login_status' || c.name === 'passport_auth_status'
-      );
-      
-      if (!hasLoginCookie) {
-        return { loggedIn: false, name: '未登录', avatar: null };
-      }
-
-      let name = '';
-      
-      // 方法1: 使用抖音用户信息API获取真实用户名
-      try {
-        const cookieStr = cookies
-          .filter(c => c.value && c.name)
-          .map(c => `${c.name}=${c.value}`)
-          .join('; ');
-        
-        const apiResult = await new Promise((resolve) => {
-          const https = require('https');
-          const url = 'https://www.douyin.com/passport/web/account/info/';
-          const options = {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-              'Cookie': cookieStr,
-              'Accept': 'application/json',
-              'Referer': 'https://www.douyin.com/'
-            }
-          };
-          
-          https.get(url, options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-              try {
-                const json = JSON.parse(data);
-                if (json && json.data) {
-                  resolve({
-                    name: json.data.nickname || json.data.screen_name || json.data.name || '',
-                    avatar: json.data.avatar_url || ''
-                  });
-                } else {
-                  resolve(null);
-                }
-              } catch (e) {
-                resolve(null);
-              }
-            });
-          }).on('error', () => resolve(null));
-          
-          // 超时5秒
-          setTimeout(() => resolve(null), 5000);
-        });
-        
-        if (apiResult && apiResult.name) {
-          name = apiResult.name;
-          logger.info(`登录状态: 从API获取用户名成功: ${name}`);
-        }
-      } catch (e) {
-        logger.warn(`API获取用户名失败: ${e.message}`);
-      }
-
-      // 方法2: 如果API失败，尝试从cookie中获取
-      if (!name) {
-        const nameCookies = [
-          'passport_fe_name',
-          'login_name', 
-          'uid_tt_name',
-          'passport_uid_name',
-        ];
-        
-        for (const cookieName of nameCookies) {
-          const cookie = cookies.find(c => c.name === cookieName && c.value);
-          if (cookie) {
-            try {
-              const decoded = decodeURIComponent(cookie.value);
-              if (decoded.startsWith('{') || decoded.startsWith('[')) {
-                const parsed = JSON.parse(decoded);
-                name = parsed.name || parsed.nickname || parsed.screen_name || '';
-                if (name) break;
-              } else if (decoded && decoded !== 'null' && decoded !== 'undefined' && decoded.length < 50 && !/^[0-9]+$/.test(decoded)) {
-                name = decoded;
-                break;
-              }
-            } catch (e) { /* ignore */ }
-          }
-        }
-      }
-
-      // 方法3: 如果还是没获取到，创建临时窗口从DOM获取
-      if (!name) {
-        try {
-          const tempWindow = new BrowserWindow({
-            show: false,
-            width: 800,
-            height: 600,
-            webPreferences: {
-              partition: 'persist:douyin',
-              contextIsolation: true,
-              nodeIntegration: false,
-              additionalArguments: ['--mute-audio'],
-              audioPlaybackPolicy: 'never'
-            }
-          });
-          
-          await tempWindow.loadURL('https://www.douyin.com');
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          if (!tempWindow.isDestroyed()) {
-            const userInfo = await tempWindow.webContents.executeJavaScript(`
-              (function() {
-                // 尝试从头像旁边的用户名获取
-                const selectors = [
-                  '[data-e2e="user-info"] [class*="name"]',
-                  '[data-e2e="user-info"] span',
-                  '.avatar-wrapper [class*="name"]',
-                  'header [class*="user-name"]',
-                  'header [class*="UserName"]',
-                  '[class*="nickname"]',
-                  '[class*="NickName"]',
-                  '[class*="user-name"]',
-                  '[class*="username"]',
-                  'a[href*="/user/"] [class*="name"]'
-                ];
-                
-                for (const sel of selectors) {
-                  const el = document.querySelector(sel);
-                  if (el && el.textContent && el.textContent.trim()) {
-                    const text = el.textContent.trim();
-                    if (text && text !== '登录' && text !== '注册' && text.length < 30 && text.length > 0) {
-                      return text;
-                    }
-                  }
-                }
-                
-                // 从页面标题获取
-                const title = document.title;
-                if (title && title.includes('@')) {
-                  const match = title.match(/@([^\\s]+)/);
-                  if (match) return match[1];
-                }
-                
-                return '';
-              })()
-            `);
-            
-            if (userInfo) {
-              name = userInfo;
-            }
-            tempWindow.close();
-          }
-        } catch (e) {
-          logger.warn(`从页面获取用户名失败: ${e.message}`);
-        }
-      }
-
-      // 如果还是没获取到，使用默认名称
-      if (!name) {
-        name = '抖音用户';
-      }
-
-      logger.info(`登录状态: 已登录, 用户名: ${name}`);
-      return { loggedIn: true, name, avatar: null };
-    } catch (e) {
-      logger.error(`获取登录状态失败: ${e.message}`);
-      return { loggedIn: false, name: '未登录', avatar: null };
+    if (result.canceled) {
+      return { success: false };
     }
+    return { success: true, path: result.filePaths[0] };
   });
 
-  // 打开登录窗口（用于首次登录抖音）
-  ipcMain.handle('open-login', async () => {
-    const loginWindow = new BrowserWindow({
-      width: 1000,
-      height: 700,
-      title: '登录抖音',
-      icon: path.join(__dirname, 'build', 'icon.jpeg'),
-      parent: mainWindow,
-      modal: false,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        partition: 'persist:douyin',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-      }
-    });
-
-    loginWindow.loadURL('https://www.douyin.com', {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-    });
-
-    // 监听登录窗口关闭，通知主界面刷新登录状态
-    loginWindow.on('closed', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('login-status-changed');
-      }
-    });
-
+  ipcMain.handle('open-output-dir', async () => {
+    const outputDir = config.outputDir;
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    await shell.openPath(outputDir);
     return { success: true };
   });
 
-  // 清除登录数据
-  ipcMain.handle('clear-login', async () => {
-    try {
-      const { session } = require('electron');
-      const ses = session.fromPartition('persist:douyin');
-      
-      // 清除所有 cookies
-      await ses.clearStorageData({
-        storages: ['cookies', 'localstorage', 'sessionstorage', 'indexeddb', 'websql', 'cachestorage']
-      });
-      
-      logger.info('已清除登录数据');
-      return { success: true, message: '登录数据已清除，请重新登录' };
-    } catch (e) {
-      logger.error('清除登录数据失败:', e);
-      return { success: false, error: e.message };
-    }
-  });
-
-  // 在浏览器中打开直播间（用于调试）
-  ipcMain.handle('open-in-browser', async (event, url) => {
-    const { shell } = require('electron');
-    await shell.openExternal(url);
-    return { success: true };
-  });
-
-  // 获取输出文件夹路径
-  ipcMain.handle('get-default-folder', async () => {
-    const { app } = require('electron');
-    return path.join(app.getPath('videos'), '抖音直播录制工具V2');
-  });
-
-  // 获取日志文件路径
-  ipcMain.handle('get-log-path', async () => {
-    return logger.getLogPath();
-  });
-
-  // 获取最近的日志内容
-  ipcMain.handle('get-recent-logs', async () => {
-    return logger.getRecentLogs(200);
-  });
-
-  // 获取日志文件内容（兼容旧接口）
-  ipcMain.handle('get-log-content', async () => {
-    const content = logger.getRecentLogs(500);
-    return { path: logger.getLogPath(), content };
-  });
-
-  // 导出日志到指定位置
-  ipcMain.handle('export-logs', async () => {
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: '导出日志文件',
-      defaultPath: `douyin-recorder-logs-${new Date().toISOString().slice(0, 10)}.log`,
-      filters: [
-        { name: '日志文件', extensions: ['log', 'txt'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    });
-    if (result.canceled || !result.filePath) return { success: false, canceled: true };
-    
-    try {
-      const logPath = logger.getLogPath();
-      if (fs.existsSync(logPath)) {
-        fs.copyFileSync(logPath, result.filePath);
-        return { success: true, path: result.filePath };
-      } else {
-        return { success: false, error: '日志文件不存在' };
-      }
-    } catch (err) {
-      logger.error('导出日志失败:', err);
-      return { success: false, error: err.message };
-    }
-  });
-
-  // 打开日志文件所在目录
   ipcMain.handle('open-log-folder', async () => {
     const logDir = logger.getLogDir();
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
     await shell.openPath(logDir);
     return { success: true };
   });
 
-  // 打开日志文件（用系统默认编辑器）
-  ipcMain.handle('open-log-file', async () => {
-    const logPath = logger.getLogPath();
-    await shell.openPath(logPath);
+  ipcMain.handle('open-in-browser', async (event, url) => {
+    await shell.openExternal(url);
     return { success: true };
   });
 
-  // 清空日志
-  ipcMain.handle('clear-logs', async () => {
-    const success = logger.clear();
-    return { success };
+  ipcMain.handle('get-version', () => {
+    return app.getVersion();
   });
 }
 
-/**
- * 应用启动
- */
+// 应用就绪
 app.whenReady().then(async () => {
-  // 配置 session
-  const douyinSession = session.fromPartition('persist:douyin');
-  douyinSession.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36');
+  logger.info('App starting...');
+  logger.info(`App version: ${app.getVersion()}`);
+  logger.info(`Electron: ${process.versions.electron}`);
+  logger.info(`Node: ${process.versions.node}`);
+  logger.info(`OS: ${process.platform} ${process.arch}`);
 
-  // 初始化流管理器
-  streamManager = new StreamManager();
-  streamManager.setUpdateCallback((status) => {
+  // 检查 FFmpeg
+  try {
+    const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+    logger.info(`FFmpeg 路径: ${ffmpegPath}`);
+  } catch (error) {
+    logger.error(`FFmpeg 未找到: ${error.message}`);
+  }
+
+  // 初始化账号管理器
+  initAccountManager();
+
+  // 初始化 StreamManager
+  streamManager = new StreamManager(config.getAll(), (streams) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('streams-updated', status);
+      mainWindow.webContents.send('streams-updated', streams);
     }
   });
 
-  // 创建窗口
-  createMainWindow();
+  // 恢复已保存的直播间
+  const savedStreams = config.getStreams();
+  for (const stream of savedStreams) {
+    await streamManager.addStream(stream.roomId, stream.customName);
+    // 恢复直播间专属配置
+    if (stream.accountId || stream.commentFps || stream.recordMode) {
+      const updates = {};
+      if (stream.accountId) updates.accountId = stream.accountId;
+      if (stream.commentFps) updates.commentFps = stream.commentFps;
+      if (stream.recordMode) updates.recordMode = stream.recordMode;
+      streamManager.updateStream(stream.roomId, updates);
+    }
+  }
+
+  setupCSP();
+  createWindow();
   createTray();
   setupIPC();
 
-  // 应用开机自启动设置
-  const config = getConfig();
-  app.setLoginItemSettings({
-    openAtLogin: config.launchAtLogin === true,
-    path: app.getPath('exe')
-  });
-
-  // 恢复已保存的直播间
-  await streamManager.restoreStreams();
+  logger.info('App ready');
 });
 
-// macOS 点击 dock 图标时重新显示窗口
-app.on('activate', () => {
-  if (mainWindow) {
-    mainWindow.show();
-  }
-});
-
-// 其他实例尝试启动时，聚焦当前窗口
+// 处理第二个实例
 app.on('second-instance', () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -584,32 +426,30 @@ app.on('second-instance', () => {
   }
 });
 
-// 退出前清理
-app.on('before-quit', async (event) => {
-  // 阻止默认退出行为，等待清理完成
-  event.preventDefault();
-  
-  if (streamManager) {
-    await streamManager.destroyAll();
-  }
-  // 强制清理可能残留的 FFmpeg 进程
-  try {
-    const { execSync } = require('child_process');
-    if (process.platform === 'win32') {
-      execSync('taskkill /F /IM ffmpeg.exe /T 2>nul', { stdio: 'ignore' });
-    }
-  } catch (e) { /* 忽略 */ }
-  
-  // 等待一小段时间确保所有进程已终止
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // 强制退出
-  app.exit(0);
+// 所有窗口关闭时
+app.on('window-all-closed', () => {
+  // 不退出应用，保持托盘运行
 });
 
-app.on('window-all-closed', () => {
-  // Windows 下不退出，保持托盘运行
-  if (process.platform !== 'darwin' && !tray) {
-    app.quit();
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
   }
+});
+
+// 退出前清理
+app.on('before-quit', () => {
+  if (streamManager) {
+    streamManager.destroy();
+  }
+});
+
+// 未捕获的异常
+process.on('uncaughtException', (error) => {
+  logger.error(`未捕获的异常: ${error.message}`);
+  logger.error(error.stack);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error(`未处理的 Promise 拒绝: ${reason}`);
 });

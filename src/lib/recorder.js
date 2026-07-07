@@ -69,6 +69,9 @@ class Recorder {
     this.liveUrl = options.liveUrl;
     this.outputFolder = options.outputFolder;
     this.session = options.session;
+    this.recordMode = options.recordMode || 'with-account'; // 'with-account' | 'stream-only' | 'stream+comment-no-login'
+    this.commentFps = options.commentFps || 30;
+    this.sessionName = options.sessionName || 'persist:douyin';
 
     this.recording = false;
     this.ffmpegProcess = null;
@@ -150,23 +153,38 @@ class Recorder {
       logger.info(`[Recorder] 输出文件: ${this.outputFile}`);
       logger.info(`[Recorder] 临时目录: ${this._tempDir}`);
 
-      // Step 1: 初始化评论区渲染器（加载直播页面，共享登录态）
-      logger.info('[Recorder] 初始化评论区渲染器...');
-      this.commentRenderer = new CommentRenderer({
-        liveUrl: this.liveUrl,
-        roomId: this.roomId,
-        session: this.session,
-        outputDir: this._commentFramesDir,
-        debugDir: path.dirname(this.outputFile), // 调试截图保存到输出目录（不会被清理）
-        fps: 30 // 默认使用30fps，覆盖绝大多数直播间的帧率
-      });
-      await this.commentRenderer.init();
+      // Step 1: 初始化评论区渲染器（根据录制模式决定是否初始化）
+      const useCommentRenderer = this.recordMode !== 'stream-only';
 
-      // Step 2: 从页面上下文中提取直播流URL（利用已加载的页面和登录态）
-      // 将评论区窗口设为 captureWindow，供 _extractStreamUrl 的页面fetch方式使用
-      this.captureWindow = this.commentRenderer.captureWindow;
-      logger.info('[Recorder] 正在获取直播流URL...');
-      const streamInfo = await this._extractStreamUrl();
+      if (useCommentRenderer) {
+        logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
+        this.commentRenderer = new CommentRenderer({
+          liveUrl: this.liveUrl,
+          roomId: this.roomId,
+          session: this.session,
+          outputDir: this._commentFramesDir,
+          debugDir: path.dirname(this.outputFile),
+          fps: this.commentFps,
+          sessionName: this.sessionName,
+          noLoginMode: this.recordMode === 'stream+comment-no-login'
+        });
+        await this.commentRenderer.init();
+      } else {
+        logger.info('[Recorder] 纯直播流录制模式，跳过评论区渲染器');
+      }
+
+      // Step 2: 获取直播流URL
+      let streamInfo;
+      if (useCommentRenderer && this.commentRenderer.captureWindow) {
+        // 有评论区窗口时，从页面上下文中提取直播流URL
+        this.captureWindow = this.commentRenderer.captureWindow;
+        logger.info('[Recorder] 正在获取直播流URL...');
+        streamInfo = await this._extractStreamUrl();
+      } else {
+        // 纯直播流模式，通过API或页面fetch获取
+        logger.info('[Recorder] 正在获取直播流URL (纯流模式)...');
+        streamInfo = await this._getStreamUrlWithoutRenderer();
+      }
 
       if (!streamInfo || !streamInfo.url) {
         throw new Error('无法获取直播流URL，请确保已登录抖音且直播间正在直播');

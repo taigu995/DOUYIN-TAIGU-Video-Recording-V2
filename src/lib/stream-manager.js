@@ -97,13 +97,17 @@ class StreamManager {
     // 6. 构建最终主播名称：自定义名称优先
     const finalName = customName || streamerName || `主播${roomId}`;
 
-    // 7. 创建流信息
+    // 7. 创建流信息（包含每直播间独立设置）
     const streamInfo = {
       roomId,
       liveUrl,
       streamerName: finalName,
       originalUrl: parsed.type === 'roomId' ? liveUrl : parsed.value,
-      addedAt: Date.now()
+      addedAt: Date.now(),
+      // 每直播间独立设置
+      accountId: null,       // 录制的账号ID（null=无账号）
+      commentFps: 15,        // 评论区帧率
+      recordMode: 'with-account' // with-account | stream-only | stream+comment-no-login
     };
 
     // 7. 保存到配置
@@ -682,12 +686,32 @@ class StreamManager {
     const config = getConfig();
     logger.info(`[StreamManager] 开始录制: ${streamState.info.streamerName} (${roomId}), URL: ${streamState.info.liveUrl}`);
 
+    // 确定录制模式和session
+    const recordMode = streamState.info.recordMode || 'with-account';
+    let sessionName = 'persist:douyin'; // 默认session
+
+    if (recordMode === 'with-account' && streamState.info.accountId) {
+      // 有账号模式：使用指定账号的session
+      sessionName = this.accountManager.getSessionName(streamState.info.accountId);
+      logger.info(`[StreamManager] 使用账号session: ${sessionName}`);
+    } else if (recordMode === 'stream-only') {
+      // 纯直播流模式：不需要评论区
+      logger.info(`[StreamManager] 纯直播流录制模式`);
+    } else if (recordMode === 'stream+comment-no-login') {
+      // 无账号+评论区模式：使用默认session，需要检测并关闭登录弹窗
+      sessionName = 'persist:douyin';
+      logger.info(`[StreamManager] 无账号评论区录制模式（自动关闭登录弹窗）`);
+    }
+
     const recorder = new Recorder({
       roomId: streamState.info.roomId,
       streamerName: streamState.info.streamerName,
       liveUrl: streamState.info.liveUrl,
       outputFolder: config.outputFolder,
-      session: 'persist:douyin',
+      session: sessionName,
+      recordMode: recordMode,
+      commentFps: streamState.info.commentFps || config.commentFps || 30,
+      sessionName: sessionName,
       onStatusChange: (status, data) => {
         if (status === 'recording') {
           streamState.status = 'recording';
@@ -915,6 +939,66 @@ class StreamManager {
     }
 
     return state.info.autoRecord;
+  }
+
+  /**
+   * 设置直播间录制账号
+   * @param {string} roomId - 直播间ID
+   * @param {string|null} accountId - 账号ID，null表示无账号模式
+   * @returns {object} 更新后的流信息
+   */
+  setRoomAccount(roomId, accountId) {
+    const state = this.streams.get(roomId);
+    if (!state) return null;
+
+    // 防呆机制：检查账号是否已被其他直播间使用
+    if (accountId) {
+      for (const [rid, s] of this.streams.entries()) {
+        if (rid !== roomId && s.info.accountId === accountId) {
+          const account = this.accountManager.getAccount(accountId);
+          const usedByAccount = s.info.streamerName || rid;
+          throw new Error(`账号「${account ? account.nickname : accountId}」已被直播间「${usedByAccount}」使用，每个账号只能同时用于一个直播间录制`);
+        }
+      }
+    }
+
+    state.info.accountId = accountId;
+    updateStream(roomId, { accountId });
+    logger.info(`[StreamManager] 设置直播间账号: ${roomId} -> ${accountId || '无账号'}`);
+    this.notifyUpdate();
+    return state.info;
+  }
+
+  /**
+   * 设置直播间评论区帧率
+   * @param {string} roomId - 直播间ID
+   * @param {number} fps - 帧率 (5/10/15/20/25/30)
+   */
+  setRoomCommentFps(roomId, fps) {
+    const state = this.streams.get(roomId);
+    if (!state) return null;
+
+    state.info.commentFps = fps;
+    updateStream(roomId, { commentFps: fps });
+    logger.info(`[StreamManager] 设置评论区帧率: ${roomId} -> ${fps}fps`);
+    this.notifyUpdate();
+    return state.info;
+  }
+
+  /**
+   * 设置直播间录制模式
+   * @param {string} roomId - 直播间ID
+   * @param {string} mode - 录制模式: 'with-account' | 'stream-only' | 'stream+comment-no-login'
+   */
+  setRoomRecordMode(roomId, mode) {
+    const state = this.streams.get(roomId);
+    if (!state) return null;
+
+    state.info.recordMode = mode;
+    updateStream(roomId, { recordMode: mode });
+    logger.info(`[StreamManager] 设置录制模式: ${roomId} -> ${mode}`);
+    this.notifyUpdate();
+    return state.info;
   }
 
   /**

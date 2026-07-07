@@ -7,6 +7,9 @@
 const isElectron = typeof window.electronAPI !== 'undefined';
 
 // DOM 元素
+// 全局账号列表
+let accounts = [];
+
 const elements = {
   inputRoomId: document.getElementById('input-room-id'),
   inputProfileUrl: document.getElementById('input-profile-url'),
@@ -182,6 +185,18 @@ function bindEvents() {
     elements.settingsPanel.style.display = 'none';
   });
 
+  // 预览确认弹窗事件
+  const previewCancelBtn = document.getElementById('preview-cancel-btn');
+  const previewConfirmBtn = document.getElementById('preview-confirm-btn');
+  const previewCloseBtn = document.getElementById('preview-close-btn');
+  if (previewCancelBtn) previewCancelBtn.addEventListener('click', hidePreviewModal);
+  if (previewConfirmBtn) previewConfirmBtn.addEventListener('click', confirmAddStream);
+  if (previewCloseBtn) previewCloseBtn.addEventListener('click', hidePreviewModal);
+  // 录制模式切换
+  document.querySelectorAll('input[name="preview-mode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => handlePreviewModeChange(e.target.value));
+  });
+
   elements.btnSaveSettings.addEventListener('click', handleSaveSettings);
 
   elements.btnBrowse.addEventListener('click', async () => {
@@ -268,27 +283,87 @@ function bindEvents() {
   }
 }
 
-// ========== 添加直播间 ==========
+// ========== 添加直播间（预览确认流程） ==========
+let pendingPreviewData = null;
+
+function showPreviewModal(data) {
+  pendingPreviewData = data;
+  const modal = document.getElementById('add-preview-modal');
+  if (!modal) return;
+  // 填充信息
+  document.getElementById('preview-streamer-name').textContent = data.streamerName || '未知';
+  document.getElementById('preview-room-id').textContent = data.roomId || '未知';
+  // 填充账号列表
+  const accountSelect = document.getElementById('preview-account-select');
+  if (accountSelect) {
+    accountSelect.innerHTML = '<option value="">不选择账号</option>';
+    if (accounts && accounts.length > 0) {
+      accounts.forEach(acc => {
+        const opt = document.createElement('option');
+        opt.value = acc.id;
+        opt.textContent = acc.nickname;
+        accountSelect.appendChild(opt);
+      });
+    }
+  }
+  // 默认选择有账号模式（如果有账号）
+  const radioWithAccount = document.getElementById('mode-with-account');
+  const radioStreamOnly = document.getElementById('mode-stream-only');
+  const radioStreamComment = document.getElementById('mode-stream-comment');
+  if (accounts && accounts.length > 0 && radioWithAccount) {
+    radioWithAccount.checked = true;
+    handlePreviewModeChange('with-account');
+  } else if (radioStreamOnly) {
+    radioStreamOnly.checked = true;
+    handlePreviewModeChange('stream-only');
+  }
+  modal.style.display = 'flex';
+}
+
+function hidePreviewModal() {
+  const modal = document.getElementById('add-preview-modal');
+  if (modal) modal.style.display = 'none';
+  pendingPreviewData = null;
+}
+
+function handlePreviewModeChange(mode) {
+  const accountGroup = document.getElementById('preview-account-group');
+  if (accountGroup) {
+    accountGroup.style.display = mode === 'with-account' ? 'block' : 'none';
+  }
+}
+
+async function confirmAddStream() {
+  if (!pendingPreviewData) return;
+  const mode = document.querySelector('input[name="preview-mode"]:checked')?.value || 'stream-only';
+  const accountId = document.getElementById('preview-account-select')?.value || null;
+  try {
+    await window.electronAPI.addStream({
+      ...pendingPreviewData,
+      recordMode: mode,
+      accountId: mode === 'with-account' ? accountId : null,
+    });
+    showToast('直播间添加成功', 'success');
+    hidePreviewModal();
+    elements.inputRoomId.value = '';
+    elements.inputProfileUrl.value = '';
+    elements.inputLiveUrl.value = '';
+    loadStreams();
+  } catch (err) {
+    showToast('添加失败: ' + err.message, 'error');
+  }
+}
+
 async function handleAddStream() {
   const roomId = elements.inputRoomId.value.trim();
   const profileUrl = elements.inputProfileUrl.value.trim();
   const liveUrl = elements.inputLiveUrl.value.trim();
   const customName = elements.inputStreamerName.value.trim();
 
-  // 确定使用哪个输入
   let inputText = '';
-  let inputType = '';
-
-  if (roomId) {
-    inputText = roomId;
-    inputType = 'roomId';
-  } else if (profileUrl) {
-    inputText = profileUrl;
-    inputType = 'profileUrl';
-  } else if (liveUrl) {
-    inputText = liveUrl;
-    inputType = 'liveUrl';
-  }
+  if (roomId) inputText = roomId;
+  else if (profileUrl) inputText = profileUrl;
+  else if (liveUrl) inputText = liveUrl;
 
   if (!inputText) {
     showError('请至少输入一个房间号或链接');
@@ -296,32 +371,23 @@ async function handleAddStream() {
   }
 
   elements.btnAdd.disabled = true;
-  elements.btnAdd.innerHTML = '<span class="spinner"></span> 添加中...';
+  elements.btnAdd.innerHTML = '<span class="spinner"></span> 解析中...';
   hideError();
 
   try {
     if (isElectron) {
-      const result = await window.electronAPI.addStream(inputText, customName);
-      if (result.success) {
-        showToast(`已添加直播间: ${result.data.streamerName}`, 'success');
-        // 清空输入框
-        elements.inputRoomId.value = '';
-        elements.inputProfileUrl.value = '';
-        elements.inputLiveUrl.value = '';
-        elements.inputStreamerName.value = '';
-        // 刷新列表
-        const status = await window.electronAPI.getAllStatus();
-        streamsData = status || [];
-        renderStreamsList(streamsData);
-      } else {
-        showError(result.error);
+      const previewResult = await window.electronAPI.previewStream(inputText, customName);
+      if (!previewResult.success) {
+        showError(previewResult.error);
+        return;
       }
+      pendingPreviewData = { inputText, customName, ...previewResult.data };
+      showPreviewModal(previewResult.data);
     } else {
-      // Demo 模式
       showToast('添加功能仅在桌面应用中可用', 'warning');
     }
   } catch (err) {
-    showError('添加失败: ' + err.message);
+    showError('解析失败: ' + err.message);
   } finally {
     elements.btnAdd.disabled = false;
     elements.btnAdd.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg> 添加`;

@@ -12,16 +12,31 @@ const defaults = {
   autoStart: true,        // 检测到开播自动开始录制
   launchAtLogin: false,   // 开机自启动
   minimizeToTray: true,   // 关闭时最小化到托盘
-  // 评论区拼接设置
+  // 评论区拼接设置（全局默认值，可被每直播间设置覆盖）
   commentWidth: 360,      // 评论区宽度（像素）
   commentHeight: 720,     // 评论区高度（像素，与主视频对齐）
-  commentFps: 10,         // 评论区帧率
-  commentJpegQuality: 85, // 评论区帧 JPEG 压缩质量
+  commentFps: 15,         // 评论区帧率（全局默认）
+  commentJpegQuality: 92, // 评论区帧 JPEG 压缩质量
   // 合并设置
   mergeCrf: 15,           // 合并视频 CRF（越低质量越高）
   mergePreset: 'medium',  // 合并视频编码预设
+  // 账号列表
+  accounts: [],           // [{ id, nickname, cookies: [{name, value, domain, path, ...}] }]
   streams: []             // 已添加的直播间列表
 };
+
+/**
+ * 直播间数据结构:
+ * {
+ *   roomId: string,           // 房间ID
+ *   streamerName: string,     // 主播名称
+ *   customName: string,       // 自定义名称
+ *   autoRecord: boolean,      // 自动录制
+ *   accountId: string|null,   // 绑定的录制账号ID（null=无账号）
+ *   commentFps: number|null,  // 评论区帧率（null=使用全局默认）
+ *   recordMode: string        // 录制模式：'with-account' | 'no-account-stream-only' | 'no-account-stream+comment'
+ * }
+ */
 
 let store;
 
@@ -42,7 +57,12 @@ function getConfig() {
     autoStart: s.get('autoStart'),
     launchAtLogin: s.get('launchAtLogin'),
     minimizeToTray: s.get('minimizeToTray'),
-    streams: s.get('streams')
+    commentFps: s.get('commentFps'),
+    commentJpegQuality: s.get('commentJpegQuality'),
+    mergeCrf: s.get('mergeCrf'),
+    mergePreset: s.get('mergePreset'),
+    accounts: s.get('accounts') || [],
+    streams: s.get('streams') || []
   };
 }
 
@@ -50,6 +70,8 @@ function setConfig(key, value) {
   const s = initStore();
   s.set(key, value);
 }
+
+// ============ 直播间管理 ============
 
 function getStreams() {
   const s = initStore();
@@ -59,7 +81,15 @@ function getStreams() {
 function addStream(stream) {
   const s = initStore();
   const streams = s.get('streams') || [];
-  streams.push(stream);
+  // 确保新直播间有默认设置
+  const streamWithDefaults = {
+    autoRecord: true,
+    accountId: null,
+    commentFps: null,
+    recordMode: 'with-account',
+    ...stream
+  };
+  streams.push(streamWithDefaults);
   s.set('streams', streams);
 }
 
@@ -79,6 +109,63 @@ function updateStream(roomId, updates) {
   }
 }
 
+// ============ 账号管理 ============
+
+function getAccounts() {
+  const s = initStore();
+  return s.get('accounts') || [];
+}
+
+function addAccount(account) {
+  const s = initStore();
+  const accounts = s.get('accounts') || [];
+  accounts.push(account);
+  s.set('accounts', accounts);
+}
+
+function removeAccount(accountId) {
+  const s = initStore();
+  const accounts = (s.get('accounts') || []).filter(a => a.id !== accountId);
+  s.set('accounts', accounts);
+  // 同时清除所有引用该账号的直播间的 accountId
+  const streams = s.get('streams') || [];
+  let streamsChanged = false;
+  for (let i = 0; i < streams.length; i++) {
+    if (streams[i].accountId === accountId) {
+      streams[i].accountId = null;
+      streamsChanged = true;
+    }
+  }
+  if (streamsChanged) {
+    s.set('streams', streams);
+  }
+}
+
+function updateAccount(accountId, updates) {
+  const s = initStore();
+  const accounts = s.get('accounts') || [];
+  const idx = accounts.findIndex(a => a.id === accountId);
+  if (idx !== -1) {
+    accounts[idx] = { ...accounts[idx], ...updates };
+    s.set('accounts', accounts);
+  }
+}
+
+function getAccountById(accountId) {
+  const accounts = getAccounts();
+  return accounts.find(a => a.id === accountId) || null;
+}
+
+/**
+ * 检查账号是否已被某个直播间使用
+ * @returns {string|null} 正在使用该账号的 roomId，或 null
+ */
+function getAccountUsage(accountId) {
+  const streams = getStreams();
+  const stream = streams.find(s => s.accountId === accountId);
+  return stream ? stream.roomId : null;
+}
+
 module.exports = {
   getConfig,
   setConfig,
@@ -86,5 +173,11 @@ module.exports = {
   addStream,
   removeStream,
   updateStream,
+  getAccounts,
+  addAccount,
+  removeAccount,
+  updateAccount,
+  getAccountById,
+  getAccountUsage,
   initStore
 };

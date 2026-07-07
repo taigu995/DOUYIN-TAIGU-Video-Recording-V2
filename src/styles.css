@@ -1343,4 +1343,337 @@ body {
   margin-left: auto;
   cursor: default;
 }
+
+/* ============================================
+   添加直播间预览确认弹窗
+   ============================================ */
+.preview-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.preview-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 520px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.preview-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preview-modal-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.preview-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s;
+}
+
+.preview-modal-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.preview-modal-body {
+  padding: 20px 24px;
+}
+
+.preview-info {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.preview-info-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.preview-info-row:not(:last-child) {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.preview-info-label {
+  color: var(--text-secondary);
+  font-size: 13px;
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.preview-info-value {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.preview-section {
+  margin-bottom: 20px;
+}
+
+.preview-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.preview-mode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preview-mode-option {
+  display: flex;
+  align-items: flex-start;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.preview-mode-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.preview-mode-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.preview-mode-option input[type="radio"] {
+  margin-right: 12px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.preview-mode-content {
+  flex: 1;
+}
+
+.preview-mode-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.preview-mode-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.preview-account-select {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: none;
+}
+
+.preview-account-select.visible {
+  display: block;
+}
+
+.preview-account-select label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.preview-account-select select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.preview-account-select select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.preview-fps-select {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.preview-fps-select label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.preview-fps-select select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.preview-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.preview-btn {
+  padding: 8px 20px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.preview-btn-cancel {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.preview-btn-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.preview-btn-confirm {
+  background: var(--accent);
+  color: white;
+}
+
+.preview-btn-confirm:hover {
+  background: var(--accent-hover);
+}
+
+.preview-btn-confirm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 直播间卡片内的录制模式显示 */
+.stream-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.stream-mode-badge.mode-account {
+  background: rgba(37, 213, 96, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(37, 213, 96, 0.3);
+}
+
+.stream-mode-badge.mode-stream-only {
+  background: rgba(91, 155, 213, 0.15);
+  color: var(--info);
+  border: 1px solid rgba(91, 155, 213, 0.3);
+}
+
+.stream-mode-badge.mode-no-account-comment {
+  background: rgba(255, 184, 0, 0.15);
+  color: var(--warning);
+  border: 1px solid rgba(255, 184, 0, 0.3);
+}
+
+/* 直播间卡片内的设置面板 */
+.stream-settings-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.stream-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.stream-settings-row:not(:last-child) {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.stream-settings-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.stream-settings-select {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.stream-settings-select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
