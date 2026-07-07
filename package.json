@@ -51,6 +51,7 @@
       "main.js",
       "preload.js",
       "src/**/*",
+      "assets/**/*",
       "build/**/*",
       "node_modules/**/*"
     ]

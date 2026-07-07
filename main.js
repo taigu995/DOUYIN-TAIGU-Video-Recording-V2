@@ -59,9 +59,19 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
+  let windowShown = false;
   mainWindow.once('ready-to-show', () => {
+    windowShown = true;
     mainWindow.show();
   });
+
+  // 安全超时：如果 ready-to-show 5秒内未触发，强制显示窗口
+  setTimeout(() => {
+    if (!windowShown && mainWindow && !mainWindow.isDestroyed()) {
+      logger.warn('ready-to-show 超时，强制显示窗口');
+      mainWindow.show();
+    }
+  }, 5000);
 
   mainWindow.on('close', (event) => {
     if (!app.isQuitting) {
@@ -482,13 +492,16 @@ app.whenReady().then(async () => {
     }
   });
 
-  // 恢复已保存的直播间
-  await streamManager.restoreStreams();
-
+  // 先创建主窗口和 IPC，让用户立即看到界面
   setupCSP();
   createWindow();
   createTray();
   setupIPC();
+
+  // 后台恢复已保存的直播间（不阻塞主窗口）
+  streamManager.restoreStreams().catch(err => {
+    logger.error(`恢复直播间失败: ${err.message}`);
+  });
 
   logger.info('App ready');
 });
