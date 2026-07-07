@@ -384,15 +384,22 @@
             <label class="record-mode-option">
               <input type="radio" name="record-mode" value="stream-only">
               <div class="record-mode-content">
-                <span class="record-mode-title">无账号 - 仅录制直播</span>
+                <span class="record-mode-title">仅录制直播流</span>
                 <span class="record-mode-desc">直接录制直播画面和声音，不录制评论区</span>
               </div>
             </label>
             <label class="record-mode-option">
               <input type="radio" name="record-mode" value="stream+comment">
               <div class="record-mode-content">
-                <span class="record-mode-title">无账号 - 直播+评论区</span>
-                <span class="record-mode-desc">录制直播画面+评论区，自动关闭登录弹窗</span>
+                <span class="record-mode-title">有账号+评论区</span>
+                <span class="record-mode-desc">使用登录账号录制直播画面+评论区弹幕</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream+comment-no-login">
+              <div class="record-mode-content">
+                <span class="record-mode-title">无账号+评论区</span>
+                <span class="record-mode-desc">不登录账号，录制直播画面+评论区弹幕</span>
               </div>
             </label>
           </div>

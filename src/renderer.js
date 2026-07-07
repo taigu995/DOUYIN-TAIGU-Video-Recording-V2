@@ -764,7 +764,7 @@ function createStreamCard(stream) {
         <div class="stream-mode-row">
           <select class="stream-record-mode" data-room-id="${stream.roomId}" title="录制模式">
             <option value="with-account"${stream.recordMode === 'with-account' ? ' selected' : ''}>有账号录制</option>
-            <option value="stream-only"${stream.recordMode === 'stream-only' ? ' selected' : ''}>无账号录制</option>
+            <option value="stream-only"${stream.recordMode === 'stream-only' ? ' selected' : ''}>仅录制直播流</option>
             <option value="stream+comment"${stream.recordMode === 'stream+comment' ? ' selected' : ''}>有账号+评论区</option>
             <option value="stream+comment-no-login"${stream.recordMode === 'stream+comment-no-login' ? ' selected' : ''}>无账号+评论区</option>
           </select>
