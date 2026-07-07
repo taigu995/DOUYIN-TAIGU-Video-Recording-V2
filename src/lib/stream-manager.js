@@ -374,7 +374,74 @@ class StreamManager {
   }
 
   /**
-   * 检查直播状态
+   * 通过API检查直播状态（轻量级，不依赖BrowserWindow）
+   * @returns {{ isLive: boolean, streamerName: string|null }}
+   */
+  async checkLiveStatusFromAPI(roomId) {
+    return new Promise((resolve) => {
+      const { session } = require('electron');
+      const douyinSession = session.fromPartition('persist:douyin');
+      
+      douyinSession.cookies.get({ domain: '.douyin.com' }).then(cookies => {
+        const cookieStr = cookies
+          .filter(c => c.value && c.name)
+          .map(c => `${c.name}=${c.value}`)
+          .join('; ');
+        
+        const url = `https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&web_rid=${roomId}`;
+        
+        const https = require('https');
+        const options = {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': `https://live.douyin.com/${roomId}`,
+            'Cookie': cookieStr || ''
+          }
+        };
+
+        https.get(url, options, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              const roomInfo = json?.data?.data?.[0];
+              
+              // status: 2 = 直播中, 其他 = 未开播
+              const status = roomInfo?.status;
+              const isLive = status === 2;
+              
+              // 获取主播名称
+              const owner = roomInfo?.owner;
+              const streamerName = owner?.nickname || owner?.name || roomInfo?.nickname 
+                || json?.data?.user?.nickname || null;
+              
+              resolve({ isLive, streamerName });
+            } catch (e) {
+              logger.warn(`[API] 状态检查解析失败: ${e.message}`);
+              resolve(null);
+            }
+          });
+        }).on('error', (e) => {
+          logger.warn(`[API] 状态检查请求失败: ${e.message}`);
+          resolve(null);
+        });
+        
+        // 超时10秒
+        setTimeout(() => {
+          logger.warn(`[API] 状态检查请求超时`);
+          resolve(null);
+        }, 10000);
+      }).catch(e => {
+        logger.warn(`[API] 获取cookies失败: ${e.message}`);
+        resolve(null);
+      });
+    });
+  }
+
+  /**
+   * 检查直播状态（优先使用API，失败时回退到页面方式）
    */
   async checkLiveStatus(streamState) {
     // 防止并发检查
@@ -384,157 +451,200 @@ class StreamManager {
     streamState._checking = true;
 
     try {
-      const { monitorWindow, info } = streamState;
-
-      if (!monitorWindow || monitorWindow.isDestroyed()) {
-        logger.warn(`[Monitor] 监控窗口已销毁，重新创建: ${info.roomId}`);
-        await this.createMonitorWindow(streamState);
-        return;
-      }
-
-      // 重新加载页面以获取最新状态
+      const { info } = streamState;
       logger.info(`[Monitor] 检查直播状态: ${info.streamerName} (${info.roomId})`);
-      await monitorWindow.loadURL(info.liveUrl, {
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-      });
 
-      // 等待页面加载
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // 优先使用API方式检查（轻量、可靠）
+      const apiResult = await this.checkLiveStatusFromAPI(info.roomId);
+      
+      if (apiResult) {
+        // API成功，使用API结果
+        let isLive = apiResult.isLive;
+        
+        // 更新主播名称（如果有新名称且旧名称是默认的）
+        if (apiResult.streamerName && (!info.streamerName || info.streamerName.startsWith('主播'))) {
+          info.streamerName = apiResult.streamerName;
+          updateStream(info.roomId, { streamerName: apiResult.streamerName });
+        }
 
-      // 再次检查窗口是否仍然可用
-      if (monitorWindow.isDestroyed()) {
+        const wasLive = streamState.isLive;
+        streamState.isLive = isLive;
+        streamState.lastCheck = Date.now();
+        streamState.status = isLive ? 'live' : 'offline';
+
+        // 状态变化处理
+        if (isLive && !wasLive) {
+          logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
+          streamState.status = 'live';
+
+          // 自动开始录制（检查全局开关和单个直播间开关）
+          const config = getConfig();
+          if (config.autoRecord && streamState.info.autoRecord !== false) {
+            logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
+            this.startRecording(info.roomId);
+          }
+        } else if (!isLive && wasLive) {
+          logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
+          streamState.status = 'offline';
+
+          // 录制中则停止
+          if (streamState.recorder && streamState.recorder.recording) {
+            logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
+            this.stopRecording(info.roomId);
+          }
+          
+          // 自动录制开启时，直播结束后立即重新检测
+          const config = getConfig();
+          if (config.autoRecord && streamState.info.autoRecord !== false) {
+            logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 直播结束，自动录制开启，立即重新检测...`);
+            setTimeout(() => {
+              if (streamState.info.autoRecord !== false) {
+                this.checkLiveStatus(streamState).then(() => {
+                  this.notifyUpdate();
+                }).catch(err => {
+                  logger.warn(`[Monitor] 重新检测失败: ${err.message}`);
+                });
+              }
+            }, 2000);
+          }
+        }
+
+        this.notifyUpdate();
         return;
       }
 
-      // 检测是否在直播
-      const isLive = await monitorWindow.webContents.executeJavaScript(`
-        (function() {
-          // 检查是否有视频元素在播放
-          const video = document.querySelector('video');
-          if (video && !video.paused && video.readyState >= 2) {
-            return true;
-          }
+      // API失败，回退到页面方式
+      logger.info(`[Monitor] API检查失败，回退到页面方式: ${info.roomId}`);
+      await this._checkLiveStatusFromPage(streamState);
 
-          // 检查页面是否显示"直播中"标识
-          const body = document.body.innerText || '';
-          if (body.includes('直播中') || body.includes('正在直播')) {
-            return true;
-          }
-
-          // 检查是否有直播相关的DOM元素
-          const liveBadge = document.querySelector('[class*="living"], [class*="is-live"], [class*="on-live"]');
-          if (liveBadge) return true;
-
-          // 检查页面标题
-          const title = document.title || '';
-          if (title.includes('直播') && !title.includes('未开播') && !title.includes('回放')) {
-            return true;
-          }
-
-          return false;
-        })();
-      `);
-
-      // 尝试获取主播名称（如果还没有）
-      if (!streamState.info.streamerName || streamState.info.streamerName.startsWith('主播')) {
-        try {
-          if (!monitorWindow.isDestroyed()) {
-            const name = await monitorWindow.webContents.executeJavaScript(`
-              (function() {
-                // 尝试多种选择器获取主播名称
-                const selectors = [
-                  '[class*="nickname"]',
-                  '[class*="author-name"]',
-                  '[class*="anchor-name"]',
-                  '[data-e2e="live-anchor-name"]',
-                  '.room-info .name'
-                ];
-                for (const sel of selectors) {
-                  const el = document.querySelector(sel);
-                  if (el && el.textContent.trim()) {
-                    return el.textContent.trim();
-                  }
-                }
-                const title = document.title;
-                if (title && title.includes('的直播间')) {
-                  return title.split('的直播间')[0].trim();
-                }
-                // 尝试从页面中获取任何可能的用户名
-                const allNames = document.querySelectorAll('[class*="name"]');
-                for (const el of allNames) {
-                  const text = el.textContent.trim();
-                  if (text && text.length > 1 && text.length < 20 && !text.includes('直播')) {
-                    return text;
-                  }
-                }
-                return null;
-              })();
-            `);
-            if (name) {
-              streamState.info.streamerName = name;
-              updateStream(info.roomId, { streamerName: name });
-            }
-          }
-        } catch (e) {
-          logger.warn(`[Monitor] 获取主播名称失败: ${e.message}`);
-        }
-      }
-
-      const wasLive = streamState.isLive;
-      streamState.isLive = isLive;
-      streamState.lastCheck = Date.now();
-      streamState.status = isLive ? 'live' : 'offline';
-
-      // 状态变化处理
-      if (isLive && !wasLive) {
-        logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
-        streamState.status = 'live';
-
-        // 自动开始录制（检查全局开关和单个直播间开关）
-        const config = getConfig();
-        const autoRecord = info.autoRecord !== false; // 默认为 true
-        if (config.autoStart && autoRecord) {
-          logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
-          try {
-            await this.startRecording(info.roomId);
-          } catch (err) {
-            logger.error(`[Monitor] 自动录制启动失败 (${info.streamerName}): ${err.message}`);
-          }
-        }
-      } else if (!isLive && wasLive) {
-        logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
-        // 停止录制
-        if (streamState.recorder) {
-          try {
-            await streamState.recorder.stopRecording();
-            streamState.recorder.destroy();
-          } catch (err) {
-            logger.error(`[Monitor] 停止录制出错 (${info.streamerName}): ${err.message}`);
-          }
-          streamState.recorder = null;
-          streamState.status = 'offline';
-        }
-      } else if (isLive && wasLive) {
-        // 持续直播中，更新状态
-        if (streamState.recorder && streamState.recorder.recording) {
-          streamState.status = 'recording';
-        } else {
-          streamState.status = 'live';
-        }
-      }
-
-      this.notifyUpdate();
-    } catch (e) {
-      if (e.message && e.message.includes('destroyed')) {
-        logger.warn(`[Monitor] 窗口已销毁，跳过检查: ${e.message}`);
-      } else {
-        logger.error(`[Monitor] 检查状态出错 (${streamState.info.streamerName}, ${streamState.info.roomId}): ${e.message}`, e);
-        streamState.status = 'error';
-      }
-      this.notifyUpdate();
+    } catch (err) {
+      logger.warn(`[Monitor] 检查状态异常: ${err.message}`);
     } finally {
       streamState._checking = false;
     }
+  }
+
+  /**
+   * 通过页面方式检查直播状态（备用方案）
+   */
+  async _checkLiveStatusFromPage(streamState) {
+    const { monitorWindow, info } = streamState;
+
+    if (!monitorWindow || monitorWindow.isDestroyed()) {
+      logger.warn(`[Monitor] 监控窗口已销毁，重新创建: ${info.roomId}`);
+      await this.createMonitorWindow(streamState);
+      return;
+    }
+
+    // 重新加载页面以获取最新状态
+    await monitorWindow.loadURL(info.liveUrl, {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+    });
+
+    // 等待页面加载
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // 再次检查窗口是否仍然可用
+    if (monitorWindow.isDestroyed()) {
+      return;
+    }
+
+    // 检测是否在直播
+    const isLive = await monitorWindow.webContents.executeJavaScript(`
+      (function() {
+        const video = document.querySelector('video');
+        if (video && !video.paused && video.readyState >= 2) {
+          return true;
+        }
+        const body = document.body.innerText || '';
+        if (body.includes('直播中') || body.includes('正在直播')) {
+          return true;
+        }
+        const liveBadge = document.querySelector('[class*="living"], [class*="is-live"], [class*="on-live"]');
+        if (liveBadge) return true;
+        const title = document.title || '';
+        if (title.includes('直播') && !title.includes('未开播') && !title.includes('回放')) {
+          return true;
+        }
+        return false;
+      })();
+    `);
+
+    // 尝试获取主播名称（如果还没有）
+    if (!streamState.info.streamerName || streamState.info.streamerName.startsWith('主播')) {
+      try {
+        if (!monitorWindow.isDestroyed()) {
+          const name = await monitorWindow.webContents.executeJavaScript(`
+            (function() {
+              const selectors = [
+                '[class*="nickname"]',
+                '[class*="author-name"]',
+                '[class*="anchor-name"]',
+                '[data-e2e="live-anchor-name"]',
+                '.room-info .name'
+              ];
+              for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el && el.textContent.trim()) {
+                  return el.textContent.trim();
+                }
+              }
+              const title = document.title;
+              if (title && title.includes('的直播间')) {
+                return title.split('的直播间')[0].trim();
+              }
+              return null;
+            })();
+          `);
+          if (name) {
+            streamState.info.streamerName = name;
+            updateStream(info.roomId, { streamerName: name });
+          }
+        }
+      } catch (e) {
+        logger.warn(`[Monitor] 获取主播名称失败: ${e.message}`);
+      }
+    }
+
+    const wasLive = streamState.isLive;
+    streamState.isLive = isLive;
+    streamState.lastCheck = Date.now();
+    streamState.status = isLive ? 'live' : 'offline';
+
+    // 状态变化处理
+    if (isLive && !wasLive) {
+      logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
+      streamState.status = 'live';
+
+      const config = getConfig();
+      if (config.autoRecord && streamState.info.autoRecord !== false) {
+        logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
+        this.startRecording(info.roomId);
+      }
+    } else if (!isLive && wasLive) {
+      logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
+      streamState.status = 'offline';
+
+      if (streamState.recorder && streamState.recorder.recording) {
+        logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
+        this.stopRecording(info.roomId);
+      }
+      
+      const config = getConfig();
+      if (config.autoRecord && streamState.info.autoRecord !== false) {
+        setTimeout(() => {
+          if (streamState.info.autoRecord !== false) {
+            this.checkLiveStatus(streamState).then(() => {
+              this.notifyUpdate();
+            }).catch(err => {
+              logger.warn(`[Monitor] 重新检测失败: ${err.message}`);
+            });
+          }
+        }, 2000);
+      }
+    }
+
+    this.notifyUpdate();
   }
 
   /**
