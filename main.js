@@ -317,6 +317,11 @@ function setupIPC() {
       if (commentFps) stream.commentFps = commentFps;
       if (recordMode) stream.recordMode = recordMode;
       configUpdateStream(stream.roomId, stream);
+      // 同步更新内存中的状态
+      const state = streamManager.streams.get(stream.roomId);
+      if (state) {
+        state.info = { ...state.info, ...stream };
+      }
       return { success: true, stream };
     } catch (error) {
       return { success: false, error: error.message };

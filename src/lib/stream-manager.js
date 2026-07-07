@@ -134,12 +134,10 @@ class StreamManager {
 
     this.streams.set(roomId, streamState);
 
-    // 9. 创建监控窗口
-    try {
-      await this.createMonitorWindow(streamState);
-    } catch (e) {
+    // 9. 创建监控窗口（非阻塞，不等待页面加载完成）
+    this.createMonitorWindow(streamState).catch(e => {
       logger.warn(`Failed to create monitor window: ${e.message}`);
-    }
+    });
 
     // 10. 开始状态监听
     this.startMonitoring(streamState);
@@ -366,11 +364,15 @@ class StreamManager {
     streamState.monitorWindow = win;
 
     try {
-      await win.loadURL(streamState.info.liveUrl, {
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-      });
+      // 15秒超时，避免页面加载卡死
+      await Promise.race([
+        win.loadURL(streamState.info.liveUrl, {
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('页面加载超时(15s)')), 15000))
+      ]);
     } catch (e) {
-      console.log(`[Monitor] 加载页面出错: ${e.message}`);
+      logger.warn(`[Monitor] 加载页面出错: ${e.message}`);
     }
   }
 
@@ -1116,7 +1118,10 @@ class StreamManager {
         };
 
         this.streams.set(streamInfo.roomId, streamState);
-        await this.createMonitorWindow(streamState);
+        // 非阻塞创建监控窗口
+        this.createMonitorWindow(streamState).catch(e => {
+          logger.warn(`[Restore] 创建监控窗口失败: ${e.message}`);
+        });
         this.startMonitoring(streamState);
       } catch (e) {
         console.error(`[StreamManager] 恢复直播间失败 (${streamInfo.roomId}):`, e.message);

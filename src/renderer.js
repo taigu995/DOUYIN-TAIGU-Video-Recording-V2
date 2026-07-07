@@ -344,7 +344,7 @@ async function confirmAddStream() {
   const accountId = document.getElementById('preview-account-select')?.value || null;
   const commentFps = parseInt(document.querySelector('input[name="preview-fps"]:checked')?.value) || 15;
   try {
-    await window.electronAPI.addStream(
+    const result = await window.electronAPI.addStream(
       pendingPreviewData.inputText,
       pendingPreviewData.customName,
       mode === 'with-account' ? accountId : null,
@@ -352,6 +352,10 @@ async function confirmAddStream() {
       mode,
       pendingPreviewData.streamerName
     );
+    if (!result || !result.success) {
+      showToast('添加失败: ' + (result?.error || '未知错误'), 'error');
+      return;
+    }
     showToast('直播间添加成功', 'success');
     hidePreviewModal();
     elements.inputRoomId.value = '';
