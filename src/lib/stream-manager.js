@@ -41,7 +41,7 @@ class StreamManager {
    * @param {string} inputText - 用户输入（房间号、链接或分享文本）
    */
   async addStreamByInput(inputText, customName, streamerNameFromPreview) {
-    logger.info(`Adding stream, input: "${inputText.substring(0, 50)}...", customName: "${customName || ''}"`);
+    logger.info(`Adding stream, input: "${inputText.substring(0, 50)}...", customName: "${customName || ''}", streamerNameFromPreview: "${streamerNameFromPreview || 'none'}"`);
     
     // 1. 智能解析输入
     const parsed = extractInput(inputText);
@@ -91,11 +91,16 @@ class StreamManager {
     const liveUrl = buildLiveUrl(roomId);
 
     // 5. 获取主播名称（预览已获取则跳过）
-    if (!streamerName && !customName && !streamerNameFromPreview) {
-      streamerName = await this.fetchStreamerName(roomId, liveUrl);
-    }
     if (streamerNameFromPreview) {
       streamerName = streamerNameFromPreview;
+      logger.info(`Using streamer name from preview: ${streamerName}`);
+    } else if (!streamerName && !customName) {
+      logger.info(`Fetching streamer name for roomId: ${roomId}`);
+      try {
+        streamerName = await this.fetchStreamerName(roomId, liveUrl);
+      } catch (e) {
+        logger.warn(`Failed to fetch streamer name: ${e.message}`);
+      }
     }
 
     // 6. 构建最终主播名称：自定义名称优先
@@ -130,7 +135,11 @@ class StreamManager {
     this.streams.set(roomId, streamState);
 
     // 9. 创建监控窗口
-    await this.createMonitorWindow(streamState);
+    try {
+      await this.createMonitorWindow(streamState);
+    } catch (e) {
+      logger.warn(`Failed to create monitor window: ${e.message}`);
+    }
 
     // 10. 开始状态监听
     this.startMonitoring(streamState);
