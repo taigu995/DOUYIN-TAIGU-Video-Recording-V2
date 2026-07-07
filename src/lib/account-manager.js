@@ -3,7 +3,8 @@
  * 支持登录多个抖音账号，每个账号使用独立的 Electron session partition
  */
 const crypto = require('crypto');
-const logger = require('./logger');
+const { getLogger } = require('./logger');
+const logger = getLogger();
 
 // 账号列表（内存缓存，持久化由 config 管理）
 let accounts = [];

@@ -5,7 +5,8 @@
 const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { logger } = require('./src/lib/logger');
+const { getLogger } = require('./src/lib/logger');
+const logger = getLogger();
 const { config } = require('./src/lib/config');
 const { StreamManager } = require('./src/lib/stream-manager');
 const { AccountManager } = require('./src/lib/account-manager');
