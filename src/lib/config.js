@@ -9,7 +9,7 @@ const defaults = {
   checkInterval: 30,      // 直播状态检测间隔（秒）
   videoQuality: 'origin', // 画质：origin=原画
   fileFormat: 'mp4',      // 输出格式
-  autoStart: true,        // 检测到开播自动开始录制
+  autoRecord: true,       // 检测到开播自动开始录制
   launchAtLogin: false,   // 开机自启动
   minimizeToTray: true,   // 关闭时最小化到托盘
   // 评论区拼接设置（全局默认值，可被每直播间设置覆盖）
@@ -54,7 +54,7 @@ function getConfig() {
     checkInterval: s.get('checkInterval'),
     videoQuality: s.get('videoQuality'),
     fileFormat: s.get('fileFormat'),
-    autoStart: s.get('autoStart'),
+    autoRecord: s.get('autoRecord'),
     launchAtLogin: s.get('launchAtLogin'),
     minimizeToTray: s.get('minimizeToTray'),
     commentFps: s.get('commentFps'),
