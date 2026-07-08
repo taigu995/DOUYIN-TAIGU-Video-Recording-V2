@@ -705,6 +705,108 @@ class StreamManager {
   }
 
   /**
+   * 检查并恢复未完成的合并任务
+   * 在应用启动时调用，扫描输出目录下的 .temp 文件夹查找 merge_progress.json
+   */
+  async checkAndResumeMerges() {
+    const config = getConfig();
+    const baseOutputFolder = config.outputFolder || '';
+    if (!baseOutputFolder || !require('fs').existsSync(baseOutputFolder)) {
+      logger.info('[StreamManager] 输出目录不存在，跳过合并恢复检查');
+      return;
+    }
+
+    logger.info('[StreamManager] 检查未完成的合并任务...');
+    const fs = require('fs');
+    const path = require('path');
+    let resumedCount = 0;
+
+    // 递归扫描输出目录下的 .temp 文件夹
+    const scanDir = (dir) => {
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (entry.name === '.temp') {
+              // 检查是否有 merge_progress.json
+              const progressFile = path.join(fullPath, 'merge_progress.json');
+              if (fs.existsSync(progressFile)) {
+                const progressData = Recorder.loadMergeProgress(progressFile);
+                if (progressData && progressData.phase !== 'init' && progressData.progress < 100) {
+                  // 找到未完成的合并任务
+                  logger.info(`[StreamManager] 发现未完成的合并任务: ${progressData.outputFile}`);
+                  logger.info(`[StreamManager] 进度: ${progressData.phase} ${progressData.progress}%`);
+                  
+                  // 异步恢复合并
+                  this._resumeMergeTask(progressData).catch(err => {
+                    logger.error(`[StreamManager] 恢复合并任务失败: ${err.message}`);
+                  });
+                  resumedCount++;
+                }
+              }
+            } else {
+              // 递归扫描子目录
+              scanDir(fullPath);
+            }
+          }
+        }
+      } catch (e) {
+        // 忽略权限错误等
+      }
+    };
+
+    scanDir(baseOutputFolder);
+    logger.info(`[StreamManager] 发现 ${resumedCount} 个未完成的合并任务`);
+  }
+
+  /**
+   * 恢复单个合并任务
+   */
+  async _resumeMergeTask(progressData) {
+    const streamerName = progressData.streamerName || '未知主播';
+    const roomId = progressData.roomId || 'resume';
+
+    // 创建虚拟的 streamState 用于显示进度
+    const streamState = {
+      info: { roomId, streamerName },
+      status: 'merging',
+      mergeProgress: null,
+      isLive: false
+    };
+    this.streams.set(`resume_${roomId}_${Date.now()}`, streamState);
+    this.notifyUpdate();
+
+    const success = await Recorder.resumeMerge(progressData, {
+      onProgress: (data) => {
+        streamState.mergeProgress = data;
+        this.notifyUpdate();
+      },
+      onStatusChange: (status, data) => {
+        streamState.status = status;
+        this.notifyUpdate();
+      },
+      onComplete: (result) => {
+        logger.info(`[StreamManager] 合并恢复完成: ${result.outputFile}`);
+        streamState.status = 'stopped';
+        this.notifyUpdate();
+        // 延迟清理虚拟状态
+        setTimeout(() => {
+          this.streams.delete(streamState.info.roomId);
+          this.notifyUpdate();
+        }, 5000);
+      },
+      onError: (err) => {
+        logger.error(`[StreamManager] 合并恢复错误: ${err.message}`);
+        streamState.status = 'error';
+        this.notifyUpdate();
+      }
+    });
+
+    return success;
+  }
+
+  /**
    * 开始录制指定直播间
    */
   async startRecording(roomId, force = false) {

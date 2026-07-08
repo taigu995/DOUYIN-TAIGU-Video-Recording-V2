@@ -1297,6 +1297,18 @@ body {
   100% { transform: translateX(400%); }
 }
 
+.merge-resume-tag {
+  display: inline-block;
+  background: var(--accent);
+  color: white;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-right: 4px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
 /* ========== 上次录制结果 ========== */
 .last-recording-result {
   display: flex;

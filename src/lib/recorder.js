@@ -90,9 +90,153 @@ class Recorder {
     this._mergeResult = null;
     this._lastRecordingResult = null;
 
+    // 合并进度持久化
+    this._mergeProgressFile = ''; // 合并进度文件路径
+    this._lastProgressSave = 0; // 上次保存进度的时间戳
+
     this.onStatusChange = options.onStatusChange || (() => {});
     this.onError = options.onError || (() => {});
     this.onProgress = options.onProgress || (() => {});
+  }
+
+  /**
+   * 保存合并进度到文件（用于崩溃恢复）
+   * @param {object} progressData - 进度数据
+   */
+  _saveMergeProgress(progressData) {
+    if (!this._mergeProgressFile) return;
+    try {
+      const data = {
+        ...progressData,
+        roomId: this.roomId,
+        streamerName: this.streamerName,
+        outputFile: this.outputFile,
+        tempDir: this._tempDir,
+        tempStreamFile: this._tempStreamFile,
+        commentFramesDir: this._commentFramesDir,
+        timestamp: Date.now()
+      };
+      fs.writeFileSync(this._mergeProgressFile, JSON.stringify(data, null, 2), 'utf-8');
+    } catch (e) {
+      logger.warn('[Recorder] 保存合并进度失败:', e.message);
+    }
+  }
+
+  /**
+   * 删除合并进度文件
+   */
+  _deleteMergeProgress() {
+    if (!this._mergeProgressFile) return;
+    try {
+      if (fs.existsSync(this._mergeProgressFile)) {
+        fs.unlinkSync(this._mergeProgressFile);
+      }
+    } catch (e) {
+      logger.warn('[Recorder] 删除合并进度文件失败:', e.message);
+    }
+  }
+
+  /**
+   * 加载合并进度文件（静态方法，用于崩溃恢复）
+   * @param {string} progressFilePath - 进度文件路径
+   * @returns {object|null} 进度数据或null
+   */
+  static loadMergeProgress(progressFilePath) {
+    try {
+      if (!fs.existsSync(progressFilePath)) return null;
+      const content = fs.readFileSync(progressFilePath, 'utf-8');
+      return JSON.parse(content);
+    } catch (e) {
+      logger.warn('[Recorder] 加载合并进度文件失败:', e.message);
+      return null;
+    }
+  }
+
+  /**
+   * 从保存的进度恢复合并（静态方法，用于崩溃恢复）
+   * @param {object} progressData - 从 loadMergeProgress 加载的进度数据
+   * @param {object} callbacks - 回调函数 { onProgress, onStatusChange, onComplete, onError }
+   * @returns {Promise<boolean>} 是否成功恢复
+   */
+  static async resumeMerge(progressData, callbacks) {
+    const { onProgress = () => {}, onStatusChange = () => {}, onComplete = () => {}, onError = () => {} } = callbacks;
+
+    logger.info(`[Merge-Resume] 尝试恢复合并: ${progressData.outputFile}`);
+    logger.info(`[Merge-Resume] 进度: phase=${progressData.phase}, progress=${progressData.progress}%, frames=${progressData.currentFrame}/${progressData.totalFrames}`);
+
+    // 检查必要的文件是否存在
+    if (!progressData.tempStreamFile || !fs.existsSync(progressData.tempStreamFile)) {
+      logger.error('[Merge-Resume] 直播流临时文件不存在，无法恢复');
+      return false;
+    }
+    if (!progressData.commentFramesDir || !fs.existsSync(progressData.commentFramesDir)) {
+      logger.error('[Merge-Resume] 评论区帧目录不存在，无法恢复');
+      return false;
+    }
+
+    // 计算实际帧数
+    const frameFiles = fs.readdirSync(progressData.commentFramesDir).filter(f => f.endsWith('.jpg'));
+    const actualFrameCount = frameFiles.length;
+    if (actualFrameCount === 0) {
+      logger.error('[Merge-Resume] 评论区帧目录为空，无法恢复');
+      return false;
+    }
+
+    logger.info(`[Merge-Resume] 实际帧数: ${actualFrameCount}, 原始记录: ${progressData.totalFrames}`);
+
+    // 创建临时 Recorder 实例来执行合并
+    const tempRecorder = new Recorder({
+      roomId: progressData.roomId || 'resume',
+      streamerName: progressData.streamerName || '未知主播',
+      outputFolder: path.dirname(progressData.outputFile),
+      commentFps: progressData.fps || 30
+    });
+
+    // 设置临时路径
+    tempRecorder._tempDir = progressData.tempDir;
+    tempRecorder._tempStreamFile = progressData.tempStreamFile;
+    tempRecorder._commentFramesDir = progressData.commentFramesDir;
+    tempRecorder.outputFile = progressData.outputFile;
+    tempRecorder._mergeProgressFile = path.join(progressData.tempDir, 'merge_progress.json');
+    tempRecorder.startTime = new Date(progressData.timestamp - (progressData.currentTimeMs || 0));
+
+    // 设置回调
+    tempRecorder.onProgress = onProgress;
+    tempRecorder.onStatusChange = onStatusChange;
+
+    try {
+      onStatusChange('merging', {
+        roomId: progressData.roomId,
+        streamerName: progressData.streamerName,
+        commentFrames: actualFrameCount,
+        commentFps: progressData.fps,
+        resuming: true
+      });
+
+      const commentInfo = {
+        frameCount: actualFrameCount,
+        fps: progressData.fps || 30,
+        width: COMMENT_WIDTH,
+        height: COMMENT_HEIGHT
+      };
+
+      await tempRecorder._mergeStreamAndComments(commentInfo);
+
+      logger.info(`[Merge-Resume] 合并恢复成功: ${progressData.outputFile}`);
+      onComplete({ success: true, outputFile: progressData.outputFile, resumed: true });
+      return true;
+    } catch (err) {
+      logger.error(`[Merge-Resume] 合并恢复失败: ${err.message}`);
+      // 合并失败时，尝试兜底
+      try {
+        if (fs.existsSync(tempRecorder._tempStreamFile)) {
+          fs.copyFileSync(tempRecorder._tempStreamFile, tempRecorder.outputFile);
+          logger.info('[Merge-Resume] 已将原始直播流复制为输出文件（恢复失败兜底）');
+        }
+      } catch (e) { /* ignore */ }
+      onError(err);
+      return false;
+    }
   }
 
   /**
@@ -489,9 +633,25 @@ class Recorder {
     const resolvedPath = getFFmpegPath();
     const commentVideoFile = path.join(this._tempDir, 'comment_video.mp4');
 
+    // 设置合并进度文件路径
+    this._mergeProgressFile = path.join(this._tempDir, 'merge_progress.json');
+
     // 探测直播流原始分辨率
     const streamRes = this._probeVideoResolution(this._tempStreamFile);
     const isPortrait = streamRes.height > streamRes.width;
+
+    // 保存初始合并进度
+    this._saveMergeProgress({
+      phase: 'init',
+      phaseName: '初始化合并',
+      totalFrames: commentInfo.frameCount,
+      currentFrame: 0,
+      fps: commentInfo.fps,
+      progress: 0,
+      commentVideoFile,
+      streamRes,
+      isPortrait
+    });
     logger.info(`[Merge] 直播流分辨率: ${streamRes.width}x${streamRes.height}, 方向: ${isPortrait ? '竖屏' : '横屏'}`);
 
     // 计算缩放后的直播流尺寸（保持宽高比，以 TARGET_HEIGHT 为基准）
@@ -516,6 +676,21 @@ class Recorder {
     // 计算评论区视频总时长(毫秒)
     const commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
 
+    // 保存评论区编码阶段的进度数据（供 _runFFmpeg 读取）
+    this._mergeProgressData = {
+      totalFrames: commentInfo.frameCount,
+      fps: commentInfo.fps,
+      phase: 'Merge-Comment'
+    };
+    this._saveMergeProgress({
+      phase: 'Merge-Comment',
+      phaseName: '编码评论区',
+      totalFrames: commentInfo.frameCount,
+      currentFrame: 0,
+      fps: commentInfo.fps,
+      progress: 0
+    });
+
     await this._runFFmpeg(resolvedPath, [
       '-f', 'image2',
       '-framerate', String(commentInfo.fps),
@@ -534,6 +709,16 @@ class Recorder {
       throw new Error('评论区视频编码失败');
     }
 
+    // Phase 1 完成，更新进度
+    this._saveMergeProgress({
+      phase: 'Merge-Comment-Done',
+      phaseName: '编码评论区完成',
+      totalFrames: commentInfo.frameCount,
+      currentFrame: commentInfo.frameCount,
+      fps: commentInfo.fps,
+      progress: 100
+    });
+
     // Phase 2: 合并直播流 + 评论区视频
     // 使用 pad 显式扩展画布到 totalWidth，再 overlay 评论区
     // 兼容旧版 FFmpeg（overlay 不会自动扩展画布的问题）
@@ -542,6 +727,21 @@ class Recorder {
 
     // 使用直播流时长作为合并阶段的总时长(如果有)
     const streamDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : commentDurationMs;
+
+    // 保存最终合并阶段的进度数据
+    this._mergeProgressData = {
+      totalFrames: commentInfo.frameCount,
+      fps: commentInfo.fps,
+      phase: 'Merge-Final'
+    };
+    this._saveMergeProgress({
+      phase: 'Merge-Final',
+      phaseName: '合并视频',
+      totalFrames: commentInfo.frameCount,
+      currentFrame: 0,
+      fps: commentInfo.fps,
+      progress: 0
+    });
 
     await this._runFFmpeg(resolvedPath, [
       '-i', this._tempStreamFile,
@@ -568,6 +768,9 @@ class Recorder {
     if (!fs.existsSync(this.outputFile)) {
       throw new Error('最终视频合并失败');
     }
+
+    // 合并完成，删除进度文件
+    this._deleteMergeProgress();
 
     const finalSize = fs.statSync(this.outputFile).size;
     logger.info(`[Merge] 合并完成: ${this.outputFile}, 大小: ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
@@ -612,18 +815,49 @@ class Recorder {
             const currentTimeMs = ((hours * 3600 + minutes * 60 + seconds) * 1000) + (centiseconds * 10);
             const progress = Math.min(100, Math.round((currentTimeMs / totalDurationMs) * 100));
 
+            // 根据阶段计算当前帧数（用于进度显示和崩溃恢复）
+            let currentFrame = 0;
+            let totalFrames = 0;
+            if (tag === 'Merge-Comment') {
+              // 评论区编码阶段：根据时间计算已编码帧数
+              totalFrames = this._mergeProgressData?.totalFrames || 0;
+              const fps = this._mergeProgressData?.fps || 30;
+              currentFrame = Math.min(totalFrames, Math.round((currentTimeMs / 1000) * fps));
+            } else if (tag === 'Merge-Final') {
+              // 最终合并阶段：进度基于时间，帧数用评论区帧数表示
+              totalFrames = this._mergeProgressData?.totalFrames || 0;
+              currentFrame = Math.round(totalFrames * progress / 100);
+            }
+
             // 每 500ms 最多发送一次进度更新
             const now = Date.now();
             if (now - lastProgressEmit > 500) {
               lastProgressEmit = now;
-              this.onProgress({
+              const progressData = {
                 roomId: this.roomId,
                 streamerName: this.streamerName,
                 phase: phaseName,
                 progress: progress,
                 currentTime: currentTimeMs,
-                totalDuration: totalDurationMs
-              });
+                totalDuration: totalDurationMs,
+                currentFrame,
+                totalFrames
+              };
+              this.onProgress(progressData);
+
+              // 持久化进度到文件（每2秒保存一次，避免频繁IO）
+              if (now - this._lastProgressSave > 2000) {
+                this._lastProgressSave = now;
+                this._saveMergeProgress({
+                  phase: tag,
+                  phaseName,
+                  progress,
+                  currentTimeMs,
+                  totalDurationMs,
+                  currentFrame,
+                  totalFrames
+                });
+              }
             }
           }
         }

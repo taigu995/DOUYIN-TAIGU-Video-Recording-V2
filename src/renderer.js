@@ -52,6 +52,9 @@ const elements = {
 // 当前直播间数据
 let streamsData = [];
 
+// 合并进度开始时间追踪（用于计算预计剩余时间）
+const mergeStartTimes = new Map(); // roomId -> timestamp
+
 // 非阻塞确认弹窗（替代原生 confirm，避免阻塞渲染进程导致输入卡顿）
 function showConfirm(message) {
   return new Promise((resolve) => {
@@ -730,10 +733,59 @@ function createStreamCard(stream) {
   if (stream.status === 'merging' && stream.mergeProgress) {
     const progress = stream.mergeProgress.progress || 0;
     const phase = stream.mergeProgress.phase || '';
+    const phaseName = stream.mergeProgress.phaseName || phase;
+    const currentFrame = stream.mergeProgress.currentFrame || 0;
+    const totalFrames = stream.mergeProgress.totalFrames || 0;
+    const currentTime = stream.mergeProgress.currentTime || 0;
+    const totalDuration = stream.mergeProgress.totalDuration || 0;
+
+    // 追踪合并开始时间
+    if (!mergeStartTimes.has(stream.roomId)) {
+      mergeStartTimes.set(stream.roomId, Date.now());
+    }
+    const mergeStartTime = mergeStartTimes.get(stream.roomId);
+
+    // 格式化时间
+    const formatDuration = (ms) => {
+      const seconds = Math.floor(ms / 1000);
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    };
+
+    // 计算预计剩余时间
+    let etaText = '';
+    if (progress > 0 && progress < 100) {
+      const elapsedMs = Date.now() - mergeStartTime;
+      const remainingMs = (elapsedMs / progress) * (100 - progress);
+      if (remainingMs > 0 && remainingMs < 86400000) { // 小于24小时才显示
+        etaText = ` | 预计剩余: ${formatDuration(remainingMs)}`;
+      }
+    }
+
+    // 帧数信息
+    let frameText = '';
+    if (totalFrames > 0) {
+      frameText = ` | 帧: ${currentFrame.toLocaleString()}/${totalFrames.toLocaleString()}`;
+    }
+
+    // 时间进度
+    let timeText = '';
+    if (totalDuration > 0) {
+      timeText = ` | ${formatDuration(currentTime)}/${formatDuration(totalDuration)}`;
+    }
+
+    // 是否恢复中的合并
+    const resumeTag = stream.mergeProgress.resuming ? '<span class="merge-resume-tag">恢复中</span>' : '';
+
     mergeProgressHtml = `
       <div class="merge-progress">
         <div class="merge-progress-bar" style="width: ${progress}%"></div>
-        <span class="merge-progress-text">${phase} ${progress}%</span>
+        <span class="merge-progress-text">
+          ${resumeTag}${phaseName} ${progress}%${timeText}${frameText}${etaText}
+        </span>
       </div>
     `;
   } else if (stream.status === 'merging') {
@@ -744,6 +796,9 @@ function createStreamCard(stream) {
         <span class="merge-progress-text">合并中...</span>
       </div>
     `;
+  } else {
+    // 非合并状态时清除开始时间追踪
+    mergeStartTimes.delete(stream.roomId);
   }
 
   card.innerHTML = `

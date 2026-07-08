@@ -549,6 +549,13 @@ app.whenReady().then(async () => {
     logger.error(`恢复直播间失败: ${err.message}`);
   });
 
+  // 检查并恢复未完成的合并任务（崩溃恢复）
+  setTimeout(() => {
+    streamManager.checkAndResumeMerges().catch(err => {
+      logger.error(`检查合并恢复失败: ${err.message}`);
+    });
+  }, 3000); // 延迟3秒，确保直播间恢复完成
+
   logger.info('App ready');
 });
 
