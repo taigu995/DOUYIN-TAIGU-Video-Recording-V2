@@ -577,10 +577,18 @@ class StreamManager {
       return;
     }
 
-    // 重新加载页面以获取最新状态
-    await monitorWindow.loadURL(info.liveUrl, {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-    });
+    // 重新加载页面以获取最新状态（带超时保护）
+    try {
+      await Promise.race([
+        monitorWindow.loadURL(info.liveUrl, {
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('页面加载超时(15s)')), 15000))
+      ]);
+    } catch (e) {
+      logger.warn(`[Monitor] 重新加载页面出错: ${e.message}`);
+      return;
+    }
 
     // 等待页面加载
     await new Promise(resolve => setTimeout(resolve, 3000));

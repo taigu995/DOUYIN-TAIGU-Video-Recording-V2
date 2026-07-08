@@ -68,16 +68,74 @@ class CommentRenderer {
     this.captureWindow.webContents.setAudioMuted(true);
     logger.info('[CommentRenderer] 窗口音频已静音');
 
-    // 加载直播页面
+    // 加载直播页面（带超时、重试和容错机制）
     logger.info(`[CommentRenderer] 加载直播页面: ${this.liveUrl}`);
-    await this.captureWindow.loadURL(this.liveUrl, {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-    });
+    let pageLoadSuccess = false;
+    const maxRetries = 3;
+    const loadTimeout = 30000; // 30秒超时
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        // 使用 Promise.race 实现超时控制
+        const loadPromise = this.captureWindow.loadURL(this.liveUrl, {
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+        });
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`页面加载超时 (${loadTimeout/1000}s)`)), loadTimeout);
+        });
+        
+        await Promise.race([loadPromise, timeoutPromise]);
+        pageLoadSuccess = true;
+        logger.info(`[CommentRenderer] 页面加载成功 (尝试 ${attempt}/${maxRetries})`);
+        break;
+      } catch (loadErr) {
+        logger.warn(`[CommentRenderer] 页面加载失败 (尝试 ${attempt}/${maxRetries}): ${loadErr.message}`);
+        
+        // 检查窗口是否仍然有效
+        if (!this.captureWindow || this.captureWindow.isDestroyed()) {
+          logger.error('[CommentRenderer] 窗口已被销毁，无法继续加载');
+          break;
+        }
+        
+        // 如果是 ERR_FAILED 错误或超时，页面可能仍在后台加载，等待一下再检查
+        if (loadErr.message && (loadErr.message.includes('ERR_FAILED') || loadErr.message.includes('超时'))) {
+          logger.info('[CommentRenderer] 等待页面后台加载...');
+          // 等待页面可能完成加载
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          // 检查页面是否已加载（通过执行简单 JS 测试）
+          try {
+            if (this.captureWindow && !this.captureWindow.isDestroyed()) {
+              const isLoaded = await this.captureWindow.webContents.executeJavaScript(
+                'document.readyState === "complete" || document.readyState === "interactive"'
+              );
+              if (isLoaded) {
+                logger.info('[CommentRenderer] 页面已在后台加载完成');
+                pageLoadSuccess = true;
+                break;
+              }
+            }
+          } catch (checkErr) {
+            logger.warn('[CommentRenderer] 检查页面状态失败:', checkErr.message);
+          }
+        }
+        
+        // 如果还有重试机会，等待后重试
+        if (attempt < maxRetries) {
+          logger.info(`[CommentRenderer] 等待 2 秒后重试...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    }
+    
+    if (!pageLoadSuccess) {
+      throw new Error(`页面加载失败，已重试 ${maxRetries} 次`);
+    }
 
     // 加载后再次确保静音（某些页面可能会重置静音状态）
     this.captureWindow.webContents.setAudioMuted(true);
 
-    // 等待页面完全加载
+    // 等待页面完全加载（额外等待确保动态内容渲染完成）
     logger.info('[CommentRenderer] 等待页面加载完成...');
     await new Promise(resolve => setTimeout(resolve, 8000));
 
