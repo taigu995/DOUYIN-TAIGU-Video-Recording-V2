@@ -483,6 +483,7 @@ class CommentRenderer {
     this._captureStartTime = this._startTime;
 
     logger.info(`[CommentRenderer] 开始捕获评论区帧, FPS: ${this.targetFps}, 输出目录: ${this.outputDir}`);
+    logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
 
     const targetInterval = Math.floor(1000 / this.targetFps);
     let capturing = false;
@@ -508,6 +509,11 @@ class CommentRenderer {
         const image = await this.captureWindow.webContents.capturePage();
         const imgSize = image.getSize();
 
+        // 使用前10帧记录裁剪信息
+        if (this.frameCount < 10) {
+          logger.info(`[CommentRenderer] 帧#${this.frameCount + 1} 页面尺寸: ${imgSize.width}x${imgSize.height}, 裁剪区域: x=${this._commentRect?.x || 'N/A'}, y=${this._commentRect?.y || 'N/A'}, w=${this._commentRect?.width || 'N/A'}, h=${this._commentRect?.height || 'N/A'}`);
+        }
+
         // 使用探测到的评论区位置进行裁剪
         let cropX, cropY, cropW, cropH;
         if (this._commentRect) {
@@ -528,6 +534,7 @@ class CommentRenderer {
         let croppedImage;
         if (cropW <= 10 || cropH <= 10 || cropX >= imgSize.width) {
           // 裁剪区域无效，使用整个页面
+          logger.warn(`[CommentRenderer] 裁剪区域无效 (cropW=${cropW}, cropH=${cropH}, cropX=${cropX}, imgW=${imgSize.width})，使用整个页面`);
           croppedImage = image;
         } else {
           croppedImage = image.crop({
