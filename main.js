@@ -344,11 +344,11 @@ function setupIPC() {
       if (!input) {
         return { success: false, error: '输入为空，无法解析直播间信息' };
       }
-      const stream = await streamManager.addStreamByInput(input, customName, streamerName);
+      const stream = await streamManager.addStreamByInput(input, customName, streamerName, recordMode);
       // 设置直播间专属配置
       if (accountId) stream.accountId = accountId;
       if (commentFps) stream.commentFps = commentFps;
-      if (recordMode) stream.recordMode = recordMode;
+      // recordMode 已经在 addStreamByInput 中设置，这里不再需要
       configUpdateStream(stream.roomId, stream);
       // 同步更新内存中的状态
       const state = streamManager.streams.get(stream.roomId);

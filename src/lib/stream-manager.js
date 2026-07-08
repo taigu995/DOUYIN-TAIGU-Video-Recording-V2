@@ -43,8 +43,11 @@ class StreamManager {
   /**
    * 添加直播间
    * @param {string} inputText - 用户输入（房间号、链接或分享文本）
+   * @param {string} [customName] - 自定义名称
+   * @param {string} [streamerNameFromPreview] - 预览时获取的主播名称
+   * @param {string} [recordMode] - 录制模式 ('with-account' | 'stream-only' | 'stream+comment' | 'stream+comment-no-login')
    */
-  async addStreamByInput(inputText, customName, streamerNameFromPreview) {
+  async addStreamByInput(inputText, customName, streamerNameFromPreview, recordMode) {
     if (!inputText || typeof inputText !== 'string') {
       throw new Error('输入为空，无法解析直播间信息');
     }
@@ -123,7 +126,7 @@ class StreamManager {
       // 每直播间独立设置
       accountId: null,       // 录制的账号ID（null=无账号）
       commentFps: 15,        // 评论区帧率
-      recordMode: 'with-account', // with-account | stream-only | stream+comment-no-login
+      recordMode: recordMode || 'with-account', // with-account | stream-only | stream+comment | stream+comment-no-login
       autoRecord: true       // 单个直播间自动录制开关（默认开启）
     };
 
