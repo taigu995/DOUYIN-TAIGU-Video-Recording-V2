@@ -342,7 +342,15 @@ class Recorder {
         this._mergeResult = { success: true, outputFile: this.outputFile };
       } catch (mergeErr) {
         logger.error('[Recorder] 合并失败:', mergeErr.message);
-        // 合并失败时，保留原始直播流文件作为兜底
+        // 合并失败时，删除可能存在的部分合并文件，然后保留原始直播流文件作为兜底
+        try {
+          if (fs.existsSync(this.outputFile)) {
+            fs.unlinkSync(this.outputFile);
+            logger.info('[Recorder] 已删除部分合并文件');
+          }
+        } catch (unlinkErr) {
+          logger.warn('[Recorder] 删除部分合并文件失败:', unlinkErr.message);
+        }
         try {
           fs.copyFileSync(this._tempStreamFile, this.outputFile);
           logger.info('[Recorder] 已将原始直播流复制为输出文件（合并失败兜底）');
@@ -376,9 +384,10 @@ class Recorder {
 
     // 通知完成
     const fileSize = this._getFileSize();
+    const actualMerged = this._mergeResult && this._mergeResult.success === true;
     this._lastRecordingResult = {
       hasAudio: this.hasAudio,
-      merged: hasCommentFrames && streamFileExists,
+      merged: actualMerged,
       mergeResult: this._mergeResult,
       saved: true,
       outputFile: this.outputFile,
@@ -392,7 +401,7 @@ class Recorder {
       fileSize: fileSize,
       duration: this.startTime ? Date.now() - this.startTime.getTime() : 0,
       hasAudio: this.hasAudio,
-      merged: hasCommentFrames && streamFileExists,
+      merged: actualMerged,
       commentFrames: commentInfo ? commentInfo.frameCount : 0,
       mergeResult: this._mergeResult
     });
@@ -566,16 +575,14 @@ class Recorder {
 
   /**
    * 运行 FFmpeg 命令并等待完成
-   */
-  /**
-   * 运行 FFmpeg 命令并等待完成
    * @param {string} ffmpegPath - FFmpeg 路径
    * @param {string[]} args - 命令参数
    * @param {string} tag - 日志标签
    * @param {number} [totalDurationMs] - 总时长(毫秒)，用于计算进度
    * @param {string} [phaseName] - 阶段名称，用于进度显示
+   * @param {number} [timeoutMs] - 超时时间(毫秒)，默认根据时长动态计算
    */
-  _runFFmpeg(ffmpegPath, args, tag, totalDurationMs = 0, phaseName = '') {
+  _runFFmpeg(ffmpegPath, args, tag, totalDurationMs = 0, phaseName = '', timeoutMs = 0) {
     return new Promise((resolve, reject) => {
       logger.info(`[${tag}] 启动: ${ffmpegPath} ${args.slice(0, 6).join(' ')}...`);
 
@@ -637,14 +644,21 @@ class Recorder {
         reject(err);
       });
 
-      // 超时保护 (10 分钟)
+      // 动态超时：如果未指定则根据媒体时长计算
+      // 编码/合并速度通常 1x~3x，保守按 1x 计算再加 5 分钟缓冲
+      const effectiveTimeout = timeoutMs > 0
+        ? timeoutMs
+        : (totalDurationMs > 0 ? totalDurationMs + 300000 : 600000);
+      const timeoutMinutes = Math.round(effectiveTimeout / 60000);
+      logger.info(`[${tag}] 超时保护: ${timeoutMinutes} 分钟`);
+
       setTimeout(() => {
         if (proc.exitCode === null) {
-          logger.warn(`[${tag}] 超时，强制终止`);
+          logger.warn(`[${tag}] 超时(${timeoutMinutes}分钟)，强制终止`);
           try { proc.kill('SIGKILL'); } catch (e) { /* ignore */ }
           reject(new Error(`${tag} 超时`));
         }
-      }, 600000);
+      }, effectiveTimeout);
     });
   }
 
