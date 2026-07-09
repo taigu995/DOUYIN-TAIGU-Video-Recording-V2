@@ -55,7 +55,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ========== 日志管理 ==========
   getLogContent: () => ipcRenderer.invoke('get-log-content'),
   getLogPath: () => ipcRenderer.invoke('get-log-path'),
+  getLogFiles: () => ipcRenderer.invoke('get-log-files'),
+  getLogStats: () => ipcRenderer.invoke('get-log-stats'),
+  getLogsByDate: (dateStr) => ipcRenderer.invoke('get-logs-by-date', dateStr),
   exportLogs: () => ipcRenderer.invoke('export-logs'),
+  exportAllLogs: () => ipcRenderer.invoke('export-all-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
 
   // ========== 事件监听 ==========

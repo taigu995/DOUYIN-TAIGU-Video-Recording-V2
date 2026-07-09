@@ -27,6 +27,33 @@ app.setPath('userData', userDataPath);
 // 设置日志目录
 logger.setLogDir(path.join(userDataPath, 'logs'));
 
+// 设置日志自动轮转（每天轮转，保留最近30天）
+logger.setupAutoRotation(30);
+
+// 全局崩溃/异常处理 - 确保日志被保存
+process.on('uncaughtException', (error) => {
+  logger.error(`未捕获的异常: ${error.message}`);
+  logger.error(error.stack);
+  logger.flush();
+  // 给日志写入一点时间，然后退出
+  setTimeout(() => process.exit(1), 1000);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error(`未处理的 Promise 拒绝: ${reason}`);
+  logger.flush();
+});
+
+// 应用退出前确保日志写入磁盘
+app.on('before-quit', () => {
+  logger.info('应用即将退出，正在保存日志...');
+  logger.flush();
+});
+
+app.on('will-quit', () => {
+  logger.info('应用已退出');
+});
+
 // 全局变量
 let mainWindow = null;
 let tray = null;
@@ -531,7 +558,26 @@ function setupIPC() {
 
   // 获取日志文件路径
   ipcMain.handle('get-log-path', () => {
-    return { path: logger.getLogPath() };
+    return { 
+      path: logger.getLogPath(),
+      dir: logger.getLogDir(),
+      autoBackupDir: logger.getAutoBackupDir()
+    };
+  });
+
+  // 获取日志文件列表
+  ipcMain.handle('get-log-files', () => {
+    return logger.getLogFiles();
+  });
+
+  // 获取日志统计信息
+  ipcMain.handle('get-log-stats', () => {
+    return logger.getStats();
+  });
+
+  // 获取指定日期的日志
+  ipcMain.handle('get-logs-by-date', (event, dateStr) => {
+    return logger.getLogsByDate(dateStr);
   });
 
   // 导出日志
@@ -546,6 +592,18 @@ function setupIPC() {
     const content = logger.getRecentLogs(10000);
     fs.writeFileSync(result.filePath, content, 'utf8');
     return { success: true, path: result.filePath };
+  });
+
+  // 导出所有日志（包括历史日志）
+  ipcMain.handle('export-all-logs', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择导出目录',
+      properties: ['openDirectory']
+    });
+    if (result.canceled) return { success: false };
+    
+    const exportPath = logger.exportLogs(result.filePaths[0]);
+    return { success: !!exportPath, path: exportPath };
   });
 
   // 清空日志
@@ -771,14 +829,4 @@ app.on('before-quit', () => {
   if (streamManager) {
     streamManager.destroyAll();
   }
-});
-
-// 未捕获的异常
-process.on('uncaughtException', (error) => {
-  logger.error(`未捕获的异常: ${error.message}`);
-  logger.error(error.stack);
-});
-
-process.on('unhandledRejection', (reason) => {
-  logger.error(`未处理的 Promise 拒绝: ${reason}`);
 });
