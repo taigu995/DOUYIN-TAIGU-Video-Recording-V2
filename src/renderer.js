@@ -119,68 +119,74 @@ async function updateLoginStatus() {
 
 // ========== 初始化 ==========
 async function init() {
+  // 绑定事件 - 无论初始化是否成功都必须绑定事件
+  bindEvents();
+  
   // 加载配置
   if (isElectron) {
-    const config = await window.electronAPI.getConfig();
-    elements.outputFolder.value = config.outputFolder || '';
-    elements.checkInterval.value = config.checkInterval || 30;
-    elements.autoStart.checked = config.autoRecord !== false;
-    elements.minimizeToTray.checked = config.minimizeToTray !== false;
-    elements.launchAtLogin.checked = config.launchAtLogin === true;
+    try {
+      const config = await window.electronAPI.getConfig();
+      if (config) {
+        elements.outputFolder.value = config.outputFolder || '';
+        elements.checkInterval.value = config.checkInterval || 30;
+        elements.autoStart.checked = config.autoRecord !== false;
+        elements.minimizeToTray.checked = config.minimizeToTray !== false;
+        elements.launchAtLogin.checked = config.launchAtLogin === true;
 
-    if (!config.outputFolder) {
-      const defaultFolder = await window.electronAPI.getDefaultFolder();
-      elements.outputFolder.placeholder = defaultFolder;
-    }
+        if (!config.outputFolder) {
+          const defaultFolder = await window.electronAPI.getDefaultFolder();
+          elements.outputFolder.placeholder = defaultFolder;
+        }
+      }
 
-    // 监听状态更新
-    window.electronAPI.onStreamsUpdated((data) => {
-      console.log('[Renderer] 收到状态更新:', data.map(s => ({ roomId: s.roomId, status: s.status, isLive: s.isLive })));
-      streamsData = data;
-      renderStreamsList(data);
-    });
+      // 监听状态更新
+      window.electronAPI.onStreamsUpdated((data) => {
+        console.log('[Renderer] 收到状态更新:', data.map(s => ({ roomId: s.roomId, status: s.status, isLive: s.isLive })));
+        streamsData = data;
+        renderStreamsList(data);
+      });
 
-    // 监听登录状态变化
-    window.electronAPI.onLoginStatusChanged(() => {
+      // 监听登录状态变化
+      window.electronAPI.onLoginStatusChanged(() => {
+        updateLoginStatus();
+        loadAccountList();
+        showToast('登录状态已更新', 'success');
+      });
+
+      // 初始加载
+      const status = await window.electronAPI.getAllStatus();
+      streamsData = status || [];
+      renderStreamsList(streamsData);
+
+      // 检查登录状态
       updateLoginStatus();
-      loadAccountList();
-      showToast('登录状态已更新', 'success');
-    });
-
-    // 初始加载
-    const status = await window.electronAPI.getAllStatus();
-    streamsData = status || [];
-    renderStreamsList(streamsData);
-
-    // 检查登录状态
-    updateLoginStatus();
+      
+      // 初始化合并工具
+      initManualMerge();
+    } catch (err) {
+      console.error('[Renderer] 初始化失败:', err);
+      showToast('初始化失败，部分功能可能不可用: ' + err.message, 'error');
+    }
   } else {
     // 非 Electron 环境（浏览器预览），显示模拟数据
     renderDemoMode();
-  }
-
-  // 绑定事件
-  bindEvents();
-  
-  // 初始化合并工具
-  if (isElectron) {
-    initManualMerge();
   }
 }
 
 // ========== 事件绑定 ==========
 function bindEvents() {
-  elements.btnAdd.addEventListener('click', handleAddStream);
+  // 安全绑定事件，防止某个元素不存在导致后续事件绑定失败
+  if (elements.btnAdd) elements.btnAdd.addEventListener('click', handleAddStream);
   // Enter 键添加
   [elements.inputRoomId, elements.inputProfileUrl, elements.inputLiveUrl].forEach(input => {
-    input.addEventListener('keydown', (e) => {
+    if (input) input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         handleAddStream();
       }
     });
   });
 
-  elements.btnLogin.addEventListener('click', async () => {
+  if (elements.btnLogin) elements.btnLogin.addEventListener('click', async () => {
     if (isElectron) {
       const result = await window.electronAPI.openLogin();
       if (result && result.success) {
@@ -194,11 +200,11 @@ function bindEvents() {
     }
   });
 
-  elements.btnSettings.addEventListener('click', () => {
+  if (elements.btnSettings) elements.btnSettings.addEventListener('click', () => {
     elements.settingsPanel.style.display = 'flex';
   });
 
-  elements.btnCloseSettings.addEventListener('click', () => {
+  if (elements.btnCloseSettings) elements.btnCloseSettings.addEventListener('click', () => {
     elements.settingsPanel.style.display = 'none';
   });
 
@@ -214,9 +220,9 @@ function bindEvents() {
     radio.addEventListener('change', (e) => handlePreviewModeChange(e.target.value));
   });
 
-  elements.btnSaveSettings.addEventListener('click', handleSaveSettings);
+  if (elements.btnSaveSettings) elements.btnSaveSettings.addEventListener('click', handleSaveSettings);
 
-  elements.btnBrowse.addEventListener('click', async () => {
+  if (elements.btnBrowse) elements.btnBrowse.addEventListener('click', async () => {
     if (isElectron) {
       const result = await window.electronAPI.selectFolder();
       if (!result.canceled) {
@@ -248,12 +254,12 @@ function bindEvents() {
   loadAccountList();
 
   // 日志查看器事件
-  elements.btnLogs.addEventListener('click', showLogPanel);
-  elements.btnCloseLogs.addEventListener('click', hideLogPanel);
-  elements.btnRefreshLogs.addEventListener('click', loadLogs);
-  elements.btnOpenLogFile.addEventListener('click', openLogFolder);
-  elements.btnExportLogs.addEventListener('click', exportLogs);
-  elements.btnClearLogs.addEventListener('click', clearLogs);
+  if (elements.btnLogs) elements.btnLogs.addEventListener('click', showLogPanel);
+  if (elements.btnCloseLogs) elements.btnCloseLogs.addEventListener('click', hideLogPanel);
+  if (elements.btnRefreshLogs) elements.btnRefreshLogs.addEventListener('click', loadLogs);
+  if (elements.btnOpenLogFile) elements.btnOpenLogFile.addEventListener('click', openLogFolder);
+  if (elements.btnExportLogs) elements.btnExportLogs.addEventListener('click', exportLogs);
+  if (elements.btnClearLogs) elements.btnClearLogs.addEventListener('click', clearLogs);
 
   // 功能介绍按钮
   const btnAbout = document.getElementById('btn-about');
