@@ -795,6 +795,10 @@ class Recorder {
       let lastProgressEmit = 0;
       let progressParseCount = 0;
       const parseProgress = (msg) => {
+        // 调试：记录 parseProgress 被调用的情况
+        if (msg.includes('time=')) {
+          logger.info(`[Recorder] parseProgress 被调用, msg 包含 time=, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
+        }
         // 解析 FFmpeg 进度输出
         if (totalDurationMs > 0 && phaseName) {
           const timeMatch = msg.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
@@ -860,10 +864,17 @@ class Recorder {
         }
       };
 
+      let stdoutCallCount = 0;
+      let stderrCallCount = 0;
+      
       proc.stdout.on('data', (data) => {
+        stdoutCallCount++;
         const msg = data.toString().trim();
         if (msg) {
           logger.info(`[${tag}] ${msg}`);
+          if (stdoutCallCount <= 3) {
+            logger.info(`[Recorder] stdout 第 ${stdoutCallCount} 次调用, msg 长度=${msg.length}, 包含 time=${msg.includes('time=')}`);
+          }
           if (msg.includes('time=')) {
             logger.info(`[Recorder] stdout 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
           }
@@ -872,11 +883,15 @@ class Recorder {
       });
 
       proc.stderr.on('data', (data) => {
+        stderrCallCount++;
         const msg = data.toString();
         stderr += msg;
         const trimmed = msg.trim();
         if (trimmed) {
           logger.info(`[${tag}] ${trimmed}`);
+          if (stderrCallCount <= 3) {
+            logger.info(`[Recorder] stderr 第 ${stderrCallCount} 次调用, msg 长度=${trimmed.length}, 包含 time=${trimmed.includes('time=')}`);
+          }
           if (trimmed.includes('time=')) {
             logger.info(`[Recorder] stderr 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
           }
