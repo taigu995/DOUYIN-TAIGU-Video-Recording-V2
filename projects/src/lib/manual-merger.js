@@ -7,8 +7,7 @@ const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const { getFFmpegPath } = require('./recorder');
-const { getLogger } = require('./logger');
-const logger = getLogger();
+const logger = require('./logger');
 
 class ManualMerger {
   constructor() {

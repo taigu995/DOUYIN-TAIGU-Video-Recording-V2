@@ -40,10 +40,7 @@ class Logger {
         const { app } = require('electron');
         await app.whenReady();
         
-        // 只在 logDir 未设置时才设置（避免覆盖 setLogDir 的设置）
-        if (!this.logDir) {
-          this.logDir = path.join(app.getPath('userData'), 'logs');
-        }
+        this.logDir = path.join(app.getPath('userData'), 'logs');
         this.autoBackupDir = path.join(app.getPath('documents'), '抖音直播录制工具V2', 'logs');
         this.logFile = this._getLogFilePath();
         this._initialized = true;
@@ -89,6 +86,9 @@ class Logger {
 
       // 检查是否需要轮转日志（日期变化）
       this._checkRotation();
+
+      // 清理旧日志
+      this._cleanupOldLogs();
 
       // 注册崩溃处理
       this._registerCrashHandlers();
@@ -144,11 +144,72 @@ class Logger {
   }
 
   /**
+   * 清理旧日志（保留最近 keepDays 天）
+   */
+  _cleanupOldLogs() {
+    try {
+      const files = fs.readdirSync(this.logDir);
+      const logFiles = files.filter(f => f.startsWith('app-') && f.endsWith('.log'));
+      
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - this.keepDays);
+      const cutoffStr = this._getDateStr(cutoffDate);
+      
+      logFiles.forEach(file => {
+        const match = file.match(/app-(\d{4}-\d{2}-\d{2})\.log/);
+        if (match) {
+          const fileDate = match[1];
+          if (fileDate < cutoffStr) {
+            const filePath = path.join(this.logDir, file);
+            fs.unlinkSync(filePath);
+            console.log(`Deleted old log file: ${file}`);
+          }
+        }
+      });
+
+      // 同时清理自动备份目录的旧日志
+      if (fs.existsSync(this.autoBackupDir)) {
+        const backupFiles = fs.readdirSync(this.autoBackupDir);
+        const backupLogFiles = backupFiles.filter(f => f.startsWith('app-') && f.endsWith('.log'));
+        
+        backupLogFiles.forEach(file => {
+          const match = file.match(/app-(\d{4}-\d{2}-\d{2})\.log/);
+          if (match) {
+            const fileDate = match[1];
+            if (fileDate < cutoffStr) {
+              const filePath = path.join(this.autoBackupDir, file);
+              fs.unlinkSync(filePath);
+              console.log(`Deleted old backup log file: ${file}`);
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('Failed to cleanup old logs:', err);
+    }
+  }
+
+  /**
    * 注册崩溃处理
-   * 注意：uncaughtException/unhandledRejection 已在 main.js 中处理
-   * 这里只注册 SIGTERM/SIGINT 和 Electron 事件
    */
   _registerCrashHandlers() {
+    // 处理未捕获的异常
+    process.on('uncaughtException', (err) => {
+      this.write('FATAL', 'Uncaught Exception', err);
+      this._flushSync();
+      this._saveCrashDump('uncaughtException', err);
+      console.error('Uncaught Exception:', err);
+      // 给一点时间让日志写入完成
+      setTimeout(() => process.exit(1), 1000);
+    });
+
+    // 处理未处理的 Promise 拒绝
+    process.on('unhandledRejection', (reason, promise) => {
+      this.write('ERROR', 'Unhandled Rejection at Promise', { reason: String(reason) });
+      this._flushSync();
+      console.error('Unhandled Rejection at Promise:', promise, 'reason:', reason);
+    });
+
     // 处理进程退出信号
     process.on('SIGTERM', () => {
       this.write('INFO', 'Received SIGTERM signal, shutting down...');
@@ -161,6 +222,19 @@ class Logger {
       this._flushSync();
       process.exit(0);
     });
+
+    // Electron 崩溃处理
+    if (app) {
+      app.on('before-quit', () => {
+        this.write('INFO', 'App is about to quit, flushing logs...');
+        this._flushSync();
+      });
+
+      app.on('window-all-closed', () => {
+        this.write('INFO', 'All windows closed');
+        this._flushSync();
+      });
+    }
   }
 
   /**
@@ -282,7 +356,7 @@ class Logger {
   write(level, message, meta) {
     try {
       // 确保已初始化
-      if (!this._initialized) {
+      if (!this.initialized) {
         this._ensureInitialized();
       }
       
@@ -372,9 +446,6 @@ class Logger {
    */
   getLogFiles() {
     try {
-      if (!this.logDir || !fs.existsSync(this.logDir)) {
-        return [];
-      }
       const files = fs.readdirSync(this.logDir);
       return files
         .filter(f => f.startsWith('app-') && f.endsWith('.log'))
@@ -481,20 +552,15 @@ class Logger {
   setupAutoRotation(retentionDays = 30) {
     this.retentionDays = retentionDays;
     
-    // 延迟清理，等待初始化完成
-    this._ensureInitialized().then(() => {
-      // 启动时立即清理一次旧日志
+    // 启动时立即清理一次旧日志
+    this._cleanupOldLogs();
+    
+    // 每小时检查一次是否需要清理
+    this._cleanupTimer = setInterval(() => {
       this._cleanupOldLogs();
-      
-      // 每小时检查一次是否需要清理
-      this._cleanupTimer = setInterval(() => {
-        this._cleanupOldLogs();
-      }, 60 * 60 * 1000); // 1小时
-      
-      this.info(`Auto rotation setup: retention=${retentionDays} days`);
-    }).catch(err => {
-      console.error('Failed to setup auto rotation:', err);
-    });
+    }, 60 * 60 * 1000); // 1小时
+    
+    this.info(`Auto rotation setup: retention=${retentionDays} days`);
   }
 
   /**
@@ -502,12 +568,9 @@ class Logger {
    */
   _cleanupOldLogs() {
     try {
-      if (!this.logDir || !fs.existsSync(this.logDir)) {
-        return; // 日志目录不存在，跳过清理
-      }
       const logFiles = this.getLogFiles();
       const now = Date.now();
-      const retentionMs = (this.retentionDays || 30) * 24 * 60 * 60 * 1000;
+      const retentionMs = this.retentionDays * 24 * 60 * 60 * 1000;
       
       logFiles.forEach(file => {
         const fileDate = new Date(file.date);
@@ -520,7 +583,7 @@ class Logger {
         }
       });
     } catch (err) {
-      console.error('Failed to cleanup old logs:', err);
+      this.error('Failed to cleanup old logs', err);
     }
   }
 

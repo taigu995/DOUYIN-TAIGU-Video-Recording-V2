@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>抖音直播录制工具V2</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 顶部标题栏 -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="23 7 16 12 23 17 23 7"></polygon>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+        </div>
+        <h1>抖音直播录制工具V2</h1>
+      </div>
+      <div class="header-right">
+        <div id="login-status" class="login-status" title="点击登录抖音">
+          <div class="login-status__avatar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+          </div>
+          <div class="login-status__info">
+            <span id="login-status__name" class="login-status__name">未登录</span>
+            <span id="login-status__badge" class="login-status__badge login-status__badge--offline">未登录</span>
+          </div>
+        </div>
+        <button id="btn-login" class="btn btn-ghost" title="登录抖音账号">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          登录抖音
+        </button>
+        <button id="btn-settings" class="btn btn-ghost" title="设置">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+          </svg>
+        </button>
+        <button id="btn-about" class="btn btn-ghost" title="功能介绍">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </button>
+        <button id="btn-logs" class="btn btn-ghost" title="查看日志">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+        </button>
+        <button id="btn-manual-merge" class="btn btn-ghost" title="手动合并工具">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 添加直播间区域 -->
+    <section class="add-section">
+      <div class="add-input-group">
+        <div class="input-row">
+          <div class="input-item">
+            <label class="input-label">房间号</label>
+            <input
+              type="text"
+              id="input-room-id"
+              class="input-field"
+              placeholder="如：123456"
+            />
+          </div>
+          <div class="input-item">
+            <label class="input-label">主播主页链接</label>
+            <input
+              type="text"
+              id="input-profile-url"
+              class="input-field"
+              placeholder="https://v.douyin.com/xxxxx/"
+            />
+          </div>
+          <div class="input-item">
+            <label class="input-label">直播间链接</label>
+            <input
+              type="text"
+              id="input-live-url"
+              class="input-field"
+              placeholder="https://live.douyin.com/xxxxx"
+            />
+          </div>
+          <div class="input-item">
+            <label class="input-label">主播名称 (可选)</label>
+            <input
+              type="text"
+              id="input-streamer-name"
+              class="input-field"
+              placeholder="无法识别时可手动填写"
+            />
+          </div>
+          <button id="btn-add" class="btn btn-primary btn-add">
+            添加
+          </button>
+        </div>
+      </div>
+      <div id="add-error" class="error-msg" style="display:none;"></div>
+    </section>
+
+    <!-- 直播间列表 -->
+    <section class="streams-section">
+      <div class="section-header">
+        <h2>直播间列表</h2>
+        <span id="stream-count" class="badge">0 个直播间</span>
+      </div>
+
+      <div id="streams-list" class="streams-list">
+        <!-- 空状态 -->
+        <div id="empty-state" class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
+            <polygon points="23 7 16 12 23 17 23 7"></polygon>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+          <p>暂无直播间，请粘贴抖音直播链接添加</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置面板 -->
+    <section id="settings-panel" class="settings-panel" style="display:none;">
+      <div class="settings-header">
+        <h2>设置</h2>
+        <button id="btn-close-settings" class="btn btn-ghost btn-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="settings-body">
+        <div class="setting-item">
+          <label>录制文件保存位置</label>
+          <div class="setting-row">
+            <input type="text" id="output-folder" class="input-text" placeholder="请选择保存位置" readonly>
+            <button id="btn-browse" class="btn btn-secondary btn-sm">浏览...</button>
+          </div>
+        </div>
+        <div class="setting-item">
+          <label>直播状态检测间隔（秒）</label>
+          <input type="number" id="check-interval" class="input-text" min="10" max="300" value="30">
+        </div>
+        <div class="setting-item">
+          <label class="checkbox-label">
+            <input type="checkbox" id="auto-start" checked>
+            <span>检测到开播自动开始录制</span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <label class="checkbox-label">
+            <input type="checkbox" id="minimize-to-tray" checked>
+            <span>关闭窗口时最小化到系统托盘</span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <label class="checkbox-label">
+            <input type="checkbox" id="launch-at-login">
+            <span>开机自动启动</span>
+          </label>
+          <p class="setting-hint">启用后，程序将随 Windows 系统自动启动，持续监控直播间</p>
+        </div>
+        <div class="setting-item">
+          <label>账号管理</label>
+          <div id="account-list" class="account-list">
+            <p class="account-empty-hint">暂无登录账号</p>
+          </div>
+          <div class="setting-row" style="margin-top: 8px;">
+            <button id="btn-add-account" class="btn btn-secondary btn-sm">登录新账号</button>
+          </div>
+          <p class="setting-hint">支持登录多个抖音账号，每个直播间可选择使用不同账号录制。</p>
+        </div>
+        <div class="settings-actions">
+          <button id="btn-save-settings" class="btn btn-primary">保存设置</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 日志查看器 -->
+    <section id="log-panel" class="settings-panel" style="display:none;">
+      <div class="settings-header">
+        <h2>运行日志</h2>
+        <div class="settings-header-actions">
+          <button id="btn-refresh-logs" class="btn btn-ghost btn-sm" title="刷新日志">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+          </button>
+          <button id="btn-export-logs" class="btn btn-ghost btn-sm" title="导出日志文件">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            导出
+          </button>
+          <button id="btn-open-log-file" class="btn btn-ghost btn-sm" title="打开日志文件所在目录">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+          </button>
+          <button id="btn-clear-logs" class="btn btn-ghost btn-sm" title="清空日志">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+          <button id="btn-close-logs" class="btn btn-ghost btn-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="settings-body">
+        <div id="log-content" class="log-content">
+          <p class="log-loading">加载中...</p>
+        </div>
+        <div class="settings-actions log-actions-bar">
+          <span id="log-file-path" class="log-file-path"></span>
+          <span id="log-size-info" class="log-size-info"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 状态栏 -->
+    <footer class="footer">
+      <div class="footer-left">
+        <span id="status-text">就绪</span>
+      </div>
+      <div class="footer-right">
+        <span id="recording-count">录制中: 0</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- 功能介绍弹窗 -->
+  <div id="about-modal" class="history-modal" style="display:none;">
+    <div class="history-modal-content about-modal-content">
+      <div class="history-modal-header">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" style="vertical-align: middle; margin-right: 6px;">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+          功能介绍
+        </h3>
+        <button class="history-close-btn" onclick="document.getElementById('about-modal').style.display='none'">&times;</button>
+      </div>
+      <div class="about-body">
+        <div class="about-section">
+          <h4>抖音直播录制工具V2</h4>
+          <p class="about-version">版本 1.0.0</p>
+          <p class="about-desc">一款基于 Electron 的 Windows 桌面应用，可自动录制抖音直播间画面（含弹幕和礼物特效），支持多直播间同时监控与录制。</p>
+        </div>
+
+        <div class="about-section">
+          <h4>核心功能</h4>
+          <ul class="about-feature-list">
+            <li>
+              <span class="feature-icon">🔗</span>
+              <div>
+                <strong>多种添加方式</strong>
+                <p>支持房间号、主播主页链接、直播间链接、分享文本等多种方式添加直播间</p>
+              </div>
+            </li>
+            <li>
+              <span class="feature-icon">📡</span>
+              <div>
+                <strong>自动监控与录制</strong>
+                <p>定时检测直播状态，开播自动开始录制，无需手动操作</p>
+              </div>
+            </li>
+            <li>
+              <span class="feature-icon">🎬</span>
+              <div>
+                <strong>完整画面捕获</strong>
+                <p>通过离屏渲染技术，录制完整的直播画面，包括视频内容、弹幕和礼物特效</p>
+              </div>
+            </li>
+            <li>
+              <span class="feature-icon">📁</span>
+              <div>
+                <strong>按主播分类存储</strong>
+                <p>录制文件按主播名称自动创建子文件夹，文件名包含时间戳，方便查找管理</p>
+              </div>
+            </li>
+            <li>
+              <span class="feature-icon">📋</span>
+              <div>
+                <strong>录制记录</strong>
+                <p>记录每次录制的开始/结束时间、文件大小等信息，支持打开文件所在目录</p>
+              </div>
+            </li>
+            <li>
+              <span class="feature-icon">⚙️</span>
+              <div>
+                <strong>灵活配置</strong>
+                <p>支持自定义输出路径、检测间隔等参数，可设置开机自启动</p>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="about-section">
+          <h4>使用说明</h4>
+          <ol class="about-steps">
+            <li>点击"登录抖音"按钮登录你的抖音账号</li>
+            <li>在上方输入框中粘贴房间号、主播主页链接或直播间链接</li>
+            <li>点击"添加"按钮将直播间添加到监控列表</li>
+            <li>开启"自动录制"后，检测到开播将自动开始录制</li>
+            <li>也可点击"开始录制"按钮手动控制录制</li>
+          </ol>
+        </div>
+
+        <div class="about-section about-footer-section">
+          <p>本项目为开源项目，欢迎反馈与交流</p>
+          <div class="about-links-row">
+            <a href="#" id="about-github-link" class="about-github-link">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+              </svg>
+              GitHub 项目地址
+            </a>
+            <a href="#" id="about-bilibili-link" class="about-github-link">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17.813 4.653h.854c1.51.054 2.769.578 3.773 1.574 1.004.995 1.524 2.249 1.56 3.76v7.36c-.036 1.51-.556 2.769-1.56 3.773s-2.262 1.524-3.773 1.56H5.333c-1.51-.036-2.769-.556-3.773-1.56S.036 18.858 0 17.347v-7.36c.036-1.511.556-2.765 1.56-3.76 1.004-.996 2.262-1.52 3.773-1.574h.774l-1.174-1.12a1.234 1.234 0 0 1-.373-.906c0-.356.124-.658.373-.907l.027-.027c.267-.249.573-.373.92-.373.347 0 .653.124.92.373L9.653 4.44c.071.071.134.142.187.213h4.267a.836.836 0 0 1 .16-.213l2.853-2.747c.267-.249.573-.373.92-.373.347 0 .662.151.929.4.267.249.391.551.391.907 0 .355-.124.657-.373.906L17.813 4.653zM5.333 7.24c-.746.018-1.373.276-1.88.773-.506.498-.769 1.13-.786 1.894v7.52c.017.764.28 1.395.786 1.893.507.498 1.134.756 1.88.773h13.334c.746-.017 1.373-.275 1.88-.773.506-.498.769-1.129.786-1.893v-7.52c-.017-.765-.28-1.396-.786-1.894-.507-.497-1.134-.755-1.88-.773H5.333zm4 5.2c0-.736-.338-1.373-.987-1.88-.65-.507-1.37-.76-2.16-.76-.79 0-1.51.253-2.16.76-.65.507-.987 1.144-.987 1.88 0 .737.338 1.374.987 1.88.65.507 1.37.76 2.16.76.79 0 1.51-.253 2.16-.76.65-.506.987-1.143.987-1.88zm8 0c0-.736-.338-1.373-.987-1.88-.65-.507-1.37-.76-2.16-.76-.79 0-1.51.253-2.16.76-.65.507-.987 1.144-.987 1.88 0 .737.338 1.374.987 1.88.65.507 1.37.76 2.16.76.79 0 1.51-.253 2.16-.76.65-.506.987-1.143.987-1.88z"/>
+              </svg>
+              B站:太古快乐型
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加直播间预览确认弹窗 -->
+  <div id="preview-modal" class="preview-modal-overlay" style="display:none;">
+    <div class="preview-modal">
+      <div class="preview-modal-header">
+        <h3>确认添加直播间</h3>
+        <button id="preview-close" class="preview-modal-close">&times;</button>
+      </div>
+      <div class="preview-modal-body">
+        <div class="preview-info">
+          <div class="preview-info-row">
+            <span class="preview-label">主播名称</span>
+            <span id="preview-streamer-name" class="preview-value">-</span>
+          </div>
+          <div class="preview-info-row">
+            <span class="preview-label">房间号</span>
+            <span id="preview-room-id" class="preview-value">-</span>
+          </div>
+        </div>
+
+        <div class="preview-section">
+          <h4>录制模式</h4>
+          <div class="record-mode-options">
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="with-account" checked>
+              <div class="record-mode-content">
+                <span class="record-mode-title">有账号录制</span>
+                <span class="record-mode-desc">使用登录账号录制直播画面+评论区弹幕</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream-only">
+              <div class="record-mode-content">
+                <span class="record-mode-title">仅录制直播流</span>
+                <span class="record-mode-desc">直接录制直播画面和声音，不录制评论区</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream+comment">
+              <div class="record-mode-content">
+                <span class="record-mode-title">有账号+评论区</span>
+                <span class="record-mode-desc">使用登录账号录制直播画面+评论区弹幕</span>
+              </div>
+            </label>
+            <label class="record-mode-option">
+              <input type="radio" name="record-mode" value="stream+comment-no-login">
+              <div class="record-mode-content">
+                <span class="record-mode-title">无账号+评论区</span>
+                <span class="record-mode-desc">不登录账号，录制直播画面+评论区弹幕</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div id="preview-account-section" class="preview-section">
+          <h4>选择录制账号</h4>
+          <select id="preview-account-select" class="preview-select">
+            <option value="">请选择账号...</option>
+          </select>
+          <p id="preview-account-hint" class="preview-hint"></p>
+        </div>
+
+        <div class="preview-section">
+          <h4>评论区帧率</h4>
+          <div class="fps-options">
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="30">
+              <span class="fps-label">30fps</span>
+              <span class="fps-desc">最流畅</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="15" checked>
+              <span class="fps-label">15fps</span>
+              <span class="fps-desc">推荐</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="10">
+              <span class="fps-label">10fps</span>
+              <span class="fps-desc">省资源</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="preview-fps" value="5">
+              <span class="fps-label">5fps</span>
+              <span class="fps-desc">最省</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="preview-modal-footer">
+        <button id="preview-cancel" class="btn btn-ghost">取消</button>
+        <button id="preview-confirm" class="btn btn-primary">确认添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手动合并工具弹窗 -->
+  <div id="manual-merge-modal" class="modal-overlay" style="display:none;">
+    <div class="modal" style="max-width:600px;">
+      <div class="modal-header">
+        <h3>手动合并工具</h3>
+        <button class="modal-close" id="manual-merge-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">直播流视频文件 <span class="required">*</span></label>
+          <div class="manual-merge-file-input">
+            <input type="text" id="manual-merge-stream-path" class="form-input" placeholder="选择或拖拽直播流视频文件 (.mp4)" readonly>
+            <button id="manual-merge-browse-stream" class="btn btn-ghost">浏览...</button>
+          </div>
+          <div class="manual-merge-hint">支持 .mp4 格式的直播流录制文件</div>
+        </div>
+        
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">评论区帧目录 <span class="required">*</span></label>
+          <div class="manual-merge-file-input">
+            <input type="text" id="manual-merge-frames-path" class="form-input" placeholder="选择或拖拽评论区帧文件夹" readonly>
+            <button id="manual-merge-browse-frames" class="btn btn-ghost">浏览...</button>
+          </div>
+          <div class="manual-merge-hint">包含 comment_frames 子文件夹的录制目录，或直接选择 comment_frames 文件夹</div>
+        </div>
+        
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">输出文件</label>
+          <div class="manual-merge-file-input">
+            <input type="text" id="manual-merge-output-path" class="form-input" placeholder="选择输出文件路径">
+            <button id="manual-merge-browse-output" class="btn btn-ghost">浏览...</button>
+          </div>
+          <div class="manual-merge-hint">留空则自动生成在视频文件同级目录</div>
+        </div>
+        
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">评论区帧率</label>
+          <div class="manual-merge-fps-group">
+            <label class="fps-option">
+              <input type="radio" name="manual-merge-fps" value="10" checked>
+              <span class="fps-label">10fps</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="manual-merge-fps" value="5">
+              <span class="fps-label">5fps</span>
+            </label>
+            <label class="fps-option">
+              <input type="radio" name="manual-merge-fps" value="15">
+              <span class="fps-label">15fps</span>
+            </label>
+          </div>
+        </div>
+        
+        <div id="manual-merge-progress" class="manual-merge-progress" style="display:none;">
+          <div class="manual-merge-progress-bar">
+            <div class="manual-merge-progress-fill"></div>
+          </div>
+          <div class="manual-merge-progress-text">准备中...</div>
+        </div>
+        
+        <div id="manual-merge-result" class="manual-merge-result" style="display:none;">
+          <div class="manual-merge-result-icon"></div>
+          <div class="manual-merge-result-text"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="manual-merge-cancel" class="btn btn-ghost">关闭</button>
+        <button id="manual-merge-start" class="btn btn-primary">开始合并</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

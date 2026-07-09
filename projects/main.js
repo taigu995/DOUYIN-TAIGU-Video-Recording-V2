@@ -28,31 +28,20 @@ app.setPath('userData', userDataPath);
 logger.setLogDir(path.join(userDataPath, 'logs'));
 
 // 设置日志自动轮转（每天轮转，保留最近30天）
-// 注意：setupAutoRotation 内部会等待 app 就绪后再执行清理
 logger.setupAutoRotation(30);
 
 // 全局崩溃/异常处理 - 确保日志被保存
-// 注意：logger 内部已注册 uncaughtException/unhandledRejection 处理器
-// 这里只添加额外的退出保护
 process.on('uncaughtException', (error) => {
-  try {
-    logger.error(`未捕获的异常: ${error.message}`);
-    logger.error(error.stack);
-    logger.flush();
-  } catch (e) {
-    console.error('Failed to log error:', e);
-  }
+  logger.error(`未捕获的异常: ${error.message}`);
+  logger.error(error.stack);
+  logger.flush();
   // 给日志写入一点时间，然后退出
   setTimeout(() => process.exit(1), 1000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  try {
-    logger.error(`未处理的 Promise 拒绝: ${reason}`);
-    logger.flush();
-  } catch (e) {
-    console.error('Failed to log rejection:', e);
-  }
+  logger.error(`未处理的 Promise 拒绝: ${reason}`);
+  logger.flush();
 });
 
 // 应用退出前确保日志写入磁盘
