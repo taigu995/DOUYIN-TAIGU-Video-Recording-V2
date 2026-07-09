@@ -793,11 +793,16 @@ class Recorder {
 
       let stderr = '';
       let lastProgressEmit = 0;
+      let progressParseCount = 0;
       const parseProgress = (msg) => {
         // 解析 FFmpeg 进度输出
         if (totalDurationMs > 0 && phaseName) {
           const timeMatch = msg.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
           if (timeMatch) {
+            progressParseCount++;
+            if (progressParseCount <= 3) {
+              logger.info(`[Recorder] 进度解析成功: tag=${tag}, time=${timeMatch[0]}, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
+            }
             const hours = parseInt(timeMatch[1], 10);
             const minutes = parseInt(timeMatch[2], 10);
             const seconds = parseInt(timeMatch[3], 10);
@@ -859,6 +864,9 @@ class Recorder {
         const msg = data.toString().trim();
         if (msg) {
           logger.info(`[${tag}] ${msg}`);
+          if (msg.includes('time=')) {
+            logger.info(`[Recorder] stdout 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
+          }
           parseProgress(msg);
         }
       });
@@ -869,6 +877,9 @@ class Recorder {
         const trimmed = msg.trim();
         if (trimmed) {
           logger.info(`[${tag}] ${trimmed}`);
+          if (trimmed.includes('time=')) {
+            logger.info(`[Recorder] stderr 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
+          }
           parseProgress(trimmed);
         }
       });
