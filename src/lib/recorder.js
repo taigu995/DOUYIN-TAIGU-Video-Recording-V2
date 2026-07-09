@@ -793,17 +793,7 @@ class Recorder {
 
       let stderr = '';
       let lastProgressEmit = 0;
-      proc.stdout.on('data', (data) => {
-        const msg = data.toString().trim();
-        if (msg) logger.info(`[${tag}] ${msg}`);
-      });
-
-      proc.stderr.on('data', (data) => {
-        const msg = data.toString();
-        stderr += msg;
-        const trimmed = msg.trim();
-        if (trimmed) logger.info(`[${tag}] ${trimmed}`);
-
+      const parseProgress = (msg) => {
         // 解析 FFmpeg 进度输出
         if (totalDurationMs > 0 && phaseName) {
           const timeMatch = msg.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
@@ -862,6 +852,24 @@ class Recorder {
               }
             }
           }
+        }
+      };
+
+      proc.stdout.on('data', (data) => {
+        const msg = data.toString().trim();
+        if (msg) {
+          logger.info(`[${tag}] ${msg}`);
+          parseProgress(msg);
+        }
+      });
+
+      proc.stderr.on('data', (data) => {
+        const msg = data.toString();
+        stderr += msg;
+        const trimmed = msg.trim();
+        if (trimmed) {
+          logger.info(`[${tag}] ${trimmed}`);
+          parseProgress(trimmed);
         }
       });
 
