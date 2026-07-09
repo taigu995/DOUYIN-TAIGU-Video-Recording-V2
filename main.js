@@ -650,6 +650,44 @@ function setupIPC() {
   ipcMain.handle('manual-merge-status', () => {
     return { isMerging: manualMerger.isMerging };
   });
+
+  // 开始手动合并（简化版，供独立手动合并工具使用）
+  ipcMain.handle('start-manual-merge', async (event, options) => {
+    const { streamPath, framesDir, outputPath, commentFps } = options;
+    
+    // 验证文件存在
+    const fs = require('fs');
+    if (!fs.existsSync(streamPath)) {
+      return { success: false, error: '直播流视频文件不存在' };
+    }
+    if (!fs.existsSync(framesDir)) {
+      return { success: false, error: '评论区帧目录不存在' };
+    }
+
+    // 生成输出路径
+    const finalOutputPath = outputPath || streamPath.replace(/\.mp4$/i, '_merged.mp4');
+
+    try {
+      const result = await manualMerger.merge({
+        videoFile: streamPath,
+        commentFramesDir: framesDir,
+        outputFile: finalOutputPath
+      });
+
+      if (result.success) {
+        const stats = fs.statSync(finalOutputPath);
+        return { 
+          success: true, 
+          outputFile: finalOutputPath,
+          fileSize: stats.size
+        };
+      } else {
+        return { success: false, error: result.error || '合并失败' };
+      }
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
 }
 
 // 应用就绪

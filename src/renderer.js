@@ -1419,17 +1419,6 @@ function initManualMerge() {
       return;
     }
 
-    // 验证文件存在
-    const fs = require('fs');
-    if (!fs.existsSync(streamPath)) {
-      showToast('直播流视频文件不存在', 'error');
-      return;
-    }
-    if (!fs.existsSync(framesDir)) {
-      showToast('评论区帧目录不存在', 'error');
-      return;
-    }
-
     // 禁用按钮，显示进度
     btnStart.disabled = true;
     btnStart.textContent = '合并中...';
