@@ -840,6 +840,7 @@ function createStreamCard(stream) {
           ? `<button class="btn btn-danger btn-sm" onclick="handleStopRecording('${stream.roomId}')">停止录制</button>`
           : `<button class="btn btn-success btn-sm" onclick="handleStartRecording('${stream.roomId}')" ${!isLive ? 'disabled title="未开播"' : ''}>开始录制</button>`
         }
+        ${stream.canManualMerge ? `<button class="btn btn-warning btn-sm" onclick="handleManualMerge('${stream.roomId}')" title="手动合并直播流和评论区视频">手动合并</button>` : ''}
         <button class="btn btn-ghost btn-sm" onclick="handleViewHistory('${stream.roomId}')" title="查看录制记录">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -942,7 +943,7 @@ window.handleStopRecording = async function (roomId) {
       if (data.mergeResult === true) {
         showToast('录制完成，视频和音频已成功合并', 'success');
       } else if (data.mergeResult === false) {
-        showToast('录制完成，但合并失败，已保留纯视频文件', 'warning');
+        showToast('录制完成，但合并失败，已保留纯视频文件。可使用"手动合并"按钮重新合并', 'warning');
       } else if (data.hasAudio === false) {
         showToast('录制完成（未检测到音频，仅保存视频）', 'warning');
       } else {
@@ -953,6 +954,22 @@ window.handleStopRecording = async function (roomId) {
     }
   } catch (err) {
     showToast('停止出错: ' + err.message, 'error');
+  }
+};
+
+window.handleManualMerge = async function (roomId) {
+  if (!isElectron) return;
+  if (!await showConfirm('确定要手动合并直播流和评论区视频吗？这可能会覆盖已有的输出文件。')) return;
+  try {
+    showToast('开始手动合并...', 'info');
+    const result = await window.electronAPI.manualMerge(roomId);
+    if (result.success) {
+      showToast('手动合并完成', 'success');
+    } else {
+      showToast('手动合并失败: ' + (result.error || '未知错误'), 'error');
+    }
+  } catch (err) {
+    showToast('手动合并出错: ' + err.message, 'error');
   }
 };
 

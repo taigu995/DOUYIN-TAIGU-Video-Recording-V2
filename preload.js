@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   toggleAutoRecord: (roomId) => ipcRenderer.invoke('toggle-auto-record', roomId),
   startRecording: (roomId) => ipcRenderer.invoke('start-recording', roomId),
   stopRecording: (roomId) => ipcRenderer.invoke('stop-recording', roomId),
+  manualMerge: (roomId) => ipcRenderer.invoke('manual-merge', roomId),
+  selectFile: (filters) => ipcRenderer.invoke('select-file', { filters }),
   getStreams: () => ipcRenderer.invoke('get-streams'),
   getAllStatus: () => ipcRenderer.invoke('get-all-status'),
   getRecordingHistory: (roomId) => ipcRenderer.invoke('get-recording-history', roomId),
@@ -57,5 +59,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onLoginStatusChanged: (callback) => {
     ipcRenderer.on('login-status-changed', (event, data) => callback(data));
+  },
+  onMergeProgress: (callback) => {
+    ipcRenderer.on('merge-progress', (event, data) => callback(data));
+  },
+  onMergeStatus: (callback) => {
+    ipcRenderer.on('merge-status', (event, data) => callback(data));
+  },
+  onMergeComplete: (callback) => {
+    ipcRenderer.on('merge-complete', (event, data) => callback(data));
+  },
+  onMergeError: (callback) => {
+    ipcRenderer.on('merge-error', (event, data) => callback(data));
   }
 });

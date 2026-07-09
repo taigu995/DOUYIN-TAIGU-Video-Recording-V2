@@ -1138,6 +1138,115 @@ class StreamManager {
   }
 
   /**
+   * 手动合并直播流和评论区视频
+   * @param {string} roomId - 直播间ID
+   * @returns {Promise<object>} 合并结果
+   */
+  async manualMerge(roomId) {
+    const state = this.streams.get(roomId);
+    if (!state) {
+      throw new Error('直播间不存在');
+    }
+
+    // 检查是否正在录制或合并
+    if (state.recorder || state.status === 'merging') {
+      throw new Error('正在录制或合并中，无法手动合并');
+    }
+
+    // 检查中间文件是否存在
+    const outputFolder = state.info.outputFolder || getDefaultOutputFolder();
+    const streamerFolder = sanitizeFilename(state.info.streamerName || '未知主播');
+    const outputDir = path.join(outputFolder, streamerFolder);
+    const tempDir = path.join(outputDir, '.temp');
+    
+    const streamFile = path.join(tempDir, 'stream.mp4');
+    const commentFile = path.join(tempDir, 'comment_video.mp4');
+    
+    if (!fs.existsSync(streamFile)) {
+      throw new Error('直播流文件不存在，无法合并');
+    }
+    if (!fs.existsSync(commentFile)) {
+      throw new Error('评论区视频文件不存在，无法合并');
+    }
+
+    // 设置状态为合并中
+    state.status = 'merging';
+    state.mergeProgress = null;
+    this.notifyUpdate();
+
+    logger.info(`[StreamManager] 手动合并: ${roomId}`);
+
+    try {
+      // 获取输出文件名
+      const recordings = getRecordings(roomId);
+      const currentRecording = recordings.find(r => !r.endTime);
+      
+      let outputFile;
+      if (currentRecording) {
+        outputFile = currentRecording.outputFile;
+      } else {
+        // 生成新的输出文件名
+        const now = new Date();
+        const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
+        outputFile = path.join(outputDir, `${streamerFolder}_${dateStr}.mp4`);
+      }
+
+      // 获取评论区信息
+      const commentInfo = {
+        fps: state.info.commentFps || 15,
+        width: 360,
+        height: 720,
+        frameCount: 0
+      };
+
+      // 计算评论区帧数
+      const frames = fs.readdirSync(path.join(tempDir, 'comment_frames'))
+        .filter(f => f.endsWith('.jpg'));
+      commentInfo.frameCount = frames.length;
+
+      // 创建临时 recorder 进行合并
+      const recorder = new Recorder({
+        roomId,
+        streamerName: state.info.streamerName || '未知主播',
+        outputFolder: outputFolder,
+        recordMode: state.info.recordMode || 'with-account',
+        commentFps: state.info.commentFps || 15,
+        tempDir: tempDir,
+        onStatusChange: (status) => {
+          state.status = status;
+          this.notifyUpdate();
+        },
+        onProgress: (progressData) => {
+          state.mergeProgress = progressData;
+          this.notifyUpdate();
+        }
+      });
+
+      // 执行合并
+      const mergeResult = await recorder._mergeStreamAndComments(streamFile, commentFile, outputFile, commentInfo, Date.now() - fs.statSync(streamFile).mtime.getTime());
+
+      // 清理临时文件（保留中间文件）
+      recorder._cleanupTempFiles(false);
+
+      // 删除合并进度文件
+      recorder._deleteMergeProgress();
+
+      state.status = 'idle';
+      state.mergeProgress = null;
+      this.notifyUpdate();
+
+      logger.info(`[StreamManager] 手动合并完成: ${roomId}`);
+      return { success: true, outputFile, mergeResult };
+    } catch (err) {
+      state.status = 'idle';
+      state.mergeProgress = null;
+      this.notifyUpdate();
+      logger.error(`[StreamManager] 手动合并失败: ${roomId}: ${err.message}`);
+      throw err;
+    }
+  }
+
+  /**
    * 设置直播间评论区帧率
    * @param {string} roomId - 直播间ID
    * @param {number} fps - 帧率 (5/10/15/20/25/30)
@@ -1249,6 +1358,8 @@ class StreamManager {
   getAllStatus() {
     const result = [];
     for (const [roomId, state] of this.streams) {
+      // 检查是否可以手动合并（中间文件存在）
+      const canManualMerge = this._canManualMerge(state);
       result.push({
         roomId: state.info.roomId,
         streamerName: state.info.streamerName,
@@ -1260,10 +1371,36 @@ class StreamManager {
         recordMode: state.info.recordMode || 'with-account',
         commentFps: state.info.commentFps || 15,
         recorder: state.recorder ? state.recorder.getStatus() : null,
-        mergeProgress: state.mergeProgress || null
+        mergeProgress: state.mergeProgress || null,
+        canManualMerge
       });
     }
     return result;
+  }
+
+  /**
+   * 检查是否可以手动合并（中间文件存在）
+   */
+  _canManualMerge(state) {
+    // 只有在非录制、非合并状态下才可能手动合并
+    if (state.recorder || state.status === 'merging') {
+      return false;
+    }
+    // 检查输出目录是否存在中间文件
+    const outputFolder = state.info.outputFolder || getDefaultOutputFolder();
+    const streamerFolder = sanitizeFilename(state.info.streamerName || '未知主播');
+    const outputDir = path.join(outputFolder, streamerFolder);
+    const tempDir = path.join(outputDir, '.temp');
+    
+    // 检查 stream.mp4 和 comment_video.mp4 是否存在
+    const streamFile = path.join(tempDir, 'stream.mp4');
+    const commentFile = path.join(tempDir, 'comment_video.mp4');
+    
+    try {
+      return fs.existsSync(streamFile) && fs.existsSync(commentFile);
+    } catch {
+      return false;
+    }
   }
 
   /**

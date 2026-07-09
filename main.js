@@ -406,6 +406,28 @@ function setupIPC() {
     }
   });
 
+  // 手动合并直播流和评论区视频
+  ipcMain.handle('manual-merge', async (event, roomId) => {
+    try {
+      const result = await streamManager.manualMerge(roomId);
+      return { success: true, data: result };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // 选择文件对话框
+  ipcMain.handle('select-file', async (event, { filters }) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: filters || [{ name: '视频文件', extensions: ['mp4', 'mkv', 'avi'] }]
+    });
+    if (result.canceled) {
+      return { success: false };
+    }
+    return { success: true, path: result.filePaths[0] };
+  });
+
   // ========== 配置管理 ==========
   ipcMain.handle('get-config', () => {
     return getAll();

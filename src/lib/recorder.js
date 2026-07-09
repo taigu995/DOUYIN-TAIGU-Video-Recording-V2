@@ -240,6 +240,139 @@ class Recorder {
   }
 
   /**
+   * 手动合并直播流和评论区视频（用于合并失败后重新合并）
+   * @param {string} streamFile - 直播流文件路径 (_stream.mp4 或 stream.mp4)
+   * @param {string} commentVideoFile - 评论区视频文件路径 (_comments.mp4 或 comment_video.mp4)
+   * @param {string} outputFile - 输出文件路径
+   * @param {object} callbacks - 回调函数 { onProgress, onStatusChange, onComplete, onError }
+   * @returns {Promise<boolean>} 是否成功合并
+   */
+  static async manualMerge(streamFile, commentVideoFile, outputFile, callbacks = {}) {
+    const { onProgress = () => {}, onStatusChange = () => {}, onComplete = () => {}, onError = () => {} } = callbacks;
+
+    logger.info(`[Manual-Merge] 开始手动合并: ${streamFile} + ${commentVideoFile} -> ${outputFile}`);
+
+    // 检查文件是否存在
+    if (!fs.existsSync(streamFile)) {
+      const err = new Error(`直播流文件不存在: ${streamFile}`);
+      logger.error(`[Manual-Merge] ${err.message}`);
+      onError(err);
+      return false;
+    }
+    if (!fs.existsSync(commentVideoFile)) {
+      const err = new Error(`评论区视频文件不存在: ${commentVideoFile}`);
+      logger.error(`[Manual-Merge] ${err.message}`);
+      onError(err);
+      return false;
+    }
+
+    onStatusChange('merging', { streamFile, commentVideoFile, outputFile });
+
+    try {
+      // 获取直播流时长
+      const streamDuration = await Recorder._getMediaDuration(streamFile);
+      logger.info(`[Manual-Merge] 直播流时长: ${Math.round(streamDuration / 1000)}秒`);
+
+      // 获取评论区视频时长
+      const commentDuration = await Recorder._getMediaDuration(commentVideoFile);
+      logger.info(`[Manual-Merge] 评论区视频时长: ${Math.round(commentDuration / 1000)}秒`);
+
+      // 创建临时录制器实例用于执行合并
+      const tempDir = path.dirname(streamFile);
+      const tempRecorder = new Recorder({
+        roomId: 'manual-merge',
+        streamerName: '手动合并',
+        outputFile: outputFile,
+        outputDir: path.dirname(outputFile),
+        tempDir: tempDir,
+        onProgress: onProgress
+      });
+
+      // 设置临时文件路径
+      tempRecorder._tempStreamFile = streamFile;
+      tempRecorder._tempDir = tempDir;
+
+      // 执行合并（使用已有的 _mergeStreamAndComments 逻辑，但直接传入文件路径）
+      await tempRecorder._mergeStreamAndCommentFiles(streamFile, commentVideoFile, outputFile, streamDuration);
+
+      logger.info(`[Manual-Merge] 合并成功: ${outputFile}`);
+      onComplete({ success: true, outputFile });
+      return true;
+    } catch (err) {
+      logger.error(`[Manual-Merge] 合并失败: ${err.message}`);
+      onError(err);
+      return false;
+    }
+  }
+
+  /**
+   * 合并直播流和评论区视频文件（用于手动合并）
+   */
+  async _mergeStreamAndCommentFiles(streamFile, commentVideoFile, outputFile, streamDurationMs) {
+    const ffmpegPath = this._getFFmpegPath();
+    const resolvedPath = ffmpegPath.resolvedPath || ffmpegPath;
+
+    // 使用与 _mergeStreamAndComments 相同的滤镜
+    const filterComplex = [
+      '[0:v]scale=1920:1080,setsar=1[stream]',
+      '[1:v]scale=420:1080,setsar=1[comments]',
+      '[stream]pad=2342:1080:0:0:black[stream_padded]',
+      '[stream_padded]drawbox=x=1920:y=0:w=2:h=1080:color=black@0.5:t=fill[stream_sep]',
+      '[stream_sep][comments]overlay=1922:0:shortest=1[out]'
+    ].join(';');
+
+    const args = [
+      '-i', streamFile,
+      '-i', commentVideoFile,
+      '-filter_complex', filterComplex,
+      '-map', '[out]',
+      '-map', '0:a?',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '15',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-y',
+      outputFile
+    ];
+
+    await this._runFFmpeg(outputFile, args, 'Manual-Merge', streamDurationMs, '手动合并');
+  }
+
+  /**
+   * 获取媒体文件时长（毫秒）
+   */
+  static async _getMediaDuration(filePath) {
+    return new Promise((resolve, reject) => {
+      const ffmpegPath = Recorder._getFFmpegPath();
+      const resolvedPath = ffmpegPath.resolvedPath || ffmpegPath;
+      const proc = spawn(resolvedPath, ['-i', filePath, '-f', 'null', '-']);
+
+      let stderr = '';
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', () => {
+        // 解析 Duration: 00:00:00.00
+        const match = stderr.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+        if (match) {
+          const hours = parseInt(match[1], 10);
+          const minutes = parseInt(match[2], 10);
+          const seconds = parseInt(match[3], 10);
+          const centiseconds = parseInt(match[4], 10);
+          const durationMs = (hours * 3600 + minutes * 60 + seconds) * 1000 + centiseconds * 10;
+          resolve(durationMs);
+        } else {
+          resolve(0);
+        }
+      });
+
+      proc.on('error', () => resolve(0));
+    });
+  }
+
+  /**
    * 开始录制
    */
   async startRecording() {
@@ -1347,10 +1480,13 @@ class Recorder {
   }
 
   /**
-   * 清理临时文件（保留最终输出文件）
+   * 清理临时文件（保留最终输出文件和中间文件）
    */
   async _cleanupTempFiles() {
     if (!this._tempDir) return;
+
+    // 保存中间文件到输出目录
+    await this._saveIntermediateFiles();
 
     try {
       if (fs.existsSync(this._tempDir)) {
@@ -1359,6 +1495,40 @@ class Recorder {
       }
     } catch (e) {
       logger.warn('[Recorder] 清理临时文件失败:', e.message);
+    }
+  }
+
+  /**
+   * 保存中间文件（stream.mp4 和 comment_video.mp4）到输出目录
+   */
+  async _saveIntermediateFiles() {
+    if (!this.outputFile || !this._tempDir) return;
+
+    const outputDir = path.dirname(this.outputFile);
+    const baseName = path.basename(this.outputFile, '.mp4');
+
+    // 保存 stream.mp4
+    const streamSrc = this._tempStreamFile;
+    const streamDst = path.join(outputDir, `${baseName}_stream.mp4`);
+    if (fs.existsSync(streamSrc)) {
+      try {
+        fs.copyFileSync(streamSrc, streamDst);
+        logger.info(`[Recorder] 已保存直播流文件: ${streamDst}`);
+      } catch (e) {
+        logger.warn(`[Recorder] 保存直播流文件失败: ${e.message}`);
+      }
+    }
+
+    // 保存 comment_video.mp4
+    const commentVideoSrc = path.join(this._tempDir, 'comment_video.mp4');
+    const commentVideoDst = path.join(outputDir, `${baseName}_comments.mp4`);
+    if (fs.existsSync(commentVideoSrc)) {
+      try {
+        fs.copyFileSync(commentVideoSrc, commentVideoDst);
+        logger.info(`[Recorder] 已保存评论区视频: ${commentVideoDst}`);
+      } catch (e) {
+        logger.warn(`[Recorder] 保存评论区视频失败: ${e.message}`);
+      }
     }
   }
 
