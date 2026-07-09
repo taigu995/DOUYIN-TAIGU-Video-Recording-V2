@@ -844,6 +844,7 @@ class Recorder {
                 currentFrame,
                 totalFrames
               };
+              logger.info(`[Recorder] 发送合并进度: ${phaseName} ${progress}% (帧: ${currentFrame}/${totalFrames})`);
               this.onProgress(progressData);
 
               // 持久化进度到文件（每2秒保存一次，避免频繁IO）

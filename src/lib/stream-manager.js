@@ -933,6 +933,7 @@ class StreamManager {
       },
       onProgress: (progressData) => {
         // 将进度信息存储到 streamState 中，供 UI 读取
+        logger.info(`[StreamManager] 收到合并进度: ${progressData.phaseName} ${progressData.progress}%`);
         streamState.mergeProgress = progressData;
         this.notifyUpdate();
       }
