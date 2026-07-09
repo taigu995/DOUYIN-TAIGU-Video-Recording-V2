@@ -282,8 +282,11 @@ class Logger {
     
     try {
       // 确保已初始化
-      if (!this.initialized) {
-        this._ensureInitialized();
+      if (!this._initialized) {
+        this._ensureInitialized().catch(err => {
+          console.error('Logger flush initialization failed:', err);
+        });
+        return; // 如果未初始化，跳过本次刷新
       }
       
       const content = this.logBuffer.join('');
@@ -539,6 +542,48 @@ class Logger {
     } catch (err) {
       this.error('Failed to export logs', err);
       return null;
+    }
+  }
+
+  /**
+   * 设置自动轮转和清理
+   * @param {number} retentionDays - 保留天数，默认30天
+   */
+  setupAutoRotation(retentionDays = 30) {
+    this.retentionDays = retentionDays;
+    
+    // 启动时立即清理一次旧日志
+    this._cleanupOldLogs();
+    
+    // 每小时检查一次是否需要清理
+    this._cleanupTimer = setInterval(() => {
+      this._cleanupOldLogs();
+    }, 60 * 60 * 1000); // 1小时
+    
+    this.info(`Auto rotation setup: retention=${retentionDays} days`);
+  }
+
+  /**
+   * 清理过期日志文件
+   */
+  _cleanupOldLogs() {
+    try {
+      const logFiles = this.getLogFiles();
+      const now = Date.now();
+      const retentionMs = this.retentionDays * 24 * 60 * 60 * 1000;
+      
+      logFiles.forEach(file => {
+        const fileDate = new Date(file.date);
+        if (isNaN(fileDate.getTime())) return;
+        
+        const fileAge = now - fileDate.getTime();
+        if (fileAge > retentionMs) {
+          fs.unlinkSync(file.path);
+          this.info(`Deleted old log file: ${file.name} (age: ${Math.floor(fileAge / (24 * 60 * 60 * 1000))} days)`);
+        }
+      });
+    } catch (err) {
+      this.error('Failed to cleanup old logs', err);
     }
   }
 
