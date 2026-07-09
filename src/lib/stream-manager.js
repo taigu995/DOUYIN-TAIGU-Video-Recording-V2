@@ -22,6 +22,15 @@ function getDefaultOutputFolder() {
   return path.join(app.getPath('videos'), '抖音直播录制工具V2');
 }
 
+/**
+ * 清理文件名，移除文件系统不允许的字符
+ */
+function sanitizeFilename(name) {
+  if (!name) return 'unknown';
+  // 移除 Windows 不允许的字符: \ / : * ? " < > |
+  return name.replace(/[\\/:*?"<>|]/g, '_').trim();
+}
+
 class StreamManager {
   constructor(config, accountManager, onUpdate) {
     // roomId -> { info, recorder, monitorWindow, status, timer }
