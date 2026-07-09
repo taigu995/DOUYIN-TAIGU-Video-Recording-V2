@@ -42,10 +42,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ========== 文件/目录操作 ==========
   selectOutputDir: () => ipcRenderer.invoke('select-output-dir'),
   selectFolder: () => ipcRenderer.invoke('select-output-dir'),
+  selectDirectory: (options) => ipcRenderer.invoke('select-directory', options),
+  saveFile: (options) => ipcRenderer.invoke('save-file', options),
   openOutputDir: () => ipcRenderer.invoke('open-output-dir'),
   openLogFolder: () => ipcRenderer.invoke('open-log-folder'),
   openInBrowser: (url) => ipcRenderer.invoke('open-in-browser', url),
   getVersion: () => ipcRenderer.invoke('get-version'),
+
+  // ========== 手动合并 ==========
+  startManualMerge: (options) => ipcRenderer.invoke('start-manual-merge', options),
 
   // ========== 日志管理 ==========
   getLogContent: () => ipcRenderer.invoke('get-log-content'),

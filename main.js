@@ -423,9 +423,34 @@ function setupIPC() {
       filters: filters || [{ name: '视频文件', extensions: ['mp4', 'mkv', 'avi'] }]
     });
     if (result.canceled) {
-      return { success: false };
+      return { canceled: true };
     }
-    return { success: true, path: result.filePaths[0] };
+    return { canceled: false, filePaths: result.filePaths };
+  });
+
+  // 选择目录对话框
+  ipcMain.handle('select-directory', async (event, options = {}) => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: options.title || '选择目录'
+    });
+    if (result.canceled) {
+      return { canceled: true };
+    }
+    return { canceled: false, filePaths: result.filePaths };
+  });
+
+  // 保存文件对话框
+  ipcMain.handle('save-file', async (event, options = {}) => {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: options.title || '保存文件',
+      defaultPath: options.defaultPath || 'output.mp4',
+      filters: options.filters || [{ name: '视频文件', extensions: ['mp4'] }]
+    });
+    if (result.canceled) {
+      return { canceled: true };
+    }
+    return { canceled: false, filePath: result.filePath };
   });
 
   // ========== 配置管理 ==========
@@ -527,6 +552,103 @@ function setupIPC() {
   ipcMain.handle('clear-logs', () => {
     logger.clear();
     return { success: true };
+  });
+
+  // ========== 手动合并工具 ==========
+  const ManualMerger = require('./src/lib/manual-merger');
+  const manualMerger = new ManualMerger();
+
+  // 选择视频文件
+  ipcMain.handle('manual-merge-select-video', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择直播流视频文件',
+      properties: ['openFile'],
+      filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'avi', 'flv', 'ts'] }]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false };
+    }
+    return { success: true, path: result.filePaths[0] };
+  });
+
+  // 选择评论区帧目录
+  ipcMain.handle('manual-merge-select-frames', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择评论区帧目录',
+      properties: ['openDirectory']
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false };
+    }
+    return { success: true, path: result.filePaths[0] };
+  });
+
+  // 选择输出文件
+  ipcMain.handle('manual-merge-select-output', async () => {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '选择输出文件位置',
+      defaultPath: `merged_${Date.now()}.mp4`,
+      filters: [{ name: 'MP4 视频', extensions: ['mp4'] }]
+    });
+    if (result.canceled || !result.filePath) {
+      return { success: false };
+    }
+    return { success: true, path: result.filePath };
+  });
+
+  // 分析视频文件
+  ipcMain.handle('manual-merge-analyze-video', (event, filePath) => {
+    try {
+      const info = manualMerger.probeVideoInfo(filePath);
+      return { success: true, data: info };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 分析评论区帧目录
+  ipcMain.handle('manual-merge-analyze-frames', (event, framesDir) => {
+    try {
+      const info = manualMerger.analyzeCommentFrames(framesDir);
+      return { success: true, data: info };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 开始合并
+  ipcMain.handle('manual-merge-start', async (event, { videoFile, commentFramesDir, outputFile }) => {
+    try {
+      const result = await manualMerger.merge({
+        videoFile,
+        commentFramesDir,
+        outputFile,
+        onProgress: (progress) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('manual-merge-progress', progress);
+          }
+        },
+        onStatusChange: (status, message) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('manual-merge-status', { status, message });
+          }
+        }
+      });
+      return { success: true, data: result };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // 取消合并
+  ipcMain.handle('manual-merge-cancel', () => {
+    manualMerger.cancel();
+    return { success: true };
+  });
+
+  // 获取合并状态
+  ipcMain.handle('manual-merge-status', () => {
+    return { isMerging: manualMerger.isMerging };
   });
 }
 

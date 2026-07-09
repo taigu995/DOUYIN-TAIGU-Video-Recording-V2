@@ -161,6 +161,11 @@ async function init() {
 
   // 绑定事件
   bindEvents();
+  
+  // 初始化合并工具
+  if (isElectron) {
+    initManualMerge();
+  }
 }
 
 // ========== 事件绑定 ==========
@@ -1306,3 +1311,178 @@ setInterval(() => {
 
 // 启动
 document.addEventListener('DOMContentLoaded', init);
+
+// ========== 手动合并工具 ==========
+let manualMergeProgressInterval = null;
+
+function initManualMerge() {
+  const btnManualMerge = document.getElementById('btn-manual-merge');
+  const modal = document.getElementById('manual-merge-modal');
+  const btnClose = document.getElementById('manual-merge-close');
+  const btnCancel = document.getElementById('manual-merge-cancel');
+  const btnStart = document.getElementById('manual-merge-start');
+  const btnBrowseStream = document.getElementById('manual-merge-browse-stream');
+  const btnBrowseFrames = document.getElementById('manual-merge-browse-frames');
+  const btnBrowseOutput = document.getElementById('manual-merge-browse-output');
+  const inputStream = document.getElementById('manual-merge-stream-path');
+  const inputFrames = document.getElementById('manual-merge-frames-path');
+  const inputOutput = document.getElementById('manual-merge-output-path');
+  const progressEl = document.getElementById('manual-merge-progress');
+  const progressFill = progressEl?.querySelector('.manual-merge-progress-fill');
+  const progressText = progressEl?.querySelector('.manual-merge-progress-text');
+  const resultEl = document.getElementById('manual-merge-result');
+
+  if (!btnManualMerge || !modal) return;
+
+  // 打开弹窗
+  btnManualMerge.addEventListener('click', () => {
+    modal.style.display = 'flex';
+    resetManualMergeUI();
+  });
+
+  // 关闭弹窗
+  const closeModal = () => {
+    modal.style.display = 'none';
+    resetManualMergeUI();
+  };
+  btnClose?.addEventListener('click', closeModal);
+  btnCancel?.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  // 浏览文件
+  btnBrowseStream?.addEventListener('click', async () => {
+    const result = await window.electronAPI.selectFile({
+      title: '选择直播流视频文件',
+      filters: [{ name: '视频文件', extensions: ['mp4'] }]
+    });
+    if (result && !result.canceled && result.filePaths[0]) {
+      inputStream.value = result.filePaths[0];
+    }
+  });
+
+  btnBrowseFrames?.addEventListener('click', async () => {
+    const result = await window.electronAPI.selectDirectory({ title: '选择评论区帧目录' });
+    if (result && !result.canceled && result.filePaths[0]) {
+      inputFrames.value = result.filePaths[0];
+    }
+  });
+
+  btnBrowseOutput?.addEventListener('click', async () => {
+    const result = await window.electronAPI.saveFile({
+      title: '选择输出文件路径',
+      defaultPath: 'merged_output.mp4',
+      filters: [{ name: '视频文件', extensions: ['mp4'] }]
+    });
+    if (result && !result.canceled && result.filePath) {
+      inputOutput.value = result.filePath;
+    }
+  });
+
+  // 拖拽支持
+  [inputStream, inputFrames].forEach(input => {
+    input?.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      input.parentElement.classList.add('dragover');
+    });
+    input?.addEventListener('dragleave', () => {
+      input.parentElement.classList.remove('dragover');
+    });
+    input?.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      input.parentElement.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        // Electron 拖拽获取路径
+        const path = files[0].path;
+        if (path) {
+          input.value = path;
+        }
+      }
+    });
+  });
+
+  // 开始合并
+  btnStart?.addEventListener('click', async () => {
+    const streamPath = inputStream.value.trim();
+    const framesDir = inputFrames.value.trim();
+    const outputPath = inputOutput.value.trim();
+    const fps = parseInt(document.querySelector('input[name="manual-merge-fps"]:checked')?.value || '10');
+
+    if (!streamPath) {
+      showToast('请选择直播流视频文件', 'error');
+      return;
+    }
+    if (!framesDir) {
+      showToast('请选择评论区帧目录', 'error');
+      return;
+    }
+
+    // 验证文件存在
+    const fs = require('fs');
+    if (!fs.existsSync(streamPath)) {
+      showToast('直播流视频文件不存在', 'error');
+      return;
+    }
+    if (!fs.existsSync(framesDir)) {
+      showToast('评论区帧目录不存在', 'error');
+      return;
+    }
+
+    // 禁用按钮，显示进度
+    btnStart.disabled = true;
+    btnStart.textContent = '合并中...';
+    progressEl.style.display = 'block';
+    resultEl.style.display = 'none';
+    progressFill.style.width = '0%';
+    progressText.textContent = '准备中...';
+
+    try {
+      const result = await window.electronAPI.startManualMerge({
+        streamPath,
+        framesDir,
+        outputPath: outputPath || null,
+        commentFps: fps
+      });
+
+      if (result.success) {
+        progressFill.style.width = '100%';
+        progressText.textContent = '合并完成!';
+        resultEl.className = 'manual-merge-result success';
+        resultEl.querySelector('.manual-merge-result-icon').textContent = '✓';
+        resultEl.querySelector('.manual-merge-result-text').textContent = 
+          `合并完成: ${result.outputFile}\n大小: ${(result.fileSize / 1024 / 1024).toFixed(1)} MB`;
+        resultEl.style.display = 'block';
+        showToast('合并完成!', 'success');
+      } else {
+        throw new Error(result.error || '合并失败');
+      }
+    } catch (err) {
+      resultEl.className = 'manual-merge-result error';
+      resultEl.querySelector('.manual-merge-result-icon').textContent = '✗';
+      resultEl.querySelector('.manual-merge-result-text').textContent = `合并失败: ${err.message}`;
+      resultEl.style.display = 'block';
+      showToast(`合并失败: ${err.message}`, 'error');
+    } finally {
+      btnStart.disabled = false;
+      btnStart.textContent = '开始合并';
+      // 停止进度轮询
+      if (manualMergeProgressInterval) {
+        clearInterval(manualMergeProgressInterval);
+        manualMergeProgressInterval = null;
+      }
+    }
+  });
+
+  function resetManualMergeUI() {
+    progressEl.style.display = 'none';
+    resultEl.style.display = 'none';
+    btnStart.disabled = false;
+    btnStart.textContent = '开始合并';
+    if (manualMergeProgressInterval) {
+      clearInterval(manualMergeProgressInterval);
+      manualMergeProgressInterval = null;
+    }
+  }
+}
