@@ -836,7 +836,8 @@ class Recorder {
               const progressData = {
                 roomId: this.roomId,
                 streamerName: this.streamerName,
-                phase: phaseName,
+                phase: tag,
+                phaseName: phaseName,
                 progress: progress,
                 currentTime: currentTimeMs,
                 totalDuration: totalDurationMs,
