@@ -761,16 +761,23 @@ class Recorder {
    *   2. 将评论区 JPEG 帧编码为视频 (comment_video.mp4)
    *   3. 根据直播流方向（横屏/竖屏）计算布局，使用 overlay 拼接
    *   4. 音频从直播流直接复制
+   * @param {object} commentInfo - 评论区信息
+   * @param {string} [streamFileOverride] - 可选，直播流文件路径（用于手动合并）
+   * @param {string} [commentFileOverride] - 可选，评论区视频文件路径（用于手动合并）
+   * @param {string} [outputFileOverride] - 可选，输出文件路径（用于手动合并）
    */
-  async _mergeStreamAndComments(commentInfo) {
+  async _mergeStreamAndComments(commentInfo, streamFileOverride, commentFileOverride, outputFileOverride) {
     const resolvedPath = getFFmpegPath();
-    const commentVideoFile = path.join(this._tempDir, 'comment_video.mp4');
-
+    const streamFile = streamFileOverride || this._tempStreamFile;
+    const commentVideoFile = commentFileOverride || path.join(this._tempDir, 'comment_video.mp4');
+    const outputFile = outputFileOverride || this.outputFile;
+    
     // 设置合并进度文件路径
-    this._mergeProgressFile = path.join(this._tempDir, 'merge_progress.json');
+    const progressDir = streamFileOverride ? path.dirname(streamFile) : this._tempDir;
+    this._mergeProgressFile = path.join(progressDir, 'merge_progress.json');
 
     // 探测直播流原始分辨率
-    const streamRes = this._probeVideoResolution(this._tempStreamFile);
+    const streamRes = this._probeVideoResolution(streamFile);
     const isPortrait = streamRes.height > streamRes.width;
 
     // 保存初始合并进度
@@ -877,7 +884,7 @@ class Recorder {
     });
 
     await this._runFFmpeg(resolvedPath, [
-      '-i', this._tempStreamFile,
+      '-i', streamFile,
       '-i', commentVideoFile,
       '-filter_complex',
         `[0:v]scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
@@ -895,18 +902,18 @@ class Recorder {
       '-b:a', '192k',
       '-movflags', '+faststart',
       '-y',
-      this.outputFile
+      outputFile
     ], 'Merge-Final', streamDurationMs, '合并视频');
 
-    if (!fs.existsSync(this.outputFile)) {
+    if (!fs.existsSync(outputFile)) {
       throw new Error('最终视频合并失败');
     }
 
     // 合并完成，删除进度文件
     this._deleteMergeProgress();
 
-    const finalSize = fs.statSync(this.outputFile).size;
-    logger.info(`[Merge] 合并完成: ${this.outputFile}, 大小: ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
+    const finalSize = fs.statSync(outputFile).size;
+    logger.info(`[Merge] 合并完成: ${outputFile}, 大小: ${(finalSize / 1024 / 1024).toFixed(1)} MB`);
   }
 
   /**
@@ -1601,4 +1608,4 @@ class Recorder {
   }
 }
 
-module.exports = { Recorder };
+module.exports = { Recorder, getFFmpegPath };

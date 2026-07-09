@@ -4,7 +4,7 @@
  */
 const { BrowserWindow } = require('electron');
 const https = require('https');
-const { Recorder } = require('./recorder');
+const { Recorder, getFFmpegPath } = require('./recorder');
 const { extractUrl, extractInput, extractNameFromText, resolveShortUrl, buildLiveUrl } = require('./douyin-utils');
 const { getConfig, addStream, removeStream, updateStream, getStreams } = require('./config');
 const { getLogger } = require('./logger');
@@ -1157,16 +1157,35 @@ class StreamManager {
     const outputFolder = state.info.outputFolder || getDefaultOutputFolder();
     const streamerFolder = sanitizeFilename(state.info.streamerName || '未知主播');
     const outputDir = path.join(outputFolder, streamerFolder);
-    const tempDir = path.join(outputDir, '.temp');
     
-    const streamFile = path.join(tempDir, 'stream.mp4');
-    const commentFile = path.join(tempDir, 'comment_video.mp4');
+    // 查找 *_stream.mp4 和 *_comments.mp4 文件
+    let streamFile = null;
+    let commentFile = null;
+    let baseName = null;
     
-    if (!fs.existsSync(streamFile)) {
-      throw new Error('直播流文件不存在，无法合并');
-    }
-    if (!fs.existsSync(commentFile)) {
-      throw new Error('评论区视频文件不存在，无法合并');
+    try {
+      if (!fs.existsSync(outputDir)) {
+        throw new Error('输出目录不存在');
+      }
+      
+      const files = fs.readdirSync(outputDir);
+      const streamFileName = files.find(f => f.endsWith('_stream.mp4'));
+      const commentFileName = files.find(f => f.endsWith('_comments.mp4'));
+      
+      if (!streamFileName) {
+        throw new Error('直播流文件不存在，无法合并');
+      }
+      if (!commentFileName) {
+        throw new Error('评论区视频文件不存在，无法合并');
+      }
+      
+      streamFile = path.join(outputDir, streamFileName);
+      commentFile = path.join(outputDir, commentFileName);
+      
+      // 提取 baseName（去掉 _stream.mp4 后缀）
+      baseName = streamFileName.replace('_stream.mp4', '');
+    } catch (e) {
+      throw new Error(`查找中间文件失败: ${e.message}`);
     }
 
     // 设置状态为合并中
@@ -1192,17 +1211,38 @@ class StreamManager {
       }
 
       // 获取评论区信息
+      // 从评论区视频文件探测分辨率和时长
+      let commentWidth = 360;
+      let commentHeight = 720;
+      let commentDurationMs = 0;
+      
+      try {
+        const ffprobePath = getFFmpegPath().replace('ffmpeg', 'ffprobe');
+        const probeResult = require('child_process').execSync(
+          `"${ffprobePath}" -v error -select_streams v:0 -show_entries stream=width,height,duration -of csv=p=0:nk=1 "${commentFile}"`,
+          { encoding: 'utf8', timeout: 10000 }
+        ).trim();
+        const parts = probeResult.split(',');
+        if (parts.length >= 2) {
+          commentWidth = parseInt(parts[0]) || 360;
+          commentHeight = parseInt(parts[1]) || 720;
+        }
+        if (parts.length >= 3) {
+          commentDurationMs = parseFloat(parts[2]) * 1000 || 0;
+        }
+      } catch (probeErr) {
+        logger.warn(`[StreamManager] 探测评论区视频信息失败: ${probeErr.message}`);
+      }
+      
+      const commentFps = state.info.commentFps || 15;
       const commentInfo = {
-        fps: state.info.commentFps || 15,
-        width: 360,
-        height: 720,
-        frameCount: 0
+        fps: commentFps,
+        width: commentWidth,
+        height: commentHeight,
+        frameCount: commentDurationMs > 0 ? Math.round(commentDurationMs / 1000 * commentFps) : 0
       };
-
-      // 计算评论区帧数
-      const frames = fs.readdirSync(path.join(tempDir, 'comment_frames'))
-        .filter(f => f.endsWith('.jpg'));
-      commentInfo.frameCount = frames.length;
+      
+      logger.info(`[StreamManager] 评论区信息: ${commentInfo.width}x${commentInfo.height}, ${commentInfo.fps}fps, 约${commentInfo.frameCount}帧`);
 
       // 创建临时 recorder 进行合并
       const recorder = new Recorder({
@@ -1223,7 +1263,7 @@ class StreamManager {
       });
 
       // 执行合并
-      const mergeResult = await recorder._mergeStreamAndComments(streamFile, commentFile, outputFile, commentInfo, Date.now() - fs.statSync(streamFile).mtime.getTime());
+      const mergeResult = await recorder._mergeStreamAndComments(commentInfo, streamFile, commentFile, outputFile);
 
       // 清理临时文件（保留中间文件）
       recorder._cleanupTempFiles(false);
@@ -1390,14 +1430,16 @@ class StreamManager {
     const outputFolder = state.info.outputFolder || getDefaultOutputFolder();
     const streamerFolder = sanitizeFilename(state.info.streamerName || '未知主播');
     const outputDir = path.join(outputFolder, streamerFolder);
-    const tempDir = path.join(outputDir, '.temp');
-    
-    // 检查 stream.mp4 和 comment_video.mp4 是否存在
-    const streamFile = path.join(tempDir, 'stream.mp4');
-    const commentFile = path.join(tempDir, 'comment_video.mp4');
     
     try {
-      return fs.existsSync(streamFile) && fs.existsSync(commentFile);
+      if (!fs.existsSync(outputDir)) return false;
+      
+      // 查找 *_stream.mp4 和 *_comments.mp4 文件
+      const files = fs.readdirSync(outputDir);
+      const hasStreamFile = files.some(f => f.endsWith('_stream.mp4'));
+      const hasCommentFile = files.some(f => f.endsWith('_comments.mp4'));
+      
+      return hasStreamFile && hasCommentFile;
     } catch {
       return false;
     }
