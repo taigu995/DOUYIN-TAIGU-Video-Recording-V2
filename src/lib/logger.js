@@ -15,15 +15,44 @@ const { app } = require('electron');
 
 class Logger {
   constructor() {
-    this.logDir = path.join(app.getPath('userData'), 'logs');
-    this.autoBackupDir = path.join(app.getPath('documents'), '抖音直播录制工具V2', 'logs');
+    this._initialized = false;
+    this.logDir = null;
+    this.autoBackupDir = null;
     this.maxSize = 10 * 1024 * 1024; // 10MB max log size per file
     this.keepDays = 7; // 保留最近 7 天的日志
     this.flushInterval = 5000; // 每 5 秒刷新一次日志缓冲区
     this.logBuffer = [];
     this.currentDate = this._getDateStr();
-    this.logFile = this._getLogFilePath();
-    this.init();
+    this.logFile = null;
+    this._initPromise = null;
+  }
+
+  /**
+   * 延迟初始化（等待 app 就绪）
+   */
+  async _ensureInitialized() {
+    if (this._initialized) return;
+    if (this._initPromise) return this._initPromise;
+    
+    this._initPromise = (async () => {
+      try {
+        // 等待 app 就绪
+        const { app } = require('electron');
+        await app.whenReady();
+        
+        this.logDir = path.join(app.getPath('userData'), 'logs');
+        this.autoBackupDir = path.join(app.getPath('documents'), '抖音直播录制工具V2', 'logs');
+        this.logFile = this._getLogFilePath();
+        this._initialized = true;
+        
+        // 执行初始化
+        this.init();
+      } catch (err) {
+        console.error('Logger initialization failed:', err);
+      }
+    })();
+    
+    return this._initPromise;
   }
 
   /**
@@ -252,6 +281,11 @@ class Logger {
     if (this.logBuffer.length === 0) return;
     
     try {
+      // 确保已初始化
+      if (!this.initialized) {
+        this._ensureInitialized();
+      }
+      
       const content = this.logBuffer.join('');
       this.logBuffer = [];
       
@@ -318,6 +352,11 @@ class Logger {
 
   write(level, message, meta) {
     try {
+      // 确保已初始化
+      if (!this.initialized) {
+        this._ensureInitialized();
+      }
+      
       const formatted = this.formatMessage(level, message, meta);
       this.logBuffer.push(formatted);
       
