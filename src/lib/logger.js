@@ -249,6 +249,13 @@ class Logger {
   }
 
   /**
+   * 公开方法：立即刷新日志缓冲区到磁盘
+   */
+  flush() {
+    this._flushSync();
+  }
+
+  /**
    * 轮转当前日志文件
    */
   _rotateCurrentLog() {

@@ -8,8 +8,19 @@ const { Recorder, getFFmpegPath } = require('./recorder');
 const { extractUrl, extractInput, extractNameFromText, resolveShortUrl, buildLiveUrl } = require('./douyin-utils');
 const { getConfig, addStream, removeStream, updateStream, getStreams } = require('./config');
 const { getLogger } = require('./logger');
+const path = require('path');
 
 const logger = getLogger();
+
+/**
+ * 获取默认输出文件夹
+ */
+function getDefaultOutputFolder() {
+  const config = getConfig();
+  if (config.outputFolder) return config.outputFolder;
+  const { app } = require('electron');
+  return path.join(app.getPath('videos'), '抖音直播录制工具V2');
+}
 
 class StreamManager {
   constructor(config, accountManager, onUpdate) {
