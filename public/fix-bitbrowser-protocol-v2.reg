@@ -1,0 +1,22 @@
+Windows Registry Editor Version 5.00
+
+; 彻底删除 bitbrowser 协议处理器
+; 修复"需要使用新应用以打开此bitbrowser链接"弹窗
+; 双击此文件即可执行修复
+
+; 删除当前用户的协议处理器
+[-HKEY_CURRENT_USER\Software\Classes\bitbrowser]
+
+; 删除系统级的协议处理器
+[-HKEY_LOCAL_MACHINE\Software\Classes\bitbrowser]
+
+; 删除 URL 协议标记
+[-HKEY_CURRENT_USER\Software\Classes\bitbrowser\shell\open\command]
+[-HKEY_LOCAL_MACHINE\Software\Classes\bitbrowser\shell\open\command]
+
+; 删除可能的Capabilities注册
+[-HKEY_CURRENT_USER\Software\Classes\bitbrowser\Capabilities]
+[-HKEY_LOCAL_MACHINE\Software\Classes\bitbrowser\Capabilities]
+
+; 删除 RegisteredApplications 中的条目（如果存在）
+; 注意：这个需要手动检查，因为删除错误的条目可能影响其他应用
