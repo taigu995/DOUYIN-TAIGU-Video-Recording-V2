@@ -481,16 +481,46 @@ class StreamManager {
           resolve(null);
         });
         
-        // 超时10秒
+        // 超时6秒（缩短以留出页面方式回退的时间，避免超过检测间隔）
         setTimeout(() => {
           logger.warn(`[API] 状态检查请求超时`);
           resolve(null);
-        }, 10000);
+        }, 6000);
       }).catch(e => {
         logger.warn(`[API] 获取cookies失败: ${e.message}`);
         resolve(null);
       });
     });
+  }
+
+  /**
+   * 自动开始录制（带去重和错误保护）
+   * 用于：检测到开播、录制中断后直播仍在线需重连
+   */
+  _autoStartRecording(streamState, reason) {
+    const { info } = streamState;
+    const config = getConfig();
+    if (!config.autoRecord || streamState.info.autoRecord === false) {
+      return;
+    }
+    // 已有录制实例（正在录制或合并中）则不重复启动
+    if (streamState.recorder) {
+      return;
+    }
+    // 防止短时间内重复触发
+    if (streamState._autoStartPending) {
+      return;
+    }
+    streamState._autoStartPending = true;
+    logger.info(`[Monitor] 自动录制触发(${reason}): ${info.streamerName} (${info.roomId})`);
+    this.startRecording(info.roomId)
+      .catch(err => {
+        logger.error(`[Monitor] 自动录制启动失败(${reason}): ${err.message}`);
+      })
+      .finally(() => {
+        // 短暂冷却后允许再次触发
+        setTimeout(() => { streamState._autoStartPending = false; }, 5000);
+      });
   }
 
   /**
@@ -512,8 +542,8 @@ class StreamManager {
       
       if (apiResult) {
         // API成功，使用API结果
-        let isLive = apiResult.isLive;
-        
+        const isLive = apiResult.isLive;
+
         // 更新主播名称（如果有新名称且旧名称是默认的）
         if (apiResult.streamerName && (!info.streamerName || info.streamerName.startsWith('主播'))) {
           info.streamerName = apiResult.streamerName;
@@ -532,18 +562,7 @@ class StreamManager {
         if (isLive && !wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
           streamState.status = 'live';
-
-          // 自动开始录制（检查全局开关和单个直播间开关）
-          const config = getConfig();
-          logger.info(`[Monitor] 自动录制检查: 全局开关=${config.autoRecord}, 单间接=${streamState.info.autoRecord !== false}`);
-          if (config.autoRecord && streamState.info.autoRecord !== false) {
-            logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
-            this.startRecording(info.roomId).catch(err => {
-              logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
-            });
-          } else {
-            logger.info(`[Monitor] 自动录制未开启，跳过自动录制`);
-          }
+          this._autoStartRecording(streamState, '检测到开播');
         } else if (!isLive && wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
           streamState.status = 'offline';
@@ -553,21 +572,9 @@ class StreamManager {
             logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
             this.stopRecording(info.roomId);
           }
-          
-          // 自动录制开启时，直播结束后立即重新检测
-          const config = getConfig();
-          if (config.autoRecord && streamState.info.autoRecord !== false) {
-            logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 直播结束，自动录制开启，立即重新检测...`);
-            setTimeout(() => {
-              if (streamState.info.autoRecord !== false) {
-                this.checkLiveStatus(streamState).then(() => {
-                  this.notifyUpdate();
-                }).catch(err => {
-                  logger.warn(`[Monitor] 重新检测失败: ${err.message}`);
-                });
-              }
-            }, 2000);
-          }
+        } else if (isLive && wasLive && !streamState.recorder) {
+          // 直播持续在线但没有录制实例（例如录制中断/出错后），自动重新录制
+          this._autoStartRecording(streamState, '直播在线但未录制');
         }
 
         this.notifyUpdate();
@@ -589,12 +596,17 @@ class StreamManager {
    * 通过页面方式检查直播状态（备用方案）
    */
   async _checkLiveStatusFromPage(streamState) {
-    const { monitorWindow, info } = streamState;
+    const { info } = streamState;
+    let { monitorWindow } = streamState;
 
     if (!monitorWindow || monitorWindow.isDestroyed()) {
       logger.warn(`[Monitor] 监控窗口已销毁，重新创建: ${info.roomId}`);
       await this.createMonitorWindow(streamState);
-      return;
+      monitorWindow = streamState.monitorWindow;
+      if (!monitorWindow || monitorWindow.isDestroyed()) {
+        logger.warn(`[Monitor] 监控窗口重建失败，跳过本轮页面检测: ${info.roomId}`);
+        return;
+      }
     }
 
     // 重新加载页面以获取最新状态（带超时保护）
@@ -687,17 +699,7 @@ class StreamManager {
     if (isLive && !wasLive) {
       logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了! (页面检测)`);
       streamState.status = 'live';
-
-      const config = getConfig();
-      logger.info(`[Monitor] 自动录制检查(页面): 全局开关=${config.autoRecord}, 单间开关=${streamState.info.autoRecord !== false}`);
-      if (config.autoRecord && streamState.info.autoRecord !== false) {
-        logger.info(`[Monitor] 自动录制已开启，开始录制: ${info.streamerName}`);
-        this.startRecording(info.roomId).catch(err => {
-          logger.error(`[Monitor] 自动录制启动失败: ${err.message}`);
-        });
-      } else {
-        logger.info(`[Monitor] 自动录制未开启，跳过自动录制`);
-      }
+      this._autoStartRecording(streamState, '页面检测到开播');
     } else if (!isLive && wasLive) {
       logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
       streamState.status = 'offline';
@@ -706,19 +708,9 @@ class StreamManager {
         logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
         this.stopRecording(info.roomId);
       }
-      
-      const config = getConfig();
-      if (config.autoRecord && streamState.info.autoRecord !== false) {
-        setTimeout(() => {
-          if (streamState.info.autoRecord !== false) {
-            this.checkLiveStatus(streamState).then(() => {
-              this.notifyUpdate();
-            }).catch(err => {
-              logger.warn(`[Monitor] 重新检测失败: ${err.message}`);
-            });
-          }
-        }, 2000);
-      }
+    } else if (isLive && wasLive && !streamState.recorder) {
+      // 直播持续在线但没有录制实例（录制中断后），自动重新录制
+      this._autoStartRecording(streamState, '页面检测:直播在线但未录制');
     }
 
     this.notifyUpdate();
@@ -923,26 +915,42 @@ class StreamManager {
           }
           streamState.currentRecordingStart = null;
 
-          // 录制结束后，如果自动录制开启且直播在线，立即重新检测并录制
-          if (streamState.info.autoRecord && streamState.isLive) {
-            logger.info(`[StreamManager] 录制结束，自动录制开启，立即重新检测直播状态: ${streamState.info.streamerName}`);
+          // 录制自然结束（下播/流中断/合并完成）后清空 recorder 引用，
+          // 否则周期性检测会因为 streamState.recorder 非空而不会自动重连。
+          if (streamState.recorder) {
+            try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
+            streamState.recorder = null;
+          }
+
+          // 录制结束后，如果自动录制开启，重新检测并按需继续录制
+          // 注意：录制结束可能是下播、流中断或异常。清空引用后，
+          // 周期性检测 / _autoStartRecording 会在直播仍在线时自动重连。
+          const shouldRetryAuto = getConfig().autoRecord && streamState.info.autoRecord !== false;
+          if (shouldRetryAuto) {
+            logger.info(`[StreamManager] 录制结束，自动录制开启，延迟重新检测直播状态: ${streamState.info.streamerName}`);
             setTimeout(() => {
-              // 重新检测直播状态
-              this.checkLiveStatus(streamState).then(() => {
-                if (streamState.isLive && streamState.info.autoRecord && !streamState.recorder) {
-                  logger.info(`[StreamManager] 直播仍在进行中，自动重新录制: ${streamState.info.streamerName}`);
-                  this.startRecording(streamState.info.roomId).catch(err => {
-                    logger.error(`[StreamManager] 自动重新录制失败: ${err.message}`);
-                  });
-                }
-              }).catch(err => {
-                logger.error(`[StreamManager] 重新检测直播状态失败: ${err.message}`);
+              this.checkLiveStatus(streamState).catch(err => {
+                logger.warn(`[StreamManager] 录制结束后重新检测失败: ${err.message}`);
               });
-            }, 2000);
+            }, 3000);
           }
         } else if (status === 'error') {
           streamState.status = 'error';
           logger.error(`[StreamManager] 录制错误 (${streamState.info.streamerName}): ${data && data.error}`);
+          // 录制发生错误后，清空 recorder 引用，使周期性检测能够自动重连
+          if (streamState.recorder) {
+            try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
+            streamState.recorder = null;
+          }
+          const shouldRetryAutoOnError = getConfig().autoRecord && streamState.info.autoRecord !== false;
+          if (shouldRetryAutoOnError) {
+            logger.info(`[StreamManager] 录制错误后自动重连(延迟10s): ${streamState.info.streamerName}`);
+            setTimeout(() => {
+              this.checkLiveStatus(streamState).catch(err => {
+                logger.warn(`[StreamManager] 错误重连检测失败: ${err.message}`);
+              });
+            }, 10000);
+          }
         }
         this.notifyUpdate();
       },
@@ -1050,17 +1058,18 @@ class StreamManager {
     streamState.status = streamState.isLive ? 'live' : 'offline';
     this.notifyUpdate();
 
-    // 停止录制后，如果自动录制开启且直播在线，立即重新录制
-    if (streamState.info.autoRecord && streamState.isLive) {
-      logger.info(`[StreamManager] 自动录制开启，直播在线，自动重新录制: ${streamState.info.streamerName}`);
-      // 延迟1秒再重新录制，确保上一次录制完全清理
+    // 停止录制后不在这里立即重启：如果是主播下播则不应重启；
+    // 如果直播仍在线，周期性检测（checkLiveStatus）会在发现
+    // "直播在线但无 recorder" 时通过 _autoStartRecording 自动重新录制。
+    // 这里只触发一次重新检测，让状态判断逻辑统一处理。
+    const autoRecordOn = getConfig().autoRecord && streamState.info.autoRecord !== false;
+    if (autoRecordOn && streamState.isLive) {
+      logger.info(`[StreamManager] 停止录制后触发重新检测: ${streamState.info.streamerName}`);
       setTimeout(() => {
-        if (streamState.info.autoRecord && streamState.isLive && !streamState.recorder) {
-          this.startRecording(streamState.info.roomId).catch(err => {
-            logger.error(`[StreamManager] 自动重新录制失败: ${err.message}`);
-          });
-        }
-      }, 1000);
+        this.checkLiveStatus(streamState).catch(err => {
+          logger.warn(`[StreamManager] 停止后重新检测失败: ${err.message}`);
+        });
+      }, 3000);
     }
 
     return resultData;
