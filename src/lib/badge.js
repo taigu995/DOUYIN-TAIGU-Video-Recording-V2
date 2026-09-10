@@ -85,16 +85,19 @@ const DIGITS = {
 /**
  * 生成红色圆形角标 PNG 的 Buffer
  * @param {number} count 数量（>99 显示 9+）
+ * @param {number} [size=32] 图像边长（px），任务栏 overlay 用 32，托盘用 16
  * @returns {Buffer} PNG buffer（可直接 nativeImage.createFromBuffer）
  */
-function makeBadgePng(count) {
-  const SIZE = 32;
+function makeBadgePng(count, size) {
+  const SIZE = size || 32;
   const px = Buffer.alloc(SIZE * SIZE * 4); // RGBA，默认全透明
 
   const label = count > 9 ? '9+' : String(Math.max(1, count) | 0);
 
-  // 计算底部白色描边 -> 红色圆底
-  const cx = 15, cy = 15, radius = 12;
+  // 圆心、半径与字号按尺寸等比缩放
+  const cx = SIZE / 2 - 0.5, cy = SIZE / 2 - 0.5;
+  const radius = SIZE * 0.375;
+  const ringStroke = Math.max(1.5, SIZE * 0.045);
   const rColor = [0xFE, 0x2C, 0x55, 255]; // 抖音红
 
   function setPixel(x, y, r, g, b, a) {
@@ -102,26 +105,25 @@ function makeBadgePng(count) {
     const i = (y * SIZE + x) * 4;
     px[i] = r; px[i + 1] = g; px[i + 2] = b; px[i + 3] = a;
   }
-  // 抗锯齿圆（简单平滑）
+  // 抗锯齿圆（简单平滑）：白色描边 + 红色圆底
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
       const d = Math.sqrt((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2);
-      const ringOuter = radius + 1.5;
-      const ringInner = radius - 1.5;
+      const ringOuter = radius + ringStroke / 2;
+      const ringInner = radius - ringStroke / 2;
       if (d <= ringInner) {
         setPixel(x, y, rColor[0], rColor[1], rColor[2], rColor[3]);
       } else if (d <= ringOuter) {
-        // 白描边
-        setPixel(x, y, 255, 255, 255, 255);
+        setPixel(x, y, 255, 255, 255, 255); // 白描边
       }
     }
   }
 
-  // 绘制白色数字居中
-  const scale = 3;                       // 3x5 字模放大 3 -> 9x15/字符
+  // 绘制白色数字居中（按尺寸自适应缩放）
+  const scale = Math.max(1, Math.round(SIZE / 10));       // 32->3, 16->2
   const glyphW = 3 * scale, glyphH = 5 * scale, gap = scale;
   const totalW = label.length * glyphW + (label.length - 1) * gap;
-  const startX = Math.round((cx - totalW / 2));
+  const startX = Math.round(cx - totalW / 2);
   const startY = Math.round(cy - glyphH / 2);
   for (let ci = 0; ci < label.length; ci++) {
     const glyph = DIGITS[label[ci]] || DIGITS['+'];
@@ -130,7 +132,6 @@ function makeBadgePng(count) {
       const bits = glyph[row];
       for (let col = 0; col < 3; col++) {
         if (bits & (1 << (2 - col))) {
-          // 填充 scale x scale 矩形
           for (let dy = 0; dy < scale; dy++) {
             for (let dx = 0; dx < scale; dx++) {
               setPixel(ox + col * scale + dx, startY + row * scale + dy, 255, 255, 255, 255);

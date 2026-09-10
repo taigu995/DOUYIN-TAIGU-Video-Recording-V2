@@ -76,6 +76,7 @@ app.on('will-quit', () => {
 let mainWindow = null;
 let tray = null;
 let streamManager = null;
+let defaultTrayIcon = null; // 托盘原始图标（空闲置时还原）
 // accountManager 已通过 require 导入
 
 // 初始化退出标志
@@ -180,6 +181,8 @@ function createTray() {
       logger.error(`图标文件为空或格式无效: ${iconPath}`);
       return;
     }
+    // 保存原始托盘图标（录制状态还原用）
+    defaultTrayIcon = icon;
     tray = new Tray(icon);
     tray.setToolTip('抖音直播录制工具V2');
     logger.info(`系统托盘已创建，图标: ${iconPath}，尺寸: ${icon.getSize().width}x${icon.getSize().height}`);
@@ -771,14 +774,14 @@ function setupIPC() {
 
 // 应用就绪
 /**
- * 更新 Windows 任务栏图标角标（overlay icon）
- * 录制/合并中显示红点 + 数量，方便最小化时一眼看到任务状态。
+ * 更新 Windows 任务栏图标角标 + 托盘图标，录制/合并中提示当前状态。
  * 角标 PNG 由主进程直接生成（不依赖渲染进程），最小化/后台也能可靠显示。
+ * 注意：当启用"最小化到托盘"时，窗口被 hide()（任务栏无按钮，setOverlayIcon 无效），
+ * 因此同时把托盘图标切换为红色数字角标图标，空闲时还原为原始托盘图标。
  * @param {Array} statusList 直播间状态列表
  */
-function updateTaskbarOverlay(statusList) {
+function updateStatusBadges(statusList) {
   try {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
     if (process.platform !== 'win32') return;
 
     const list = Array.isArray(statusList) ? statusList : [];
@@ -789,18 +792,35 @@ function updateTaskbarOverlay(statusList) {
         st.includes('merg') || st.includes('合并'));
     }).length;
 
-    if (active > 0) {
-      const { makeBadgePng } = require('./src/lib/badge');
-      const buf = makeBadgePng(active);
-      const img = nativeImage.createFromBuffer(buf);
-      if (!img.isEmpty()) {
-        mainWindow.setOverlayIcon(img, `正在录制/合并 ${active} 个直播间`);
+    // 1) 任务栏角标（仅当窗口在任务栏有按钮时可见）
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (active > 0) {
+        const { makeBadgePng } = require('./src/lib/badge');
+        const img = nativeImage.createFromBuffer(makeBadgePng(active, 32));
+        if (!img.isEmpty()) {
+          mainWindow.setOverlayIcon(img, `正在录制/合并 ${active} 个直播间`);
+        }
+      } else {
+        mainWindow.setOverlayIcon(null, '');
       }
-    } else {
-      mainWindow.setOverlayIcon(null, '');
+    }
+
+    // 2) 托盘图标（最小化到托盘时也能看到，真正兜底）
+    if (tray && !tray.isDestroyed()) {
+      if (active > 0) {
+        const { makeBadgePng } = require('./src/lib/badge');
+        const img = nativeImage.createFromBuffer(makeBadgePng(active, 16));
+        if (!img.isEmpty()) {
+          tray.setImage(img);
+          tray.setToolTip(`抖音直播录制工具V2 - 正在录制/合并 ${active} 个直播间`);
+        }
+      } else {
+        if (defaultTrayIcon) tray.setImage(defaultTrayIcon);
+        tray.setToolTip('抖音直播录制工具V2');
+      }
     }
   } catch (err) {
-    logger.warn(`更新任务栏角标失败: ${err.message}`);
+    logger.warn(`更新任务栏/托盘角标失败: ${err.message}`);
   }
 }
 
@@ -828,8 +848,8 @@ app.whenReady().then(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       logger.debug(`[Main] 推送状态更新到 UI: ${statusList.length} 个直播间`);
       mainWindow.webContents.send('streams-update', statusList);
-      // 同步更新任务栏角标（最小化时可见）
-      updateTaskbarOverlay(statusList);
+      // 同步更新任务栏角标与托盘图标（最小化/托盘下可见）
+      updateStatusBadges(statusList);
     } else {
       logger.warn(`[Main] 无法推送状态更新: mainWindow=${!!mainWindow}, isDestroyed=${mainWindow?.isDestroyed()}`);
     }
