@@ -175,6 +175,15 @@ async function init() {
       streamsData = status || [];
       renderStreamsList(streamsData);
 
+      // 动态显示版本号（关于面板）
+      try {
+        if (window.electronAPI.getVersion) {
+          const ver = await window.electronAPI.getVersion();
+          const el = document.getElementById('about-version');
+          if (el && ver) el.textContent = `版本 ${ver}`;
+        }
+      } catch (e) { /* 忽略，未拿到版本时保持占位 */ }
+
       // 检查登录状态
       updateLoginStatus();
       

@@ -1,6 +1,6 @@
 {
   "name": "douyin-live-recorder",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "抖音直播录制工具V2 - 自动录制直播画面、弹幕及礼物特效",
   "main": "main.js",
   "scripts": {
