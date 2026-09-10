@@ -80,5 +80,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onMergeError: (callback) => {
     ipcRenderer.on('merge-error', (event, data) => callback(data));
+  },
+
+  // ========== 任务栏角标 ==========
+  // 主进程请求渲染进程绘制角标 PNG（含录制/合并中房间数）
+  onRequestOverlayBadge: (callback) => {
+    ipcRenderer.on('request-overlay-badge', (event, data) => callback(data));
+  },
+  // 渲染进程回传绘制好的角标 dataURL
+  sendOverlayBadge: (dataUrl, count) => {
+    ipcRenderer.send('overlay-badge', { dataUrl, count });
   }
 });

@@ -461,6 +461,15 @@ function setupIPC() {
     }
   });
 
+  // 渲染进程绘制好任务栏角标 PNG 后回传（主进程无 DOM canvas）
+  ipcMain.on('overlay-badge', (event, { dataUrl, count }) => {
+    try {
+      applyOverlayBadge(dataUrl, count);
+    } catch (err) {
+      logger.warn(`接收角标图像失败: ${err.message}`);
+    }
+  });
+
   // 选择文件对话框
   ipcMain.handle('select-file', async (event, { filters }) => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -767,6 +776,53 @@ function setupIPC() {
 }
 
 // 应用就绪
+/**
+ * 更新 Windows 任务栏图标角标（overlay icon）
+ * 录制/合并中显示红点 + 数量，方便最小化时一眼看到任务状态。
+ * @param {Array} statusList 直播间状态列表
+ */
+function updateTaskbarOverlay(statusList) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (process.platform !== 'win32') return;
+
+    const list = Array.isArray(statusList) ? statusList : [];
+    const active = list.filter(s => {
+      const st = (s && (s.status || s.state) || '').toString();
+      return s && (s.isRecording === true ||
+        st.includes('record') || st.includes('录制') ||
+        st.includes('merg') || st.includes('合并'));
+    }).length;
+
+    if (active > 0) {
+      // 请求渲染进程绘制带数字的角标 PNG，再应用到任务栏（主进程无 DOM canvas）
+      mainWindow.webContents.send('request-overlay-badge', { count: active });
+    } else {
+      mainWindow.setOverlayIcon(null, '');
+    }
+  } catch (err) {
+    logger.warn(`更新任务栏角标失败: ${err.message}`);
+  }
+}
+
+/**
+ * 应用渲染进程生成的角标图像到任务栏
+ * @param {string} dataUrl 角标 PNG data URL
+ * @param {number} count 数量
+ */
+function applyOverlayBadge(dataUrl, count) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (process.platform !== 'win32') return;
+    if (!dataUrl) return;
+    const img = nativeImage.createFromDataURL(dataUrl);
+    if (img.isEmpty()) return;
+    mainWindow.setOverlayIcon(img, `正在录制/合并 ${count} 个直播间`);
+  } catch (err) {
+    logger.warn(`应用任务栏角标失败: ${err.message}`);
+  }
+}
+
 app.whenReady().then(async () => {
   logger.info('App starting...');
   logger.info(`App version: ${app.getVersion()}`);
@@ -791,6 +847,8 @@ app.whenReady().then(async () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       logger.debug(`[Main] 推送状态更新到 UI: ${statusList.length} 个直播间`);
       mainWindow.webContents.send('streams-update', statusList);
+      // 同步更新任务栏角标（最小化时可见）
+      updateTaskbarOverlay(statusList);
     } else {
       logger.warn(`[Main] 无法推送状态更新: mainWindow=${!!mainWindow}, isDestroyed=${mainWindow?.isDestroyed()}`);
     }

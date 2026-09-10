@@ -153,6 +153,23 @@ async function init() {
         showToast('登录状态已更新', 'success');
       });
 
+      // 监听任务栏角标绘制请求（主进程无 DOM canvas，由渲染进程绘制 PNG 回传）
+      if (window.electronAPI.onRequestOverlayBadge) {
+        window.electronAPI.onRequestOverlayBadge((data) => {
+          try {
+            const count = data && typeof data.count === 'number' ? data.count : 0;
+            if (count > 0) {
+              const dataUrl = drawOverlayBadge(count);
+              if (dataUrl && window.electronAPI.sendOverlayBadge) {
+                window.electronAPI.sendOverlayBadge(dataUrl, count);
+              }
+            }
+          } catch (e) {
+            console.error('[Renderer] 绘制任务栏角标失败:', e);
+          }
+        });
+      }
+
       // 初始加载
       const status = await window.electronAPI.getAllStatus();
       streamsData = status || [];
@@ -171,6 +188,48 @@ async function init() {
     // 非 Electron 环境（浏览器预览），显示模拟数据
     renderDemoMode();
   }
+}
+
+// ========== 任务栏角标绘制 ==========
+// 主进程无 DOM/canvas，角标 PNG 由渲染进程用离屏 canvas 绘制后回传。
+// 绘制高分辨率（64px）红色圆形徽章 + 白色数字，Windows 会自动缩放到任务栏角标尺寸。
+function drawOverlayBadge(count) {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.clearRect(0, 0, size, size);
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size * 0.42;
+
+  // 白色外圈（让红色徽章在浅色任务栏上也有清晰边界）
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  // 红色圆底（录制/进行中的提示色）
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius - 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#fe2c55';
+  ctx.fill();
+
+  // 数字：超过 9 显示 9+
+  const label = count > 9 ? '9+' : String(count);
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const fontSize = label.length > 1 ? 30 : 38;
+  ctx.font = `bold ${fontSize}px "Microsoft YaHei", Arial, sans-serif`;
+  // 垂直微调居中
+  ctx.fillText(label, cx, cy + 2);
+
+  return canvas.toDataURL('image/png');
 }
 
 // ========== 事件绑定 ==========
