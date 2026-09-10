@@ -77,6 +77,7 @@ let mainWindow = null;
 let tray = null;
 let streamManager = null;
 let defaultTrayIcon = null; // 托盘原始图标（空闲置时还原）
+let trayBadgeTestActive = false; // 托盘菜单"测试角标"状态
 // accountManager 已通过 require 导入
 
 // 初始化退出标志
@@ -204,6 +205,25 @@ function createTray() {
         if (mainWindow) {
           mainWindow.show();
           mainWindow.focus();
+        }
+      }
+    },
+    {
+      // 用于验证托盘/任务栏角标是否生效：点击在"显示角标(测试)"与"还原"之间切换
+      label: '测试录制角标',
+      click: (menuItem) => {
+        if (trayBadgeTestActive) {
+          trayBadgeTestActive = false;
+          menuItem.label = '测试录制角标';
+          updateStatusBadges([]);
+        } else {
+          trayBadgeTestActive = true;
+          menuItem.label = '清除测试角标';
+          // 用 2 个模拟录制房间触发角标
+          updateStatusBadges([
+            { status: 'recording' },
+            { status: 'merging' }
+          ]);
         }
       }
     },
@@ -782,8 +802,6 @@ function setupIPC() {
  */
 function updateStatusBadges(statusList) {
   try {
-    if (process.platform !== 'win32') return;
-
     const list = Array.isArray(statusList) ? statusList : [];
     const active = list.filter(s => {
       const st = (s && (s.status || s.state) || '').toString();
@@ -792,13 +810,20 @@ function updateStatusBadges(statusList) {
         st.includes('merg') || st.includes('合并'));
     }).length;
 
+    logger.info(`[角标] updateStatusBadges: 房间数=${list.length}, 录制/合并中=${active}, platform=${process.platform}`);
+
     // 1) 任务栏角标（仅当窗口在任务栏有按钮时可见）
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (active > 0) {
         const { makeBadgePng } = require('./src/lib/badge');
-        const img = nativeImage.createFromBuffer(makeBadgePng(active, 32));
-        if (!img.isEmpty()) {
+        let img = nativeImage.createFromBuffer(makeBadgePng(active, 32));
+        if (img.isEmpty()) {
+          logger.warn('[角标] 任务栏角标图片为空，跳过');
+        } else {
+          // 明确缩放到 32x32，保证 Windows overlay 正确渲染
+          img = img.resize({ width: 32, height: 32, quality: 'best' });
           mainWindow.setOverlayIcon(img, `正在录制/合并 ${active} 个直播间`);
+          logger.info(`[角标] 已设置任务栏 overlay 角标 count=${active}, size=${JSON.stringify(img.getSize())}`);
         }
       } else {
         mainWindow.setOverlayIcon(null, '');
@@ -806,21 +831,57 @@ function updateStatusBadges(statusList) {
     }
 
     // 2) 托盘图标（最小化到托盘时也能看到，真正兜底）
+    //    方案：在原始托盘图标右下角合成红点角标（保留图标本体，类似微信），
+    //    比整体替换为纯色角标更清晰、更可靠。
     if (tray && !tray.isDestroyed()) {
       if (active > 0) {
-        const { makeBadgePng } = require('./src/lib/badge');
-        const img = nativeImage.createFromBuffer(makeBadgePng(active, 16));
-        if (!img.isEmpty()) {
-          tray.setImage(img);
-          tray.setToolTip(`抖音直播录制工具V2 - 正在录制/合并 ${active} 个直播间`);
+        const { makeBadgeRgba, drawBadgeOnBuffer } = require('./src/lib/badge');
+        let applied = false;
+        try {
+          if (defaultTrayIcon && !defaultTrayIcon.isEmpty()) {
+            // 放大到 32x32 合成，边缘更平滑，再交给系统缩放
+            const workW = 32, workH = 32;
+            const baseIcon = defaultTrayIcon.resize({ width: workW, height: workH, quality: 'best' });
+            // Electron toBitmap() 在 Windows 返回 BGRA 字节序；createFromBitmap 也用 BGRA
+            const bmpObj = baseIcon.toBitmap();
+            const bmp = bmpObj.bitmap || bmpObj;
+            // 角标 RGBA -> BGRA
+            const badgeRgba = makeBadgeRgba(active, 24);
+            const badgeBgra = Buffer.alloc(badgeRgba.length);
+            for (let i = 0; i < badgeRgba.length; i += 4) {
+              badgeBgra[i] = badgeRgba[i + 2];     // B
+              badgeBgra[i + 1] = badgeRgba[i + 1]; // G
+              badgeBgra[i + 2] = badgeRgba[i];     // R
+              badgeBgra[i + 3] = badgeRgba[i + 3]; // A
+            }
+            const composited = drawBadgeOnBuffer(Buffer.from(bmp), workW, workH, badgeBgra, 24);
+            const newImg = nativeImage.createFromBitmap(composited, { width: workW, height: workH });
+            if (!newImg.isEmpty()) {
+              tray.setImage(newImg);
+              applied = true;
+            }
+          }
+        } catch (e) {
+          logger.warn(`[角标] 合成托盘图标失败，回退为纯色角标: ${e.message}`);
         }
+        // 回退：直接用纯色角标图标
+        if (!applied) {
+          const { makeBadgePng } = require('./src/lib/badge');
+          const img = nativeImage.createFromBuffer(makeBadgePng(active, 16));
+          if (!img.isEmpty()) tray.setImage(img.resize({ width: 16, height: 16, quality: 'best' }));
+        }
+        tray.setToolTip(`抖音直播录制工具V2 - 正在录制/合并 ${active} 个直播间`);
+        logger.info(`[角标] 已设置托盘角标 count=${active}`);
       } else {
         if (defaultTrayIcon) tray.setImage(defaultTrayIcon);
         tray.setToolTip('抖音直播录制工具V2');
       }
+    } else {
+      logger.warn('[角标] 托盘不存在或已销毁，无法设置托盘角标');
     }
   } catch (err) {
     logger.warn(`更新任务栏/托盘角标失败: ${err.message}`);
+    logger.warn(err.stack);
   }
 }
 

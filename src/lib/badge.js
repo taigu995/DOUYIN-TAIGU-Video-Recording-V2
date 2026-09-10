@@ -90,6 +90,17 @@ const DIGITS = {
  */
 function makeBadgePng(count, size) {
   const SIZE = size || 32;
+  const px = makeBadgeRgba(count, SIZE);
+  return encodePng(SIZE, SIZE, px);
+}
+
+/**
+ * 生成红色圆形角标的原始 RGBA 像素 buffer（用于像素级合成到托盘图标）
+ * @param {number} count 数量
+ * @param {number} SIZE 边长
+ * @returns {Buffer} RGBA buffer
+ */
+function makeBadgeRgba(count, SIZE) {
   const px = Buffer.alloc(SIZE * SIZE * 4); // RGBA，默认全透明
 
   const label = count > 9 ? '9+' : String(Math.max(1, count) | 0);
@@ -142,7 +153,50 @@ function makeBadgePng(count, size) {
     }
   }
 
-  return encodePng(SIZE, SIZE, px);
+  return px;
 }
 
-module.exports = { makeBadgePng };
+/**
+ * 把角标 RGBA 像素合成到任意底图 buffer 的右下角（类似微信未读角标）。
+ * 纯 alpha 混合，不依赖图像库。用于在主进程给托盘图标叠加红点。
+ * @param {Buffer} base 底图 RGBA buffer
+ * @param {number} baseW 底图宽
+ * @param {number} baseH 底图高
+ * @param {Buffer} badge 角标 RGBA buffer（badgeSize*badgeSize*4）
+ * @param {number} badgeSize 角标边长
+ * @returns {Buffer} 合成后的 RGBA buffer（同底图尺寸）
+ */
+function drawBadgeOnBuffer(base, baseW, baseH, badge, badgeSize) {
+  const out = Buffer.from(base); // 拷贝
+  // 角标放在右下角，约占底图的 60%
+  const drawSize = Math.max(6, Math.round(Math.min(baseW, baseH) * 0.62));
+  // 角标定位：右下角，略微超出以贴合边缘
+  const offsetX = baseW - drawSize + Math.round(drawSize * 0.12);
+  const offsetY = baseH - drawSize + Math.round(drawSize * 0.12);
+
+  for (let by = 0; by < drawSize; by++) {
+    for (let bx = 0; bx < drawSize; bx++) {
+      // 角标源像素（按比例采样）
+      const sx = Math.floor((bx / drawSize) * badgeSize);
+      const sy = Math.floor((by / drawSize) * badgeSize);
+      const si = (sy * badgeSize + sx) * 4;
+      const sa = badge[si + 3];
+      if (sa === 0) continue; // 透明像素跳过
+
+      const dx = offsetX + bx;
+      const dy = offsetY + by;
+      if (dx < 0 || dx >= baseW || dy < 0 || dy >= baseH) continue;
+      const di = (dy * baseW + dx) * 4;
+
+      // alpha 混合
+      const alpha = sa / 255;
+      out[di]     = Math.round(badge[si]     * alpha + out[di]     * (1 - alpha));
+      out[di + 1] = Math.round(badge[si + 1] * alpha + out[di + 1] * (1 - alpha));
+      out[di + 2] = Math.round(badge[si + 2] * alpha + out[di + 2] * (1 - alpha));
+      out[di + 3] = Math.max(out[di + 3], sa);
+    }
+  }
+  return out;
+}
+
+module.exports = { makeBadgePng, makeBadgeRgba, drawBadgeOnBuffer };
