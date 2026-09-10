@@ -11,6 +11,13 @@ const { getConfig, setConfig, getAll, setAll, getStreams, addStream: configAddSt
 const { StreamManager } = require('./src/lib/stream-manager');
 const accountManager = require('./src/lib/account-manager');
 
+// 开启 GPU 合成加速：离屏窗口捕获礼物特效（火箭/跑车/连击等 Canvas/WebGL 动画）需要 GPU 渲染
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-accelerated-canvas');
+app.commandLine.appendSwitch('enable-native-gpu-memory-buffers');
+app.commandLine.appendSwitch('disabled-by-default-software-compositing-fallback');
+try { app.commandLine.appendSwitch('ignore-gpu-blocklist'); } catch (e) {}
+
 // 单实例锁
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {

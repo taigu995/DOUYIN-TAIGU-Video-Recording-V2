@@ -53,6 +53,8 @@ class CommentRenderer {
       frame: false,
       webPreferences: {
         offscreen: true,
+        paintWhenInitiallyHidden: true, // 窗口隐藏也持续绘制，保证离屏能捕获到动画特效
+        backgroundThrottling: false,     // 不节流后台页面，礼物动画不被拖慢
         javascript: true,
         plugins: true,
         nodeIntegration: false,
@@ -63,6 +65,9 @@ class CommentRenderer {
         audioPlaybackPolicy: 'never'
       }
     });
+
+    // 提高离屏绘制帧率：捕获到的帧更新更及时，礼物特效更平滑
+    try { this.captureWindow.webContents.setFrameRate(Math.max(this.targetFps, 30)); } catch (e) {}
 
     // 静音窗口，防止直播音频外放
     this.captureWindow.webContents.setAudioMuted(true);
@@ -266,10 +271,8 @@ class CommentRenderer {
               display: none !important;
             }
 
-            /* 隐藏浮动弹幕层（视频上方的canvas弹幕） */
-            canvas {
-              display: none !important;
-            }
+            /* 不隐藏 canvas：礼物特效（火箭/跑车/连击/全屏动画等）渲染在 canvas/WebGL 上，
+               隐藏会直接抹掉礼物动画。视频区域已随父容器隐藏，其内部 canvas 自动不可见 */
 
             /* 隐藏左侧推荐区域 */
             [class*="recommend"], [class*="Recommend"],
