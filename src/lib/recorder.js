@@ -71,6 +71,9 @@ class Recorder {
     this.session = options.session;
     this.recordMode = options.recordMode || 'with-account'; // 'with-account' | 'stream-only' | 'stream+comment-no-login'
     this.commentFps = options.commentFps || 30;
+    this.giftFps = options.giftFps || 24;
+    this.giftHoldMs = options.giftHoldMs || 1500;
+    this.giftCheckMs = options.giftCheckMs || 300;
     this.sessionName = options.sessionName || 'persist:douyin';
 
     this.recording = false;
@@ -443,6 +446,9 @@ class Recorder {
           outputDir: this._commentFramesDir,
           debugDir: path.dirname(this.outputFile),
           fps: this.commentFps,
+          giftFps: this.giftFps,
+          giftHoldMs: this.giftHoldMs,
+          giftCheckMs: this.giftCheckMs,
           sessionName: this.sessionName,
           noLoginMode: this.recordMode === 'stream+comment-no-login'
         });
@@ -813,8 +819,60 @@ class Recorder {
     // Phase 1: 将评论区帧编码为视频
     logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps`);
 
-    // 计算评论区视频总时长(毫秒)
-    const commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
+    // 计算评论区视频总时长(毫秒)，默认按固定帧率
+    let commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
+
+    // 尝试读取每帧时间戳（支持礼物动画「动态提帧」时的时间轴正确性）
+    let commentEncodeArgs = null;
+    const timestampsFile = path.join(this._commentFramesDir, 'timestamps.json');
+    try {
+      if (fs.existsSync(timestampsFile)) {
+        const raw = JSON.parse(fs.readFileSync(timestampsFile, 'utf-8'));
+        if (Array.isArray(raw) && raw.length === commentInfo.frameCount && raw.length >= 2) {
+          const ts = raw.map(Number).filter(Number.isFinite);
+          if (ts.length === commentInfo.frameCount) {
+            const baseDur = Math.min(0.2, Math.max(0.02, (ts[ts.length - 1] - ts[0]) / ts.length / 1000));
+            const listFile = path.join(this._commentFramesDir, 'concat_list.txt');
+            const lines = [];
+            for (let i = 0; i < ts.length; i++) {
+              const d = i < ts.length - 1
+                ? Math.min(0.2, Math.max(0.02, (ts[i + 1] - ts[i]) / 1000))
+                : baseDur;
+              lines.push(`file '${path.join(this._commentFramesDir, `frame_${String(i).padStart(6, '0')}.jpg`).replace(/\\/g, '/')}'`);
+              lines.push(`duration ${d.toFixed(4)}`);
+            }
+            fs.writeFileSync(listFile, lines.join('\n'), 'utf-8');
+            commentEncodeArgs = [
+              '-f', 'concat', '-safe', '0',
+              '-i', listFile,
+              '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
+              '-c:v', 'libx264', '-preset', 'medium', '-crf', '15', '-pix_fmt', 'yuv420p',
+              '-y', commentVideoFile
+            ];
+            const spanMs = ts[ts.length - 1] - ts[0];
+            const avgStep = spanMs / (ts.length - 1);
+            commentDurationMs = Math.round(spanMs + avgStep);
+            logger.info('[Merge] 已检测到逐帧时间戳，使用动态帧率编码（礼物高帧率生效）');
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn(`[Merge] 读取时间戳失败，回退固定帧率: ${e.message}`);
+      commentEncodeArgs = null;
+    }
+    const commentEncodeCmd = commentEncodeArgs || [
+      '-f', 'image2',
+      '-framerate', String(commentInfo.fps),
+      '-start_number', '0',
+      '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
+      '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
+      '-c:v', 'libx264',
+      '-preset', 'medium',
+      '-crf', '15',
+      '-pix_fmt', 'yuv420p',
+      '-y',
+      commentVideoFile
+    ];
 
     // 保存评论区编码阶段的进度数据（供 _runFFmpeg 读取）
     this._mergeProgressData = {
@@ -831,19 +889,7 @@ class Recorder {
       progress: 0
     });
 
-    await this._runFFmpeg(resolvedPath, [
-      '-f', 'image2',
-      '-framerate', String(commentInfo.fps),
-      '-start_number', '0',
-      '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
-      '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
-      '-c:v', 'libx264',
-      '-preset', 'medium',
-      '-crf', '15',
-      '-pix_fmt', 'yuv420p',
-      '-y',
-      commentVideoFile
-    ], 'Merge-Comment', commentDurationMs, '编码评论区');
+    await this._runFFmpeg(resolvedPath, commentEncodeCmd, 'Merge-Comment', commentDurationMs, '编码评论区');
 
     if (!fs.existsSync(commentVideoFile)) {
       throw new Error('评论区视频编码失败');

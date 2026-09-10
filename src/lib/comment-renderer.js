@@ -15,6 +15,28 @@ const COMMENT_WIDTH = 500;   // 评论区宽度（捕获区域宽度）
 const COMMENT_HEIGHT = 1080; // 评论区高度（与主视频对齐）
 const CAPTURE_QUALITY = 92;  // JPEG 压缩质量 (1-100)
 
+// 礼物/连击/进场特效检测脚本（在直播页面内执行，返回是否有送礼特效）
+const GIFT_DETECT_SCRIPT = `(() => {
+  try {
+    const b = document.body;
+    if (!b || !b.innerText) return false;
+    const txt = b.innerText.slice(-5000);
+    // 送礼/连击/飞屏特征文字
+    const hasGiftTxt = /送出[\\s\\S]{0,8}(×|x|X)?\\s*\\d*|\\b连击\\b|飞屏|打赏|礼物/.test(txt);
+    // 可见的礼物/开屏/特效动画容器（宽度在 30~800 之间、有子元素即认为正在播放）
+    let visibleAnim = false;
+    const sel = '[class*="gift" i],[class*="Gift"],[class*="anim" i],[class*="Anim"],[class*="effect" i],[class*="Effect"],[class*="screen" i],[class*="Screen"]';
+    const nodes = b.querySelectorAll(sel);
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (!n.children || !n.children.length || !n.getBoundingClientRect) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width > 30 && r.height > 30 && r.width < 900 && r.height < 900) { visibleAnim = true; break; }
+    }
+    return hasGiftTxt || visibleAnim;
+  } catch (e) { return false; }
+})()`;
+
 class CommentRenderer {
   constructor(options) {
     this.liveUrl = options.liveUrl;
@@ -22,7 +44,14 @@ class CommentRenderer {
     this.session = options.session || 'persist:douyin';
     this.outputDir = options.outputDir; // 帧保存目录
     this.debugDir = options.debugDir || options.outputDir; // 调试截图保存目录
-    this.targetFps = options.fps || 10; // 评论区帧率（不需要太高）
+    this.targetFps = options.fps || 10; // 评论区基础帧率（平时）
+    this.giftFps = options.giftFps || 24;      // 礼物特效高帧率档
+    this.giftHoldMs = options.giftHoldMs || 1500; // 检测到礼物后保持高帧率的时长
+    this.giftCheckMs = options.giftCheckMs || 300; // 礼物检测轮询间隔
+    this._giftActive = false;
+    this._giftActiveUntil = 0;
+    this._giftTimer = null;
+    this._timestamps = []; // 帧时间戳(ms)，供合并端精确控制时间轴
 
     this.captureWindow = null;
     this.capturing = false;
@@ -543,10 +572,17 @@ class CommentRenderer {
     this._startTime = Date.now();
     this._captureStartTime = this._startTime;
 
-    logger.info(`[CommentRenderer] 开始捕获评论区帧, FPS: ${this.targetFps}, 输出目录: ${this.outputDir}`);
+    // 动态帧率状态（礼物特效检测）
+    this._giftActive = false;
+    this._giftActiveUntil = 0;
+    this._timestamps = [];
+
+    logger.info(`[CommentRenderer] 开始捕获评论区帧, 基准FPS: ${this.targetFps}, 礼物FPS: ${this.giftFps}, 输出目录: ${this.outputDir}`);
     logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
 
-    const targetInterval = Math.floor(1000 / this.targetFps);
+    // 基准帧间隔 vs 礼物动画帧间隔
+    this._baseInterval = Math.floor(1000 / this.targetFps);
+    this._giftInterval = Math.floor(1000 / this.giftFps);
     let capturing = false;
 
     const captureFrame = async () => {
@@ -557,7 +593,8 @@ class CommentRenderer {
       // 防止重入
       if (capturing) {
         if (this.capturing) {
-          this._captureTimer = setTimeout(captureFrame, targetInterval);
+          const _inGift = this._giftActive && Date.now() < this._giftActiveUntil;
+          this._captureTimer = setTimeout(captureFrame, _inGift ? this._giftInterval : this._baseInterval);
         }
         return;
       }
@@ -635,16 +672,24 @@ class CommentRenderer {
         capturing = false;
       }
 
-      // 安排下一次捕获
+      // 记录帧时间戳（相对捕获开始，供合并精确控时）
+      this._timestamps.push(this.frameCount ? Date.now() - this._captureStartTime : 0);
+
+      // 安排下一次捕获：礼物动画期间提升帧率，结束后回落基准帧率
       if (this.capturing) {
         const elapsed = Date.now() - now;
-        const nextDelay = Math.max(0, targetInterval - elapsed);
+        const inGift = this._giftActive && Date.now() < this._giftActiveUntil;
+        const curInterval = inGift ? this._giftInterval : this._baseInterval;
+        const nextDelay = Math.max(0, curInterval - elapsed);
         this._captureTimer = setTimeout(captureFrame, nextDelay);
       }
     };
 
+    // 启动礼物检测（后台轮询，不影响帧捕获）
+    this._startGiftDetection();
+
     // 启动捕获循环
-    this._captureTimer = setTimeout(captureFrame, targetInterval);
+    this._captureTimer = setTimeout(captureFrame, this._baseInterval);
   }
 
   /**
@@ -659,8 +704,25 @@ class CommentRenderer {
       this._captureTimer = null;
     }
 
+    // 停止礼物检测
+    this._stopGiftDetection();
+
     const duration = this._startTime ? Date.now() - this._startTime : 0;
     const actualFps = duration > 0 ? (this.frameCount / (duration / 1000)) : this.targetFps;
+
+    // 保存帧时间戳列表，供合并精确控时（动态帧率必需）
+    if (this.outputDir && this._timestamps && this._timestamps.length) {
+      try {
+        const fs = require('fs');
+        fs.writeFileSync(
+          path.join(this.outputDir, 'timestamps.json'),
+          JSON.stringify(this._timestamps),
+          'utf8'
+        );
+      } catch (e) {
+        logger.warn('[CommentRenderer] 写 timestamps.json 失败:', e.message);
+      }
+    }
 
     logger.info(
       `[CommentRenderer] 停止捕获, 总帧数: ${this.frameCount}, ` +
@@ -672,9 +734,48 @@ class CommentRenderer {
       outputDir: this.outputDir,
       fps: actualFps,
       duration: duration,
+      timestamps: this._timestamps || [],
       width: this._commentRect ? this._commentRect.width : COMMENT_WIDTH,
       height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT
     };
+  }
+
+  /**
+   * 启动礼物特效检测（轮询页面，检测到礼物/连击/飞屏动画时临时提升保存帧率）
+   */
+  _startGiftDetection() {
+    this._stopGiftDetection();
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+
+    this._giftActive = false;
+    this._giftActiveUntil = 0;
+    this._giftTimer = setInterval(() => {
+      if (!this.capturing || !this.captureWindow || this.captureWindow.isDestroyed()) {
+        this._stopGiftDetection();
+        return;
+      }
+      this.captureWindow.webContents
+        .executeJavaScript(GIFT_DETECT_SCRIPT, true)
+        .then((active) => {
+          if (active) {
+            this._giftActive = true;
+            this._giftActiveUntil = Date.now() + this.giftHoldMs;
+          } else if (Date.now() > this._giftActiveUntil) {
+            this._giftActive = false;
+          }
+        })
+        .catch(() => {});
+    }, this.giftCheckMs);
+  }
+
+  /**
+   * 停止礼物特效检测
+   */
+  _stopGiftDetection() {
+    if (this._giftTimer) {
+      clearInterval(this._giftTimer);
+      this._giftTimer = null;
+    }
   }
 
   /**

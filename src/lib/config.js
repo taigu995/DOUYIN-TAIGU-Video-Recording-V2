@@ -17,6 +17,10 @@ const defaults = {
   commentHeight: 720,     // 评论区高度（像素，与主视频对齐）
   commentFps: 15,         // 评论区帧率（全局默认）
   commentJpegQuality: 92, // 评论区帧 JPEG 压缩质量
+  // 礼物动态提帧设置（检测到礼物特效时临时提高评论区帧率）
+  giftFps: 24,           // 礼物特效时的峰值帧率
+  giftHoldMs: 1500,      // 检测到礼物后保持高帧率的时长（毫秒）
+  giftCheckMs: 300,      // 礼物状态探测间隔（毫秒）
   // 合并设置
   mergeCrf: 15,           // 合并视频 CRF（越低质量越高）
   mergePreset: 'medium',  // 合并视频编码预设
