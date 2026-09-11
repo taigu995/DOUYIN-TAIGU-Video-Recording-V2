@@ -128,8 +128,10 @@ function createWindow() {
     const minimizeToTray = cfg.minimizeToTray;
     if (!app.isQuitting && minimizeToTray) {
       event.preventDefault();
-      mainWindow.hide();
-      logger.info('窗口已隐藏到系统托盘');
+      // 真正最小化到任务栏（保留任务栏按钮），而非 hide 隐藏进托盘，
+      // 避免窗口消失后找不到，且任务栏按钮上可显示录制角标
+      mainWindow.minimize();
+      logger.info('窗口已最小化到任务栏（保留按钮，可查看录制角标）');
     }
   });
 
