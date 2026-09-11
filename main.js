@@ -2,7 +2,7 @@
  * 抖音直播录制工具V2 - 主进程
  * 基于 Electron 的桌面应用，支持多账号、多直播间录制
  */
-const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, session, shell, ipcMain, nativeImage, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('./src/lib/logger');
@@ -133,6 +133,16 @@ function createWindow() {
     }
   });
 
+  // 最小化到任务栏按钮时，重新应用角标（确保 overlay 在最小化后仍可见）
+  mainWindow.on('minimize', () => {
+    try {
+      logger.info('[角标] 窗口最小化事件触发，刷新角标');
+      refreshBadges();
+    } catch (e) {
+      logger.warn(`最小化时刷新角标失败: ${e.message}`);
+    }
+  });
+
   // 设置窗口级 Cookie（用于抖音 API 请求）
   setupWindowCookies();
 }
@@ -216,6 +226,7 @@ function createTray() {
           trayBadgeTestActive = false;
           menuItem.label = '测试录制角标';
           updateStatusBadges([]);
+          logger.info('[角标] 测试角标已清除');
         } else {
           trayBadgeTestActive = true;
           menuItem.label = '清除测试角标';
@@ -224,6 +235,17 @@ function createTray() {
             { status: 'recording' },
             { status: 'merging' }
           ]);
+          logger.info('[角标] 测试角标已触发(2个录制房间)');
+          // 系统通知让用户立即确认角标机制已被调用
+          try {
+            const notif = new Notification({
+              title: '角标功能测试',
+              body: '已触发录制角标，请查看任务栏图标/托盘图标右下角是否出现红色徽章。'
+            });
+            notif.show();
+          } catch (ntErr) {
+            logger.warn(`弹出角标测试通知失败: ${ntErr.message}`);
+          }
         }
       }
     },
@@ -882,6 +904,21 @@ function updateStatusBadges(statusList) {
   } catch (err) {
     logger.warn(`更新任务栏/托盘角标失败: ${err.message}`);
     logger.warn(err.stack);
+  }
+}
+
+/**
+ * 从 streamManager 实时读取当前直播间状态，重新刷新任务栏/托盘角标。
+ * 用于最小化、恢复窗口等需要按当前状态重绘角标的事件。
+ */
+function refreshBadges() {
+  try {
+    const list = (streamManager && typeof streamManager.getAllStatus === 'function')
+      ? streamManager.getAllStatus()
+      : [];
+    updateStatusBadges(list);
+  } catch (err) {
+    logger.warn(`刷新角标失败: ${err.message}`);
   }
 }
 
