@@ -173,7 +173,18 @@ const GIFT_BANNER_SCRIPT = `(() => {
       mo.observe(document.body, { childList: true, subtree: true });
       window.__giftBannerMO = mo;
     }
-    return 'installed';
+    // ---- 探测信息（用于日志定位，不影响功能） ----
+    var probe = { pageLoaded: !!document.body, giftLikeNodes: 0, bannerMounted: !!window.__giftBannerMO };
+    try {
+      var all = document.querySelectorAll('*');
+      for (var pi = 0; pi < all.length; pi++) {
+        var el = all[pi];
+        if (el.children && el.children.length) continue;
+        var t = (el.textContent || '').trim();
+        if (t && t.length < 80 && /(送出|赠送|打赏)/.test(t)) probe.giftLikeNodes++;
+      }
+    } catch (e) {}
+    return 'installed|probe=' + JSON.stringify(probe);
   } catch (e) { return 'error:' + e.message; }
 })()`;
 
@@ -241,6 +252,64 @@ class CommentRenderer {
     // 静音窗口，防止直播音频外放
     this.captureWindow.webContents.setAudioMuted(true);
     logger.info('[CommentRenderer] 窗口音频已静音');
+
+    // 透传离屏页面 console 日志，便于诊断评论区/礼物检测是否正常工作
+    this.captureWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+      try {
+        const msg = String(message || '').slice(0, 500);
+        if (
+          msg.includes('[GiftBanner]') ||
+          msg.includes('[CommentProbe]') ||
+          msg.includes('[BannerInfo]') ||
+          msg.includes('gift') ||
+          msg.includes('Gift')
+        ) {
+          logger.info(`[CommentRenderer-Page] ${msg}`);
+        }
+      } catch (e) {}
+    });
+
+    // 归档：把已登录的主窗口 cookies 同步到离屏评论窗口，确保评论区有实时弹幕/礼物
+    try {
+      const targetSession = this.captureWindow.webContents.session;
+      if (targetSession) {
+        let mainWin = null;
+        const allWins = BrowserWindow.getAllWindows();
+        for (const w of allWins) {
+          if (w && !w.webContents.isOffscreen()) { mainWin = w; break; }
+        }
+        if (mainWin && mainWin.webContents && mainWin.webContents.session) {
+          const srcSession = mainWin.webContents.session;
+          const cookies = await srcSession.cookies.get({});
+          let synced = 0;
+          for (const c of cookies) {
+            try {
+              const targetCookies = await targetSession.cookies.get({ name: c.name, domain: c.domain, path: c.path });
+              if (targetCookies.length === 0) {
+                const urlDomain = (c.domain || '').replace(/^\./, '');
+                targetSession.cookies.set({
+                  url: 'https://' + urlDomain + (c.path || '/'),
+                  name: c.name,
+                  value: c.value,
+                  domain: c.domain,
+                  path: c.path || '/',
+                  secure: !!c.secure,
+                  httpOnly: !!c.httpOnly,
+                  expirationDate: c.expirationDate
+                }).then(() => { synced++; }).catch(() => {});
+              }
+            } catch (e) {}
+          }
+          // 等待少量同步完成
+          await new Promise(r => setTimeout(r, 800));
+          logger.info(`[CommentRenderer] 已从主窗口同步登录Cookie到离屏评论窗口 (共${cookies.length}条, 已同步${synced}条)`);
+        } else {
+          logger.warn('[CommentRenderer] 未找到主窗口，跳过Cookie同步');
+        }
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] Cookie同步失败: ' + (e && e.message));
+    }
 
     // 加载直播页面（带超时、重试和容错机制）
     logger.info(`[CommentRenderer] 加载直播页面: ${this.liveUrl}`);
@@ -569,6 +638,16 @@ class CommentRenderer {
       }
       const ret = await this.captureWindow.webContents.executeJavaScript(GIFT_BANNER_SCRIPT);
       logger.info(`[CommentRenderer] 礼物横幅脚本注入结果: ${ret}`);
+      // 解析探测信息
+      const pm = String(ret || '').match(/probe=(\{.*\})/);
+      if (pm) {
+        try {
+          const p = JSON.parse(pm[1]);
+          logger.info(`[CommentRenderer] 页面检查: 页面已加载=${p.pageLoaded}, 含礼物文字节点数=${p.giftLikeNodes}, 横幅已挂载=${p.bannerMounted}`);
+          if (!p.pageLoaded) { logger.warn('[CommentRenderer] 页面body未加载，评论区可能为空/未登录'); }
+          if (p.giftLikeNodes === 0) { logger.warn('[CommentRenderer] 未检测到任何"送出/赠送/打赏"文字，确认页面是否有实时礼物消息(可能未登录)'); }
+        } catch (e) {}
+      }
     } catch (e) {
       logger.warn('[CommentRenderer] 注入礼物横幅失败:', e.message);
     }
