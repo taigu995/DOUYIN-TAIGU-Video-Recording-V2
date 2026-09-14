@@ -37,6 +37,146 @@ const GIFT_DETECT_SCRIPT = `(() => {
   } catch (e) { return false; }
 })()`;
 
+// 礼物横幅注入脚本：常驻监听评论区礼物消息，提炼"谁送的什么礼物+图标"提示条
+// 横幅作为 DOM 元素插入评论区顶部，天然被帧捕获录进画面
+const GIFT_BANNER_SCRIPT = `(() => {
+  try {
+    if (window.__giftBannerInstalled) return 'already';
+    window.__giftBannerInstalled = true;
+
+    const lastKey = new Set();
+    let lastMsgCount = 0;
+
+    // 从一条礼物消息文本里解析 昵称/礼物名/数量
+    function parseGiftText(text) {
+      const t = (text || '').replace(/\\s+/g, ' ').trim();
+      const m = t.match(/^([\\s\\S]{1,20}?)\\s*(送出|赠送|打赏|送出了)\\s*([\\s\\S]{1,20}?)\\s*(×|x|X)\\s*(\\d+)/);
+      const m2 = t.match(/^([\\s\\S]{1,20}?)\\s*(送出|赠送|打赏|送出了)\\s*([\\s\\S]{1,20})$/);
+      const hit = m || m2;
+      if (!hit) return null;
+      let nick = (hit[1] || '').trim();
+      const gname = (hit[3] || '').trim();
+      const num = hit[5] ? parseInt(hit[5], 10) : 1;
+      if (!num) return null;
+      return { nick, gift: gname || '礼物', num, count: num, raw: t };
+    }
+
+    function roundRect(r, p) {
+      const o = Math.floor(p / 2);
+      const b = p % 2;
+      return { x: Math.round(r.x) + o, y: Math.round(r.y) + o, w: Math.floor(r.width - p) - b, h: Math.floor(r.height - p) - b };
+    }
+
+    // 创建横幅 DOM 并渲染到评论区容器顶部
+    function renderBanner(data, iconSrc) {
+      // 找到评论区容器（复用现有定位）
+      const ct = window.__commentBannerRoot || (function(){
+        const sels = ['[class*="chat-list"]','[class*="ChatList"]','[class*="message-list"]','[class*="MessageList"]','[class*="chat-container"]','[data-e2e="live-chat"]','[data-e2e="chat-room"]'];
+        for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
+        return null;
+      })();
+      if (ct) { window.__commentBannerRoot = ct; } else { return; }
+
+      // 复用或新建横幅容器
+      let box = document.getElementById('dylive-gift-banner');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'dylive-gift-banner';
+        box.style.cssText = 'position:relative;z-index:9999;padding:6px 0;flex:none;shrink:0;';
+        const parent = ct.parentNode || ct;
+        if (ct.nextSibling) parent.insertBefore(box, ct.nextSibling);
+        else parent.appendChild(box);
+      }
+
+      // 清空并填充
+      box.innerHTML = '';
+      const inner = document.createElement('div');
+      inner.style.cssText = 'display:flex;align-items:center;gap:8px;background:rgba(0,0,0,0.72);';
+      inner.style.cssText += 'border:1px solid #ff3b57;border-radius:8px;padding:8px 12px;color:#fff;font-size:14px;box-shadow:0 2px 12px rgba(0,0,0,0.4);backdrop-filter:blur(2px);';
+
+      const icon = document.createElement('img');
+      icon.alt = '礼物';
+      icon.style.cssText = 'width:28px;height:28px;border-radius:6px;object-fit:cover;background:#ff3b5718;flex:none;';
+      icon.src = iconSrc || 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" rx="6" fill="#ff3b57"/><text x="14" y="20" font-size="16" fill="#fff" text-anchor="middle">🎁</text></svg>');
+
+      const txt = document.createElement('div');
+      txt.style.cssText = 'display:flex;flex-direction:column;justify-content:center;line-height:1.15;min-width:0;';
+      const name = document.createElement('div');
+      name.style.cssText = 'font-weight:700;color:#ffd24d;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;';
+      name.textContent = data.nick || '';
+      const act = document.createElement('div');
+      act.style.cssText = 'color:#fff;font-size:13px;';
+      act.textContent = '送出 ' + (data.gift || '礼物') + (data.num > 1 ? ' ×' + data.num : '');
+
+      inner.appendChild(icon);
+      txt.appendChild(name);
+      txt.appendChild(act);
+      inner.appendChild(txt);
+      box.appendChild(inner);
+
+      // 动画：进入 + 3秒后淡出
+      inner.style.transition = 'opacity .6s ease, transform .6s ease';
+      inner.style.opacity = '0';
+      inner.style.transform = 'translateY(-8px)';
+      requestAnimationFrame(() => { inner.style.opacity = '1'; inner.style.transform = 'translateY(0)'; });
+
+      if (data.__timer) clearTimeout(data.__timer);
+      data.__timer = setTimeout(() => {
+        inner.style.opacity = '0';
+        inner.style.transform = 'translateY(-8px)';
+        setTimeout(() => { if (box && box.parentNode) box.remove(); }, 650);
+      }, 3000);
+    }
+
+    // 在礼物消息节点里找礼物图标
+    function findIcon(node) {
+      if (!node) return null;
+      const imgs = node.querySelectorAll ? Array.from(node.querySelectorAll('img')) : [];
+      for (const img of imgs) {
+        const s = (img.src || '').toLowerCase();
+        if (s && !s.startsWith('data:') && /gift|reward|anim|icon/.test(s)) return img.src;
+      }
+      return null;
+    }
+
+    // 扫描新增节点
+    function scan(root) {
+      const nodes = root ? Array.from(root.querySelectorAll('*')) : document.querySelectorAll('*');
+      for (const n of nodes) {
+        if (n.children && n.children.length) continue;
+        const txt = (n.textContent || '').trim();
+        if (!txt || txt.length > 80) continue;
+        if (!/(送出|赠送|打赏|送出了)/.test(txt)) continue;
+        const key = txt;
+        if (lastKey.has(key)) continue;
+        if (lastKey.size > 200) lastKey.clear();
+        lastKey.add(key);
+        const data = parseGiftText(txt);
+        if (data) {
+          const icon = findIcon(n);
+          renderBanner(data, icon);
+        }
+      }
+    }
+
+    // MutationObserver 监听动态插入的礼物消息
+    let mo = window.__giftBannerMO;
+    if (!mo) {
+      mo = new MutationObserver((muts) => {
+        for (const m of muts) {
+          if (m.type !== 'childList' || !m.addedNodes) continue;
+          for (const node of m.addedNodes) {
+            if (node.nodeType === 1) scan(node);
+          }
+        }
+      });
+      mo.observe(document.body, { childList: true, subtree: true });
+      window.__giftBannerMO = mo;
+    }
+    return 'installed';
+  } catch (e) { return 'error:' + e.message; }
+})()`;
+
 class CommentRenderer {
   constructor(options) {
     this.liveUrl = options.liveUrl;
@@ -241,6 +381,9 @@ class CommentRenderer {
     }
 
     logger.info('[CommentRenderer] 初始化完成');
+
+    // 注入礼物横幅常驻脚本：评论区顶部显示"谁送了礼物+图标"提示条
+    await this.injectGiftBanner();
   }
 
   /**
@@ -414,6 +557,20 @@ class CommentRenderer {
       logger.info('[CommentRenderer] 已注入评论区 CSS');
     } catch (e) {
       logger.warn('[CommentRenderer] 注入 CSS 失败:', e.message);
+    }
+  }
+
+  // 注入礼物横幅常驻脚本：监听评论区礼物消息 → 在评论区顶部插入"谁送了什么礼物"提示条
+  async injectGiftBanner() {
+    try {
+      if (!this.captureWindow || this.captureWindow.isDestroyed()) {
+        logger.warn('[CommentRenderer] 注入礼物横幅失败: 窗口不可用');
+        return;
+      }
+      const ret = await this.captureWindow.webContents.executeJavaScript(GIFT_BANNER_SCRIPT);
+      logger.info(`[CommentRenderer] 礼物横幅脚本注入结果: ${ret}`);
+    } catch (e) {
+      logger.warn('[CommentRenderer] 注入礼物横幅失败:', e.message);
     }
   }
 
