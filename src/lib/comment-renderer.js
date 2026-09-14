@@ -173,6 +173,14 @@ const GIFT_BANNER_SCRIPT = `(() => {
       mo.observe(document.body, { childList: true, subtree: true });
       window.__giftBannerMO = mo;
     }
+    // 暴露全局入口，供主进程 WS 礼物流外部注入（保底：渲染与提帧复用同一套）
+    window.__showGiftBanner = function (gdata, iconSrc) {
+      try {
+        if (!gdata || !gdata.gift) return false;
+        renderBanner({ nick: gdata.nick || '', gift: gdata.gift || '', num: gdata.num || 1, __timer: null }, iconSrc);
+        return true;
+      } catch (e) { return false; }
+    };
     // ---- 探测信息（用于日志定位，不影响功能） ----
     var probe = { pageLoaded: !!document.body, giftLikeNodes: 0, bannerMounted: !!window.__giftBannerMO };
     try {
@@ -1012,6 +1020,61 @@ class CommentRenderer {
       clearInterval(this._giftTimer);
       this._giftTimer = null;
     }
+  }
+
+  /**
+   * 外部礼物注入接口（供 WS 礼物流等调用，完全与内部 DOM 检测解耦）
+   * @param {object} data - { nick, giftName, count, iconUrl }
+   * 说明：任何异常都静默吞掉，绝不影响评论区录制与源画面录制主流程。
+   */
+  async injectExternalGift(data) {
+    try {
+      if (!data || (!data.nick && !data.giftName)) return;
+      // 1) 提帧：触发礼物高帧率档，提升这几秒的评论区帧率
+      if (this.capturing) {
+        this._giftActive = true;
+        this._giftActiveUntil = Date.now() + this.giftHoldMs;
+      }
+      // 2) 横幅：调用离屏页面里已暴露的全局函数渲染礼物横幅
+      await this._showExternalBanner(data);
+      logger.info(`[GiftStream] 外部礼物已注入: ${data.nick} 送出 ${data.giftName} x${data.count || 1}`);
+    } catch (e) {
+      // 保底：绝不让外部礼物流的异常影响录制主链路
+      if (e && (e.code === 'ERR_OFFSCREEN' || /destroyed|destroy|Object has been/i.test(e.message || ''))) {
+        logger.debug('[GiftStream] 渲染器已销毁，忽略外部礼物注入');
+      } else {
+        logger.warn('[GiftStream] 外部礼物注入失败(不影响录制):', e && e.message);
+      }
+    }
+  }
+
+  /**
+   * 在离屏页面渲染礼物横幅（调用页面暴露的 window.__showGiftBanner）
+   */
+  async _showExternalBanner(data) {
+    if (!this.captureWindow || this.captureWindow.isDestroyed() || this.captureWindow.webContents.isDestroyed()) {
+      return;
+    }
+    const icon = data.iconUrl ? `'${String(data.iconUrl).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : 'null';
+    const nick = String(data.nick || '');
+    const gift = String(data.giftName || '');
+    const cnt = Number(data.count) || 1;
+    const src = `(()=>{try{
+      if (typeof window.__showGiftBanner === 'function') {
+        window.__showGiftBanner({ nick: ${JSON.stringify(nick)}, giftName: ${JSON.stringify(gift)}, count: ${cnt} }, ${icon});
+        return 'ok';
+      }
+      // 兜底：横幅函数未就绪时，直接注入一条模拟礼物消息触发 MutationObserver 路径
+      if (window.__commentBannerRoot) {
+        const el = document.createElement('li');
+        el.textContent = ${JSON.stringify(nick + ' 送出 ' + gift + ' x' + cnt)};
+        el.setAttribute('data-gift-banner', '1');
+        window.__commentBannerRoot.appendChild(el);
+        return 'fallback';
+      }
+      return 'noop';
+    }catch(err){ return 'err'; }})()`;
+    await this.captureWindow.webContents.executeJavaScript(src, true);
   }
 
   /**

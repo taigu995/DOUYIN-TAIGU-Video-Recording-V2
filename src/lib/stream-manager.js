@@ -8,6 +8,7 @@ const { Recorder, getFFmpegPath } = require('./recorder');
 const { extractUrl, extractInput, extractNameFromText, resolveShortUrl, buildLiveUrl } = require('./douyin-utils');
 const { getConfig, addStream, removeStream, updateStream, getStreams } = require('./config');
 const { getLogger } = require('./logger');
+const { GiftStream } = require('./gift-stream');
 const path = require('path');
 
 const logger = getLogger();
@@ -970,6 +971,29 @@ class StreamManager {
       }
     });
 
+    // WS 礼物流(增强,彻底保底):任何异常都不影响核心录制。收到礼物→注入评论区横幅
+    try {
+      const { GiftStream } = require('./gift-stream');
+      const roomId = streamState.info && streamState.info.roomId;
+      if (!streamState._giftStream && roomId) {
+        streamState._giftStream = new GiftStream({
+          roomId,
+          logger,
+          onGift: (gift) => {
+            // 仅作为增强:注入横幅/提帧,失败不对外抛错
+            try {
+              if (recorder && typeof recorder.injectExternalGift === 'function') {
+                recorder.injectExternalGift(gift);
+              }
+            } catch (e) { /* WS礼物流增强失败,忽略 */ }
+          }
+        });
+        streamState._giftStream.start();
+      }
+    } catch (err) {
+      logger.warn('[StreamManager] WS礼物流启动忽略(不影响录制): ' + (err && err.message));
+    }
+
     streamState.recorder = recorder;
     streamState.status = 'checking';
     this.notifyUpdate();
@@ -996,6 +1020,14 @@ class StreamManager {
   async stopRecording(roomId) {
     const streamState = this.streams.get(roomId);
     if (!streamState || !streamState.recorder) return null;
+
+    // 停止WS礼物流(增强,失败忽略)
+    try {
+      if (streamState._giftStream && typeof streamState._giftStream.stop === 'function') {
+        streamState._giftStream.stop();
+      }
+      streamState._giftStream = null;
+    } catch (e) { /* 忽略 */ }
 
     const recorder = streamState.recorder;
     const outputFile = recorder.outputFile;
