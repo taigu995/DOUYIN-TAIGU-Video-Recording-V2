@@ -173,11 +173,48 @@ const GIFT_BANNER_SCRIPT = `(() => {
       mo.observe(document.body, { childList: true, subtree: true });
       window.__giftBannerMO = mo;
     }
+
+    // ---- 心跳诊断：每5秒统计评论区实时消息数，确认游客态评论区是否有实时流 ----
+    function findChatContainer() {
+      if (window.__commentBannerRoot) return window.__commentBannerRoot;
+      const sels = ['[class*="chat-list"]','[class*="ChatList"]','[class*="message-list"]','[class*="MessageList"]','[class*="chat-container"]','[data-e2e="live-chat"]','[data-e2e="chat-room"]'];
+      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__commentBannerRoot = el; return el; } }
+      return null;
+    }
+    if (!window.__giftHeartbeatTimer) {
+      window.__giftHeartbeatTimer = setInterval(() => {
+        try {
+          const ct = findChatContainer();
+          if (!ct) { console.log('[GiftHeartbeat] 评论区容器未找到(可能未登录导致不渲染/选择器变化)'); return; }
+          // 统计容器内叶子文本节点消息
+          let total = 0, gift = 0, sample = '';
+          const leaves = ct.querySelectorAll('*');
+          for (let i = 0; i < leaves.length; i++) {
+            const el = leaves[i];
+            if (el.children && el.children.length) continue;
+            const t = (el.textContent || '').trim();
+            if (!t || t.length > 80) continue;
+            total++;
+            if (/(送出|赠送|打赏)/.test(t)) {
+              gift++;
+              if (!sample) sample = t.slice(0, 30);
+            }
+          }
+          const delta = total - (window.__hbLastTotal || 0);
+          window.__hbLastTotal = total;
+          console.log('[GiftHeartbeat] 评论区消息=' + total + ' 新增~' + delta + ' 礼物消息=' + gift + (sample ? ' 例:' + sample : ''));
+        } catch (e) { console.log('[GiftHeartbeat] 统计异常: ' + e.message); }
+      }, 5000);
+    }
+
     // 暴露全局入口，供主进程 WS 礼物流外部注入（保底：渲染与提帧复用同一套）
     window.__showGiftBanner = function (gdata, iconSrc) {
       try {
-        if (!gdata || !gdata.gift) return false;
-        renderBanner({ nick: gdata.nick || '', gift: gdata.gift || '', num: gdata.num || 1, __timer: null }, iconSrc);
+        if (!gdata) return false;
+        const gift = gdata.gift || gdata.giftName || '';
+        if (!gift) return false;
+        const num = gdata.num || gdata.count || 1;
+        renderBanner({ nick: gdata.nick || '', gift: gift, num: num, __timer: null }, iconSrc);
         return true;
       } catch (e) { return false; }
     };
@@ -269,6 +306,7 @@ class CommentRenderer {
           msg.includes('[GiftBanner]') ||
           msg.includes('[CommentProbe]') ||
           msg.includes('[BannerInfo]') ||
+          msg.includes('[GiftHeartbeat]') ||
           msg.includes('gift') ||
           msg.includes('Gift')
         ) {

@@ -23,6 +23,8 @@ class GiftStream {
    */
   constructor(opts = {}) {
     this.onGift = typeof opts.onGift === 'function' ? opts.onGift : null;
+    this.logger = opts.logger || null;
+    this.roomId = opts.roomId || null;
     this.pollMs = opts.pollMs || 2000;
     this._running = false;
     this._timer = null;
@@ -30,22 +32,18 @@ class GiftStream {
     this._maxSeen = 200;
   }
 
-  /** 启动（幂等） */
+  /**
+   * 启动（幂等）。
+   * 说明：真实抖音 WS 协议私有且有风控，当前主力礼物来源是"评论区 DOM 扫描"
+   * （CommentRenderer 的 MutationObserver，游客态公开直播间通常也能收到弹幕/礼物）。
+   * 本模块仅作为"外部礼物数据通道"保留：未来接入真实 WS 时，收到消息调用 injectGift 即可，
+   * 上层无需改动。这里不做空轮询，避免无意义请求与误导日志。
+   */
   start(roomId) {
     if (this._running) return;
+    this.roomId = roomId || this.roomId || null;
     this._running = true;
-    this.roomId = roomId || null;
-    try {
-      if (this.roomId) {
-        this._pollOnce(); // 立即试一次
-        if (!this._timer) {
-          this._timer = setInterval(() => this._pollOnce(), this.pollMs);
-        }
-      }
-    } catch (e) {
-      this._log('start 异常，已停止轮询:', e);
-      this.stop();
-    }
+    this._log('礼物流通道已就绪(roomId=' + this.roomId + ')；当前礼物来源=评论区DOM扫描，WS通道待接入');
   }
 
   /** 停止（幂等、安全） */
@@ -100,9 +98,10 @@ class GiftStream {
   }
 
   _log(msg, e) {
+    const line = `[GiftStream] ${msg}` + (e && e.message ? ' ' + e.message : '');
     try {
-      // eslint-disable-next-line no-console
-      console.log(`[GiftStream] ${msg}`, e && e.message ? e.message : '');
+      if (this.logger && typeof this.logger.info === 'function') this.logger.info(line);
+      else console.log(line);
     } catch (_) { /* 忽略日志异常 */ }
   }
 }
