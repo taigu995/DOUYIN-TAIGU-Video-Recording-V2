@@ -233,10 +233,10 @@ class Recorder {
       // 合并失败时，尝试兜底
       try {
         if (fs.existsSync(tempRecorder._tempStreamFile)) {
-          fs.copyFileSync(tempRecorder._tempStreamFile, tempRecorder.outputFile);
-          logger.info('[Merge-Resume] 已将原始直播流复制为输出文件（恢复失败兜底）');
+          await tempRecorder._normalizeStream(tempRecorder.outputFile);
+          logger.info('[Merge-Resume] 已将原始直播流标准化为输出文件（恢复失败兜底）');
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) { logger.warn('[Merge-Resume] 标准化兜底失败:', e.message); }
       onError(err);
       return false;
     }
@@ -517,14 +517,17 @@ class Recorder {
     }
 
     const args = [
-      // 网络超时设置
+      // 网络超时设置（10秒，直播流无数据则报错退出并触发断流处理）
       '-rw_timeout', '10000000',
       '-timeout', '10000000',
       // 输入: 直播流
       '-i', this._streamUrl,
       // 输出: stream copy（不重新编码）
       '-c', 'copy',
-      '-movflags', '+faststart',
+      // 分片 MP4：moov 从头写入，每关键帧一个 moof 分片。
+      // 即使直播断流/进程被强杀，已录部分从开头到最后一片都可播放，
+      // 避免 "+faststart"(仅正常结束时写 moov) 导致文件无索引而打不开。
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
       '-avoid_negative_ts', 'make_zero',
       '-y',
       this._tempStreamFile
@@ -635,20 +638,21 @@ class Recorder {
           logger.warn('[Recorder] 删除部分合并文件失败:', unlinkErr.message);
         }
         try {
-          fs.copyFileSync(this._tempStreamFile, this.outputFile);
-          logger.info('[Recorder] 已将原始直播流复制为输出文件（合并失败兜底）');
+          // 分片源 → 标准化 remux 为标准 MP4（保证可播放）
+          await this._normalizeStream(this.outputFile);
+          logger.info('[Recorder] 已将原始直播流标准化为输出文件（合并失败兜底）');
+          this._mergeResult = { success: true, fallback: true, normalized: true };
         } catch (copyErr) {
-          logger.error('[Recorder] 复制兜底文件也失败:', copyErr.message);
+          logger.error('[Recorder] 标准化兜底文件也失败:', copyErr.message);
         }
-        this._mergeResult = { success: false, error: mergeErr.message, fallback: true };
       }
     } else if (streamFileExists) {
-      // 只有直播流，没有评论区 → 直接复制
-      logger.warn('[Recorder] 无评论区帧，直接使用直播流文件');
+      // 只有直播流，没有评论区 → 标准化为标准 MP4（分片源需重写 moov 才稳定可播）
+      logger.warn('[Recorder] 无评论区帧，标准化直播流文件');
       try {
-        fs.copyFileSync(this._tempStreamFile, this.outputFile);
+        await this._normalizeStream(this.outputFile);
       } catch (e) {
-        logger.error('[Recorder] 复制文件失败:', e.message);
+        logger.error('[Recorder] 标准化文件失败:', e.message);
       }
       this._mergeResult = { success: true, noComments: true };
     } else {
@@ -687,6 +691,39 @@ class Recorder {
       merged: actualMerged,
       commentFrames: commentInfo ? commentInfo.frameCount : 0,
       mergeResult: this._mergeResult
+    });
+  }
+
+  /**
+   * 将分片 MP4 源标准化为普通 MP4（重写 moov 到文件头 +faststart）
+   * 用于「无评论区」或「合并失败兜底」场景，保证最终文件在任意播放器可播
+   * @param {string} outputFile 输出文件路径
+   */
+  async _normalizeStream(outputFile) {
+    const resolvedPath = getFFmpegPath();
+    if (!fs.existsSync(this._tempStreamFile)) {
+      throw new Error('直播流临时文件不存在，无法标准化');
+    }
+    logger.info(`[Recorder] 标准化直播流为普通MP4: ${outputFile}`);
+    await new Promise((resolve, reject) => {
+      const args = [
+        '-y',
+        '-i', this._tempStreamFile,
+        '-c', 'copy',               // 不重编码，仅 remux
+        '-movflags', '+faststart',  // moov 移到文件头，便于快速起播
+        outputFile
+      ];
+      const proc = spawn(resolvedPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputFile)) {
+          resolve();
+        } else {
+          reject(new Error(`标准化失败 (code ${code}): ${stderr.slice(-300)}`));
+        }
+      });
+      proc.on('error', (err) => reject(err));
     });
   }
 
@@ -1560,13 +1597,32 @@ class Recorder {
     const outputDir = path.dirname(this.outputFile);
     const baseName = path.basename(this.outputFile, '.mp4');
 
-    // 保存 stream.mp4
+    // 保存 stream.mp4（分片源 → 标准化为标准 MP4，保证可播放）
     const streamSrc = this._tempStreamFile;
     const streamDst = path.join(outputDir, `${baseName}_stream.mp4`);
     if (fs.existsSync(streamSrc)) {
       try {
-        fs.copyFileSync(streamSrc, streamDst);
-        logger.info(`[Recorder] 已保存直播流文件: ${streamDst}`);
+        if (this._tempStreamFile !== streamDst) {
+          // 用标准化的副本来保存，避免分片源直接在播放器中打不开
+          const normalizedTmp = path.join(this._tempDir, 'stream_normalized_tmp.mp4');
+          await new Promise((resolve, reject) => {
+            const args = ['-y', '-i', streamSrc, '-c', 'copy', '-movflags', '+faststart', normalizedTmp];
+            const nproc = spawn(getFFmpegPath(), args, { stdio: ['ignore', 'ignore', 'pipe'] });
+            let nerr = '';
+            nproc.stderr.on('data', (d) => { nerr += d.toString(); });
+            nproc.on('close', (c) => {
+              if (c === 0 && fs.existsSync(normalizedTmp)) {
+                fs.copyFileSync(normalizedTmp, streamDst);
+                try { fs.unlinkSync(normalizedTmp); } catch (_) { /* ignore */ }
+                resolve();
+              } else reject(new Error('标准化失败'));
+            });
+            nproc.on('error', reject);
+          });
+          logger.info(`[Recorder] 已保存直播流文件(标准化): ${streamDst}`);
+        } else {
+          fs.copyFileSync(streamSrc, streamDst);
+        }
       } catch (e) {
         logger.warn(`[Recorder] 保存直播流文件失败: ${e.message}`);
       }
