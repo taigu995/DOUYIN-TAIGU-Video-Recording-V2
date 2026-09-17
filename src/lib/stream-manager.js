@@ -884,7 +884,19 @@ class StreamManager {
       giftCheckMs: config.giftCheckMs || 300,
       sessionName: sessionName,
       onStatusChange: (status, data) => {
-        if (status === 'recording') {
+        if (status === 'mode-rolled-back') {
+          // 防呆：录制中检测到评论区账号被同账号其它直播间顶下线，自动回滚为无账号模式
+          const roomId = data && data.roomId;
+          if (roomId && streamState.info) {
+            streamState.info.recordMode = 'stream+comment-no-login';
+            if (streamState.info.accountId) {
+              streamState.info.accountId = null;
+            }
+            updateStream(roomId, { recordMode: 'stream+comment-no-login', accountId: null });
+            logger.warn(`[StreamManager] 直播间「${streamState.info.streamerName}」账号冲突，已自动回滚为无账号+评论区模式（已清空录制账号），避免评论区录制断档`);
+            this.notifyUpdate();
+          }
+        } else if (status === 'recording') {
           streamState.status = 'recording';
           streamState.currentRecordingStart = Date.now();
           logger.info(`[StreamManager] 录制状态变更 -> recording: ${streamState.info.streamerName} (模式: ${data.mode || 'stream+comment'})`);

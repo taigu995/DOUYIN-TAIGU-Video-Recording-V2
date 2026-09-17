@@ -249,6 +249,15 @@ class CommentRenderer {
     this._giftTimer = null;
     this._timestamps = []; // 帧时间戳(ms)，供合并端精确控制时间轴
 
+    // 续帧起始编号：录制中检测到账号冲突回滚重建渲染器时，从已有帧数继续编号，避免覆盖已录帧
+    this.frameStartIndex = options.frameStartIndex || 0;
+    // 无账号模式标识：无账号+评论区时不需要账号冲突检测/回滚
+    this.noLoginMode = !!options.noLoginMode;
+    // 账号冲突回调：检测到评论区提示"已在其它设备登录"（被同账号顶下线）时触发，供外部回滚录制模式
+    this.onAccountConflict = options.onAccountConflict || null;
+    this._conflictTimer = null;        // 账号冲突检测定时器
+    this._conflictSkip = 0;            // 连续触发去抖计数器
+
     this.captureWindow = null;
     this.capturing = false;
     this.frameCount = 0;
@@ -925,11 +934,12 @@ class CommentRenderer {
           });
         }
 
-        // 保存为 JPEG
+        // 保存为 JPEG（编号从 frameStartIndex 续起，避免覆盖续帧前的历史帧）
+        const absFrame = this.frameStartIndex + this.frameCount;
         const jpegData = croppedImage.toJPEG(CAPTURE_QUALITY);
         const framePath = path.join(
           this.outputDir,
-          `frame_${String(this.frameCount).padStart(6, '0')}.jpg`
+          `frame_${String(absFrame).padStart(6, '0')}.jpg`
         );
         
         // 确保目录存在（防御性检查）
@@ -970,6 +980,11 @@ class CommentRenderer {
     // 启动礼物检测（后台轮询，不影响帧捕获）
     this._startGiftDetection();
 
+    // 启动账号冲突检测（仅对有账号模式且注册了回调时启用）
+    if (this.onAccountConflict && !this.noLoginMode) {
+      this._startAccountConflictDetection();
+    }
+
     // 启动捕获循环
     this._captureTimer = setTimeout(captureFrame, this._baseInterval);
   }
@@ -991,28 +1006,43 @@ class CommentRenderer {
 
     const duration = this._startTime ? Date.now() - this._startTime : 0;
     const actualFps = duration > 0 ? (this.frameCount / (duration / 1000)) : this.targetFps;
+    const absoluteCount = this.frameStartIndex + this.frameCount;
 
     // 保存帧时间戳列表，供合并精确控时（动态帧率必需）
+    // 续帧场景：已有历史 timestamps 时追加，保证时间轴连续、与帧号一一对应
     if (this.outputDir && this._timestamps && this._timestamps.length) {
       try {
         const fs = require('fs');
-        fs.writeFileSync(
-          path.join(this.outputDir, 'timestamps.json'),
-          JSON.stringify(this._timestamps),
-          'utf8'
-        );
+        const tsPath = path.join(this.outputDir, 'timestamps.json');
+        let merged = this._timestamps;
+        if (this.frameStartIndex > 0) {
+          // 读入续帧前已保存的历史时间戳，若长度不小于续帧起点则保持（历史已含在绝对时间轴上）
+          try {
+            const prevRaw = fs.readFileSync(tsPath, 'utf8');
+            const prev = JSON.parse(prevRaw);
+            if (Array.isArray(prev)) {
+              // 历史帧数为 frameStartIndex，若历史长度匹配则以历史为基准追加本次增量
+              const tail = prev.length >= this.frameStartIndex ? prev.slice(0, this.frameStartIndex) : prev;
+              const lastT = tail.length ? tail[tail.length - 1] : 0;
+              merged = tail.concat(this._timestamps.map((t) => t + lastT));
+            }
+          } catch (e) {
+            // 历史读取失败时直接使用本次（保持简单，避免覆盖坏数据）
+          }
+        }
+        fs.writeFileSync(tsPath, JSON.stringify(merged), 'utf8');
       } catch (e) {
         logger.warn('[CommentRenderer] 写 timestamps.json 失败:', e.message);
       }
     }
 
     logger.info(
-      `[CommentRenderer] 停止捕获, 总帧数: ${this.frameCount}, ` +
+      `[CommentRenderer] 停止捕获, 本期帧数: ${this.frameCount}, 累计帧数: ${absoluteCount}, ` +
       `时长: ${(duration / 1000).toFixed(1)}s, 实际FPS: ${actualFps.toFixed(1)}`
     );
 
     return {
-      frameCount: this.frameCount,
+      frameCount: absoluteCount,
       outputDir: this.outputDir,
       fps: actualFps,
       duration: duration,
@@ -1057,6 +1087,63 @@ class CommentRenderer {
     if (this._giftTimer) {
       clearInterval(this._giftTimer);
       this._giftTimer = null;
+    }
+  }
+
+  /**
+   * 启动账号冲突检测（防呆）：周期性检查评论区页面是否提示"已在其它设备登录"
+   * 若检测到（两个直播间用同一账号先后开播，后开播的会把先开播的顶下线），
+   * 触发 onAccountConflict 回调，供外部将本直播间评论区回滚为无账号模式，避免评论区录制断档。
+   * 检测有连续次数去抖，避免页面初次加载抖动导致误触发。
+   */
+  _startAccountConflictDetection() {
+    this._stopAccountConflictDetection();
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+
+    const ACCOUNT_CONFLICT_SCRIPT = `(() => {
+      try {
+        const txt = (document.body && document.body.innerText) || '';
+        // 匹配抖音"账号已在其它设备登录/被顶下线"典型提示语
+        if (/(已在其他?设备登录|已在其它设备登录|在其他?设备（上|)登录|账号.{0,6}下线|登录.{0,4}失效|当前账号在.{0,10}登录|session.{0,10}expire|账号被挤下线)/i.test(txt)) return true;
+        // 抖音被同账号其它端顶下线时的实际弹层文案
+        if (/(账号已在其他?地方进入直播间|账号已在其它地方进入直播间|已退出直播间|无法评论)/.test(txt)) return true;
+        // 检测页面出现引导重新登录/二维码覆盖等被强制登出特征
+        if (/(请重新登录|登录已过期|重新登录\.{0,3}扫码)/.test(txt)) return true;
+        return false;
+      } catch (e) { return false; }
+    })()`;
+
+    this._conflictHit = 0;
+    this._conflictTimer = setInterval(() => {
+      if (!this.capturing || !this.captureWindow || this.captureWindow.isDestroyed()) {
+        this._stopAccountConflictDetection();
+        return;
+      }
+      this.captureWindow.webContents
+        .executeJavaScript(ACCOUNT_CONFLICT_SCRIPT, true)
+        .then((hit) => {
+          if (!hit) {
+            this._conflictHit = 0; // 恢复，取消累积
+            return;
+          }
+          this._conflictHit = (this._conflictHit || 0) + 1;
+          // 连续检测到 2 次（约 2×5s）才判定冲突，降低误报
+          if (this._conflictHit >= 2) {
+            logger.warn('[CommentRenderer] 检测到评论区账号已被其它设备登录（账号冲突），执行防呆回滚');
+            this._stopAccountConflictDetection();
+            if (typeof this.onAccountConflict === 'function') {
+              try { this.onAccountConflict(); } catch (e) { logger.error('[CommentRenderer] onAccountConflict 回调异常:', e.message); }
+            }
+          }
+        })
+        .catch(() => {});
+    }, 5000);
+  }
+
+  _stopAccountConflictDetection() {
+    if (this._conflictTimer) {
+      clearInterval(this._conflictTimer);
+      this._conflictTimer = null;
     }
   }
 
@@ -1120,6 +1207,7 @@ class CommentRenderer {
    */
   async destroy() {
     this.stopCapture();
+    this._stopAccountConflictDetection();
 
     if (this.captureWindow && !this.captureWindow.isDestroyed()) {
       try {

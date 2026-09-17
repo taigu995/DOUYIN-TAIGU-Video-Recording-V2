@@ -450,7 +450,13 @@ class Recorder {
           giftHoldMs: this.giftHoldMs,
           giftCheckMs: this.giftCheckMs,
           sessionName: this.sessionName,
-          noLoginMode: this.recordMode === 'stream+comment-no-login'
+          noLoginMode: this.recordMode === 'stream+comment-no-login',
+          onAccountConflict: () => {
+            // 防呆：检测到评论区账号被同账号其它直播间顶下线时，自动回滚为无账号模式续帧录制
+            this._rollbackCommentToNoLogin().catch((e) => {
+              logger.error(`[Recorder] 防呆回滚失败: ${e.message}`);
+            });
+          }
         });
         await this.commentRenderer.init();
       } else {
@@ -1644,6 +1650,80 @@ class Recorder {
   /**
    * 清理所有资源（错误恢复用）
    */
+  /**
+   * 防呆回滚：检测到评论区账号已被同一账号其它直播间顶下线时，
+   * 将本直播间评论区从"有账号"模式自动回滚为"无账号+评论区"（游客）模式，并续帧继续录制，
+   * 保证被顶下线直播间的评论区录制不断档、不与同账号其它直播间抢会话。
+   */
+  async _rollbackCommentToNoLogin() {
+    if (this.recordMode === 'stream+comment-no-login') {
+      logger.info('[Recorder] 已是无账号模式，无需回滚');
+      return;
+    }
+    if (!this.commentRenderer || !this.recording) {
+      logger.info('[Recorder] 评论区渲染器未在运行，跳过回滚');
+      return;
+    }
+
+    logger.warn('[Recorder] 账号冲突，评论区回滚为无账号模式并续帧重启...');
+
+    // 1. 停止当前渲染器，拿到已捕获的累计帧数（用于续帧编号，避免覆盖）
+    let absoluteCount = 0;
+    try {
+      const info = this.commentRenderer.stopCapture();
+      absoluteCount = info.frameCount || 0;
+      logger.info(`[Recorder] 已记录冲突前评论区帧数: ${absoluteCount}`);
+    } catch (e) {
+      logger.warn('[Recorder] 停止冲突前渲染器失败:', e.message);
+    }
+
+    // 2. 销毁旧渲染器
+    try {
+      await this.commentRenderer.destroy();
+    } catch (e) {
+      logger.warn('[Recorder] 销毁冲突渲染器失败:', e.message);
+    }
+    this.commentRenderer = null;
+
+    // 3. 更新模式字段为无账号模式 + 干净 session
+    const cleanSession = 'clean-session-' + this.roomId;
+    this.recordMode = 'stream+comment-no-login';
+    this.session = cleanSession;
+    this.sessionName = cleanSession;
+
+    // 4. 重建无账号评论区渲染器，从已捕获帧数续起
+    try {
+      this.commentRenderer = new CommentRenderer({
+        liveUrl: this.liveUrl,
+        roomId: this.roomId,
+        session: this.session,
+        outputDir: this._commentFramesDir,
+        debugDir: path.dirname(this.outputFile),
+        fps: this.commentFps,
+        giftFps: this.giftFps,
+        giftHoldMs: this.giftHoldMs,
+        giftCheckMs: this.giftCheckMs,
+        sessionName: this.sessionName,
+        noLoginMode: true,
+        frameStartIndex: absoluteCount
+      });
+      await this.commentRenderer.init();
+      this.captureWindow = this.commentRenderer.captureWindow;
+      this.commentRenderer.startCapture();
+      logger.info(`[Recorder] 评论区已回滚为无账号模式，续帧从 ${absoluteCount} 继续录制`);
+    } catch (e) {
+      logger.error('[Recorder] 回滚重建无账号评论区渲染器失败:', e.message);
+      throw e;
+    }
+
+    // 5. 通知上层持久化回滚模式
+    this.onStatusChange('mode-rolled-back', {
+      roomId: this.roomId,
+      recordMode: 'stream+comment-no-login',
+      savedFrames: absoluteCount
+    });
+  }
+
   async _cleanup() {
     // 停止 FFmpeg
     if (this.ffmpegProcess) {
