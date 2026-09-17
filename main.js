@@ -459,15 +459,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('update-stream', (event, { roomId, updates }) => {
-    // 如果更新 accountId，检查防呆
-    if (updates.accountId) {
-      const streams = getStreams();
-      const conflict = streams.find(s => s.roomId !== roomId && s.accountId === updates.accountId);
-      if (conflict) {
-        const conflictName = conflict.customName || conflict.roomId;
-        return { success: false, error: `该账号已被直播间「${conflictName}」使用` };
-      }
-    }
+    // 注意：允许同一账号分配给多个直播间，账号冲突由运行时自动回滚机制兜底
     streamManager.updateStreamInfo(roomId, updates);
     return { success: true };
   });

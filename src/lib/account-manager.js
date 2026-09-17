@@ -50,6 +50,16 @@ function getAccount(accountId) {
   return accounts.find(a => a.id === accountId);
 }
 
+// 获取默认（主）账号：列表第一个登录的账号
+function getDefaultAccount() {
+  return accounts.length > 0 ? {
+    id: accounts[0].id,
+    nickname: accounts[0].nickname,
+    avatar: accounts[0].avatar || '',
+    partition: accounts[0].partition
+  } : null;
+}
+
 // 获取账号的 session partition
 function getPartition(accountId) {
   const account = accounts.find(a => a.id === accountId);
@@ -377,6 +387,7 @@ module.exports = {
   init,
   getAccounts,
   getAccount,
+  getDefaultAccount,
   getPartition,
   getSessionName,
   loginAccount,

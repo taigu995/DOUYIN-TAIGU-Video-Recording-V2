@@ -858,9 +858,21 @@ class StreamManager {
     const recordMode = streamState.info.recordMode || 'with-account';
     let sessionName = 'persist:douyin'; // 默认session
 
-    if (recordMode === 'with-account' && streamState.info.accountId) {
-      // 有账号模式：使用指定账号的session
-      sessionName = this.accountManager.getSessionName(streamState.info.accountId);
+    if (recordMode === 'with-account' || recordMode === 'stream+comment') {
+      // 有账号 / 有账号+评论区模式：优先用指定账号，否则用默认（主）账号
+      let accountId = streamState.info.accountId;
+      let account = accountId ? this.accountManager.getAccount(accountId) : null;
+      if (!account && !accountId) {
+        // 未指定账号（默认账号）时，使用第一个登录的主账号
+        const def = this.accountManager.getDefaultAccount && this.accountManager.getDefaultAccount();
+        if (def) {
+          account = { partition: def.partition };
+          logger.info(`[StreamManager] 使用默认主账号录制: ${def.nickname}`);
+        }
+      }
+      if (account) {
+        sessionName = account.partition;
+      }
       logger.info(`[StreamManager] 使用账号session: ${sessionName}`);
     } else if (recordMode === 'stream-only') {
       // 纯直播流模式：不需要评论区
@@ -1195,17 +1207,7 @@ class StreamManager {
     const state = this.streams.get(roomId);
     if (!state) return null;
 
-    // 防呆机制：检查账号是否已被其他直播间使用
-    if (accountId) {
-      for (const [rid, s] of this.streams.entries()) {
-        if (rid !== roomId && s.info.accountId === accountId) {
-          const account = this.accountManager.getAccount(accountId);
-          const usedByAccount = s.info.streamerName || rid;
-          throw new Error(`账号「${account ? account.nickname : accountId}」已被直播间「${usedByAccount}」使用，每个账号只能同时用于一个直播间录制`);
-        }
-      }
-    }
-
+    // 允许同一账号分配给多个直播间，冲突由运行时自动回滚兜底
     state.info.accountId = accountId;
     updateStream(roomId, { accountId });
     logger.info(`[StreamManager] 设置直播间账号: ${roomId} -> ${accountId || '无账号'}`);
