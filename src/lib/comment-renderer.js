@@ -48,17 +48,37 @@ const GIFT_BANNER_SCRIPT = `(() => {
     let lastMsgCount = 0;
 
     // 从一条礼物消息文本里解析 昵称/礼物名/数量
+    // 抖音礼物消息可能是结构化拆分，也可能是纯文本，格式多变：
+    //   "昵称 送出 火箭 ×1" / "送出 火箭×1" / "🎁 火箭 ×1"（无昵称） / "送出了 宇宙之心"
     function parseGiftText(text) {
       const t = (text || '').replace(/\\s+/g, ' ').trim();
-      const m = t.match(/^([\\s\\S]{1,20}?)\\s*(送出|赠送|打赏|送出了)\\s*([\\s\\S]{1,20}?)\\s*(×|x|X)\\s*(\\d+)/);
-      const m2 = t.match(/^([\\s\\S]{1,20}?)\\s*(送出|赠送|打赏|送出了)\\s*([\\s\\S]{1,20})$/);
-      const hit = m || m2;
-      if (!hit) return null;
-      let nick = (hit[1] || '').trim();
-      const gname = (hit[3] || '').trim();
-      const num = hit[5] ? parseInt(hit[5], 10) : 1;
-      if (!num) return null;
-      return { nick, gift: gname || '礼物', num, count: num, raw: t };
+      if (!t) return null;
+      // 定位"送出/赠送/打赏"作为分隔锚点（"送出了"表示选择器整体优先用后者避免吞"了"）
+      const sep = t.match(/(送出了|送出|赠送|打赏)/);
+      if (!sep) return null;
+      const k = sep.index;
+      // 昵称 = 锚点之前（去除开头的 emoji/符号/空白），长度上限放宽避免吞掉旁边消息
+      let nick = '';
+      const before = t.slice(0, k);
+      // 昵称通常是一串不含"送出/数字×数量"的字符；取其末尾连续可读部分
+      const nickHit = before.match(/([\\s\\S]{1,30}?)\\s*$/);
+      if (nickHit && /[\\u4e00-\\u9fa5\\w]/.test(nickHit[1])) nick = (nickHit[1] || '').trim();
+
+      const after = t.slice(k + sep[0].length);
+      // 礼物名 + 数量：礼物名取到 ×数量 之前，去掉前导 emoji/箭头/符号
+      let gname = '';
+      let num = 1;
+      const mNum = after.match(/([\\s\\S]{1,20}?)\\s*[×xX]\\s*(\\d{1,4})/);
+      if (mNum) {
+        gname = (mNum[1] || '').replace(/^[\\s:：\\u{1F300}-\\u{1FAFF}🎁📦\\u{2600}-\\u{27BF}]+/u, '').trim();
+        num = parseInt(mNum[2], 10);
+        if (!(num > 0)) num = 1;
+      } else {
+        gname = after.replace(/^[\\s:：\\u{1F300}-\\u{1FAFF}🎁📦\\u{2600}-\\u{27BF}]+/u, '').trim();
+        num = 1;
+      }
+      if (!gname) return null;
+      return { nick, gift: gname, num, count: num, raw: t };
     }
 
     function roundRect(r, p) {
@@ -75,7 +95,8 @@ const GIFT_BANNER_SCRIPT = `(() => {
         for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
         return null;
       })();
-      if (ct) { window.__commentBannerRoot = ct; } else { return; }
+      if (ct) { window.__commentBannerRoot = ct; }
+      else { console.log('[GiftBanner] 未找到评论区容器，跳过横幅渲染'); return; }
 
       // 复用或新建横幅容器
       let box = document.getElementById('dylive-gift-banner');
@@ -139,21 +160,44 @@ const GIFT_BANNER_SCRIPT = `(() => {
       return null;
     }
 
-    // 扫描新增节点
-    function scan(root) {
-      const nodes = root ? Array.from(root.querySelectorAll('*')) : document.querySelectorAll('*');
-      for (const n of nodes) {
-        if (n.children && n.children.length) continue;
-        const txt = (n.textContent || '').trim();
+    // 从文本里分离出"谁送的什么礼物"的完整描述：优先定位到包含关键字的最近文本块
+    // 抖音礼物消息可能是结构化多节点（昵称/送出/礼物名/数量分散在不同标签），
+    // 因此不能只取叶子节点，而要向上取到"消息容器"再解析。
+    function candidatesOf(root) {
+      // 收集所有可能含礼物描述的文本块（含父元素），避免只命中叶子导致的"送出/礼物名"被拆散
+      const out = [];
+      const seen = new Set();
+      if (!root) return out;
+      const all = Array.from(root.querySelectorAll('*'));
+      for (let i = 0; i < all.length; i++) {
+        const n = all[i];
+        const txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
         if (!txt || txt.length > 80) continue;
         if (!/(送出|赠送|打赏|送出了)/.test(txt)) continue;
+        const k = txt;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        // 尽量取"尽可能小但完整"的文本块：若父元素文本与子相同则跳过（避免重复）
+        out.push({ node: n, txt: k });
+      }
+      // 按下标的叶子优先：小(浅)节点更精确
+      out.sort((a, b) => a.txt.length - b.txt.length);
+      return out;
+    }
+
+    // 扫描新增节点
+    function scan(root) {
+      const cands = candidatesOf(root || document.documentElement);
+      for (const c of cands) {
+        const txt = c.txt;
         const key = txt;
         if (lastKey.has(key)) continue;
-        if (lastKey.size > 200) lastKey.clear();
+        if (lastKey.size > 400) lastKey.clear();
         lastKey.add(key);
         const data = parseGiftText(txt);
         if (data) {
-          const icon = findIcon(n);
+          console.log('[GiftBanner] 命中礼物文本: ' + txt + ' → ' + (data.nick || '匿名') + '送出' + data.gift + 'x' + data.num);
+          const icon = findIcon(c.node);
           renderBanner(data, icon);
         }
       }
@@ -163,14 +207,14 @@ const GIFT_BANNER_SCRIPT = `(() => {
     let mo = window.__giftBannerMO;
     if (!mo) {
       mo = new MutationObserver((muts) => {
+        // 抖音礼物消息常被拆成多个节点分批插入（昵称/送出/礼物名/数量分散），
+        // 单看新增节点可能不完整，因此每次 DOM 变化都基于整页全量扫描并用 lastKey 去重。
         for (const m of muts) {
-          if (m.type !== 'childList' || !m.addedNodes) continue;
-          for (const node of m.addedNodes) {
-            if (node.nodeType === 1) scan(node);
-          }
+          if (m.type !== 'childList') continue;
         }
+        scan(document.documentElement);
       });
-      mo.observe(document.body, { childList: true, subtree: true });
+      mo.observe(document.body, { childList: true, subtree: true, characterData: true });
       window.__giftBannerMO = mo;
     }
 
@@ -186,15 +230,21 @@ const GIFT_BANNER_SCRIPT = `(() => {
         try {
           const ct = findChatContainer();
           if (!ct) { console.log('[GiftHeartbeat] 评论区容器未找到(可能未登录导致不渲染/选择器变化)'); return; }
-          // 统计容器内叶子文本节点消息
-          let total = 0, gift = 0, sample = '';
-          const leaves = ct.querySelectorAll('*');
-          for (let i = 0; i < leaves.length; i++) {
-            const el = leaves[i];
-            if (el.children && el.children.length) continue;
-            const t = (el.textContent || '').trim();
+          // 统计容器内消息（兼容结构化礼物消息：用候选文本块而非仅叶子）
+          const cands = [];
+          const els = ct.querySelectorAll('*');
+          const seenC = new Set();
+          for (let i = 0; i < els.length; i++) {
+            const el = els[i];
+            const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
             if (!t || t.length > 80) continue;
-            total++;
+            if (seenC.has(t)) continue;
+            seenC.add(t);
+            cands.push(t);
+          }
+          cands.sort((a, b) => a.length - b.length);
+          let total = cands.length, gift = 0, sample = '';
+          for (const t of cands) {
             if (/(送出|赠送|打赏)/.test(t)) {
               gift++;
               if (!sample) sample = t.slice(0, 30);
