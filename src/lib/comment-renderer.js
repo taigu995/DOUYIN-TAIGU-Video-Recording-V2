@@ -88,25 +88,38 @@ const GIFT_BANNER_SCRIPT = `(() => {
     }
 
     // 创建横幅 DOM 并渲染到评论区容器顶部
-    function renderBanner(data, iconSrc) {
-      // 找到评论区容器（复用现有定位）
-      const ct = window.__commentBannerRoot || (function(){
-        const sels = ['[class*="chat-list"]','[class*="ChatList"]','[class*="message-list"]','[class*="MessageList"]','[class*="chat-container"]','[data-e2e="live-chat"]','[data-e2e="chat-room"]'];
-        for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
-        return null;
-      })();
-      if (ct) { window.__commentBannerRoot = ct; }
-      else { console.log('[GiftBanner] 未找到评论区容器，跳过横幅渲染'); return; }
+    // 评论区容器统一定位（含 DOM 探测已验证的完整选择器集合）
+    function findCommentRoot() {
+      if (window.__commentBannerRoot && window.__commentBannerRoot.isConnected) return window.__commentBannerRoot;
+      const sels = [
+        '[data-e2e="live-chat"]','[data-e2e="chat-room"]',
+        '[class*="chat-list"]','[class*="ChatList"]',
+        '[class*="message-list"]','[class*="MessageList"]',
+        '[class*="chat-container"]','[class*="ChatContainer"]',
+        '[class*="comment-list"]','[class*="CommentList"]',
+        '[class*="danmu-list"]','[class*="DanmuList"]',
+        '[class*="interact-container"]','[class*="InteractContainer"]',
+        '[class*="scaffold-right"]','[class*="ScaffoldRight"]',
+        '[class*="right-side"]','[class*="RightSide"]',
+        '[class*="side-panel"]','[class*="SidePanel"]',
+        '[class*="live-side"]','[class*="LiveSide"]'
+      ];
+      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__commentBannerRoot = el; return el; } }
+      return null;
+    }
 
-      // 复用或新建横幅容器
+    function renderBanner(data, iconSrc) {
+      // 找到评论区容器（复用 DOM 探测已验证的选择器集合）
+      const ct = findCommentRoot();
+      if (!ct) { console.log('[GiftBanner] 未找到评论区容器，跳过横幅渲染'); return; }
+
+      // 复用或新建横幅容器。用 fixed 覆盖定位在评论区上方：不占流内空间、不被 React 滚动/重渲染清掉、不改变评论区截图布局
       let box = document.getElementById('dylive-gift-banner');
       if (!box) {
         box = document.createElement('div');
         box.id = 'dylive-gift-banner';
-        box.style.cssText = 'position:relative;z-index:9999;padding:6px 0;flex:none;shrink:0;';
-        const parent = ct.parentNode || ct;
-        if (ct.nextSibling) parent.insertBefore(box, ct.nextSibling);
-        else parent.appendChild(box);
+        box.style.cssText = 'position:fixed;right:12px;top:10px;z-index:2147483000;max-width:calc(100% - 24px);';
+        document.body.appendChild(box);
       }
 
       // 清空并填充
@@ -220,10 +233,7 @@ const GIFT_BANNER_SCRIPT = `(() => {
 
     // ---- 心跳诊断：每5秒统计评论区实时消息数，确认游客态评论区是否有实时流 ----
     function findChatContainer() {
-      if (window.__commentBannerRoot) return window.__commentBannerRoot;
-      const sels = ['[class*="chat-list"]','[class*="ChatList"]','[class*="message-list"]','[class*="MessageList"]','[class*="chat-container"]','[data-e2e="live-chat"]','[data-e2e="chat-room"]'];
-      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__commentBannerRoot = el; return el; } }
-      return null;
+      return findCommentRoot();
     }
     if (!window.__giftHeartbeatTimer) {
       window.__giftHeartbeatTimer = setInterval(() => {
