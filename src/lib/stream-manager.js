@@ -1474,6 +1474,7 @@ class StreamManager {
         autoRecord: state.info.autoRecord !== false, // 默认为 true
         recordMode: state.info.recordMode || 'with-account',
         commentFps: state.info.commentFps || 15,
+        accountId: state.info.accountId || null,
         recorder: state.recorder ? state.recorder.getStatus() : null,
         mergeProgress: state.mergeProgress || null,
         canManualMerge

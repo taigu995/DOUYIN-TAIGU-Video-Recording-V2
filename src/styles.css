@@ -501,6 +501,29 @@ body {
   flex-shrink: 0;
 }
 
+/* 直播间录制模式/账号/帧率选择行 */
+.stream-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.stream-mode-row select {
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.stream-mode-row .stream-account {
+  color: var(--primary);
+  font-weight: 500;
+}
+
 /* 自动录制开关 */
 .auto-record-toggle {
   display: flex;

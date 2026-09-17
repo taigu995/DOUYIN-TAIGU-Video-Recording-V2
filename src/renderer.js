@@ -902,6 +902,9 @@ function createStreamCard(stream) {
             <option value="stream+comment"${stream.recordMode === 'stream+comment' ? ' selected' : ''}>有账号+评论区</option>
             <option value="stream+comment-no-login"${stream.recordMode === 'stream+comment-no-login' ? ' selected' : ''}>无账号+评论区</option>
           </select>
+          <select class="stream-account" data-room-id="${stream.roomId}" title="选择录制账号">
+            <option value="">默认账号</option>
+          </select>
           <select class="stream-comment-fps" data-room-id="${stream.roomId}" title="评论区帧率">
             <option value="30"${stream.commentFps == 30 ? ' selected' : ''}>30fps</option>
             <option value="15"${stream.commentFps == 15 ? ' selected' : ''}>15fps</option>
@@ -949,6 +952,15 @@ function createStreamCard(stream) {
     </div>
   `;
 
+  // 录制账号选择
+  const accountSelect = card.querySelector('.stream-account');
+  const updateAccountVisibility = () => {
+    if (!accountSelect) return;
+    const mode = modeSelect ? modeSelect.value : stream.recordMode;
+    const showAccount = mode === 'with-account' || mode === 'stream+comment';
+    accountSelect.style.display = showAccount ? '' : 'none';
+  };
+
   // 录制模式切换
   const modeSelect = card.querySelector('.stream-record-mode');
   if (modeSelect) {
@@ -958,6 +970,7 @@ function createStreamCard(stream) {
         const result = await window.electronAPI.updateStream(stream.roomId, { recordMode: mode });
         if (result && result.success) {
           showToast(`录制模式已切换: ${e.target.options[e.target.selectedIndex].text}`, 'success');
+          updateAccountVisibility();
         } else {
           showToast('切换失败: ' + (result?.error || '未知错误'), 'error');
         }
@@ -965,6 +978,46 @@ function createStreamCard(stream) {
         showToast('切换失败: ' + err.message, 'error');
       }
     });
+  }
+
+  if (accountSelect) {
+    // 填充账号列表
+    (async () => {
+      try {
+        const accs = await window.electronAPI.getAccounts();
+        accountSelect.innerHTML = '<option value="">默认账号</option>';
+        if (accs && accs.length > 0) {
+          accs.forEach(acc => {
+            const opt = document.createElement('option');
+            opt.value = acc.id;
+            opt.textContent = acc.nickname || '抖音用户';
+            accountSelect.appendChild(opt);
+          });
+        }
+        if (stream.accountId && accs.some(a => a.id === stream.accountId)) {
+          accountSelect.value = stream.accountId;
+        }
+      } catch (e) { /* ignore */ }
+    })();
+
+    accountSelect.addEventListener('change', async (e) => {
+      const accountId = e.target.value || null;
+      try {
+        const result = await window.electronAPI.updateStream(stream.roomId, { accountId });
+        if (result && result.success) {
+          showToast('录制账号已更新', 'success');
+        } else {
+          showToast('切换失败: ' + (result?.error || '未知错误'), 'error');
+          // 回滚到原值
+          accountSelect.value = stream.accountId || '';
+        }
+      } catch (err) {
+        showToast('切换失败: ' + err.message, 'error');
+        accountSelect.value = stream.accountId || '';
+      }
+    });
+
+    updateAccountVisibility();
   }
 
   // 评论区帧率切换
