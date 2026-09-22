@@ -689,6 +689,19 @@ function setupIPC() {
     return { success: true, path: result.filePaths[0] };
   });
 
+  // 选择评论区视频文件
+  ipcMain.handle('manual-merge-select-comment-video', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '选择评论区视频文件',
+      properties: ['openFile'],
+      filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'avi', 'flv', 'ts'] }]
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false };
+    }
+    return { success: true, path: result.filePaths[0] };
+  });
+
   // 选择评论区帧目录
   ipcMain.handle('manual-merge-select-frames', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -771,15 +784,16 @@ function setupIPC() {
 
   // 开始手动合并（简化版，供独立手动合并工具使用）
   ipcMain.handle('start-manual-merge', async (event, options) => {
-    const { streamPath, framesDir, outputPath, commentFps } = options;
+    const { streamPath, framesDir, commentVideoPath, outputPath, commentFps } = options;
     
     // 验证文件存在
     const fs = require('fs');
     if (!fs.existsSync(streamPath)) {
       return { success: false, error: '直播流视频文件不存在' };
     }
-    if (!fs.existsSync(framesDir)) {
-      return { success: false, error: '评论区帧目录不存在' };
+    const useCommentVideo = commentVideoPath && fs.existsSync(commentVideoPath);
+    if (!useCommentVideo && !(framesDir && fs.existsSync(framesDir))) {
+      return { success: false, error: '请提供评论区视频文件或评论区帧目录' };
     }
 
     // 生成输出路径
@@ -788,8 +802,10 @@ function setupIPC() {
     try {
       const result = await manualMerger.merge({
         videoFile: streamPath,
-        commentFramesDir: framesDir,
-        outputFile: finalOutputPath
+        commentFramesDir: useCommentVideo ? null : framesDir,
+        commentVideoFile: useCommentVideo ? commentVideoPath : null,
+        outputFile: finalOutputPath,
+        commentFps
       });
 
       if (result.success) {

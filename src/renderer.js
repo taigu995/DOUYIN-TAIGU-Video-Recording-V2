@@ -1451,7 +1451,9 @@ function initManualMerge() {
   const btnBrowseStream = document.getElementById('manual-merge-browse-stream');
   const btnBrowseFrames = document.getElementById('manual-merge-browse-frames');
   const btnBrowseOutput = document.getElementById('manual-merge-browse-output');
+  const btnBrowseCommentVideo = document.getElementById('manual-merge-browse-comment-video');
   const inputStream = document.getElementById('manual-merge-stream-path');
+  const inputCommentVideo = document.getElementById('manual-merge-comment-video-path');
   const inputFrames = document.getElementById('manual-merge-frames-path');
   const inputOutput = document.getElementById('manual-merge-output-path');
   const progressEl = document.getElementById('manual-merge-progress');
@@ -1496,6 +1498,17 @@ function initManualMerge() {
     }
   });
 
+  btnBrowseCommentVideo?.addEventListener('click', async () => {
+    const result = await window.electronAPI.selectFile({
+      title: '选择评论区视频文件',
+      filters: [{ name: '视频文件', extensions: ['mp4', 'mkv', 'avi', 'flv', 'ts'] }]
+    });
+    if (result && !result.canceled && result.filePaths[0]) {
+      inputCommentVideo.value = result.filePaths[0];
+      inputFrames.value = '';
+    }
+  });
+
   btnBrowseOutput?.addEventListener('click', async () => {
     const result = await window.electronAPI.saveFile({
       title: '选择输出文件路径',
@@ -1508,7 +1521,7 @@ function initManualMerge() {
   });
 
   // 拖拽支持
-  [inputStream, inputFrames].forEach(input => {
+  [inputStream, inputCommentVideo, inputFrames].forEach(input => {
     input?.addEventListener('dragover', (e) => {
       e.preventDefault();
       input.parentElement.classList.add('dragover');
@@ -1525,6 +1538,10 @@ function initManualMerge() {
         const path = files[0].path;
         if (path) {
           input.value = path;
+          // 若拖入的是评论区视频，清空帧目录以免混淆
+          if (input === inputCommentVideo) {
+            inputFrames.value = '';
+          }
         }
       }
     });
@@ -1533,6 +1550,7 @@ function initManualMerge() {
   // 开始合并
   btnStart?.addEventListener('click', async () => {
     const streamPath = inputStream.value.trim();
+    const commentVideoPath = inputCommentVideo?.value.trim() || '';
     const framesDir = inputFrames.value.trim();
     const outputPath = inputOutput.value.trim();
     const fps = parseInt(document.querySelector('input[name="manual-merge-fps"]:checked')?.value || '10');
@@ -1541,8 +1559,8 @@ function initManualMerge() {
       showToast('请选择直播流视频文件', 'error');
       return;
     }
-    if (!framesDir) {
-      showToast('请选择评论区帧目录', 'error');
+    if (!commentVideoPath && !framesDir) {
+      showToast('请提供评论区视频文件或评论区帧目录', 'error');
       return;
     }
 
@@ -1557,7 +1575,8 @@ function initManualMerge() {
     try {
       const result = await window.electronAPI.startManualMerge({
         streamPath,
-        framesDir,
+        commentVideoPath: commentVideoPath || null,
+        framesDir: commentVideoPath ? null : framesDir,
         outputPath: outputPath || null,
         commentFps: fps
       });

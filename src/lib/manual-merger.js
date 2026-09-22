@@ -99,16 +99,58 @@ class ManualMerger {
   }
 
   /**
+   * 分析评论区视频文件信息（复用 probeVideoInfo，额外补充帧率估计）
+   */
+  analyzeCommentVideo(commentVideoFile) {
+    if (!fs.existsSync(commentVideoFile)) {
+      throw new Error('评论区视频文件不存在');
+    }
+    const info = this.probeVideoInfo(commentVideoFile);
+    // 估计帧率：默认 10fps（评论区视频通常是固定帧率录制）
+    const estimate = this._estimateCommentFps(commentVideoFile, info.durationMs);
+    return {
+      frameCount: 0,
+      fps: estimate,
+      durationMs: info.durationMs,
+      width: info.width,
+      height: info.height,
+      isVideo: true
+    };
+  }
+
+  /**
+   * 从评论区视频文件估计帧率（通过 ffmpeg -i 尝试读取，失败则默认）
+   */
+  _estimateCommentFps(commentVideoFile, durationMs) {
+    try {
+      execFileSync(getFFmpegPath(), ['-i', commentVideoFile], {
+        encoding: 'utf8',
+        timeout: 10000,
+        windowsHide: true
+      });
+    } catch (e) {
+      const out = e.stderr || e.stdout || e.message || '';
+      const match = out.match(/(\d+(?:\.\d+)?)\s*fps/);
+      if (match) {
+        return parseFloat(match[1]);
+      }
+    }
+    return 10;
+  }
+
+  /**
    * 执行合并
    * @param {Object} options
    * @param {string} options.videoFile - 直播流视频文件路径
-   * @param {string} options.commentFramesDir - 评论区帧目录路径
+   * @param {string} options.commentFramesDir - 评论区帧目录路径（可选，与 commentVideoFile 二选一）
+   * @param {string} options.commentVideoFile - 评论区视频文件路径（可选，优先于 commentFramesDir）
    * @param {string} options.outputFile - 输出文件路径
    * @param {Function} options.onProgress - 进度回调
    * @param {Function} options.onStatusChange - 状态变更回调
+   * @param {number} options.commentFps - 仅帧目录模式下的帧率
    */
   async merge(options) {
-    const { videoFile, commentFramesDir, outputFile, onProgress, onStatusChange } = options;
+    const { videoFile, commentFramesDir, commentVideoFile, outputFile, onProgress, onStatusChange, commentFps } = options;
 
     if (this.isMerging) {
       throw new Error('已有合并任务正在进行');
@@ -121,54 +163,68 @@ class ManualMerger {
     try {
       // 验证输入文件
       if (!fs.existsSync(videoFile)) {
-        throw new Error('视频文件不存在');
+        throw new Error('直播流视频文件不存在');
       }
-      if (!fs.existsSync(commentFramesDir)) {
+      const useCommentVideo = commentVideoFile && fs.existsSync(commentVideoFile);
+      if (!useCommentVideo && !commentFramesDir) {
+        throw new Error('请提供评论区视频文件或评论区帧目录');
+      }
+      if (!useCommentVideo && !fs.existsSync(commentFramesDir)) {
         throw new Error('评论区帧目录不存在');
       }
 
       // 分析输入
       this.onStatusChange('analyzing', '分析输入文件...');
       const videoInfo = this.probeVideoInfo(videoFile);
-      const commentInfo = this.analyzeCommentFrames(commentFramesDir);
 
-      logger.info(`[ManualMerger] 视频: ${videoInfo.width}x${videoInfo.height}, 时长: ${videoInfo.durationMs}ms`);
-      logger.info(`[ManualMerger] 评论帧: ${commentInfo.frameCount} 帧, ${commentInfo.fps}fps, 时长: ${commentInfo.durationMs}ms`);
-
-      // 确保输出目录存在
+      // 确保输出目录存在（先准备，供临时目录使用）
       const outputDir = path.dirname(outputFile);
       if (!fs.existsSync(outputDir)) {
         fs.mkdirSync(outputDir, { recursive: true });
       }
 
-      // 阶段1: 编码评论区帧为视频
-      const tempDir = path.join(outputDir, '.temp_manual');
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
+      let commentVideoPath = null;
+      let commentVideoDurationMs = 0;
+      if (useCommentVideo) {
+        // 模式A：直接使用评论区视频
+        commentVideoPath = commentVideoFile;
+        this.onStatusChange('analyzing', '分析评论区视频...');
+        const cv = this.analyzeCommentVideo(commentVideoFile);
+        commentVideoDurationMs = cv.durationMs;
+        logger.info(`[ManualMerger] 评论区视频: ${cv.width}x${cv.height}, 时长: ${cv.durationMs}ms, ${cv.fps}fps`);
+      } else {
+        // 模式B：将评论区帧目录编码为视频
+        const commentInfo = this.analyzeCommentFrames(commentFramesDir);
+        commentInfo.fps = (commentFps && commentFps > 0) ? commentFps : commentInfo.fps;
+        logger.info(`[ManualMerger] 评论帧: ${commentInfo.frameCount} 帧, ${commentInfo.fps}fps, 时长: ${commentInfo.durationMs}ms`);
 
-      const commentVideoPath = path.join(tempDir, 'comment_video.mp4');
-      
-      this.onStatusChange('encoding_comments', '编码评论区视频...');
-      await this._runFFmpeg(
-        commentVideoPath,
-        [
-          '-f', 'image2',
-          '-framerate', String(commentInfo.fps),
-          '-start_number', '0',
-          '-i', path.join(commentFramesDir, 'frame_%06d.jpg'),
-          '-c:v', 'libx264',
-          '-pix_fmt', 'yuv420p',
-          '-preset', 'fast',
-          '-crf', '15',
-          '-vf', `scale=420:${videoInfo.height}`,
-          '-y',
-          commentVideoPath
-        ],
-        'Merge-Comment',
-        commentInfo.durationMs,
-        '编码评论区'
-      );
+        const tempDir = path.join(outputDir, '.temp_manual');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        commentVideoPath = path.join(tempDir, 'comment_video.mp4');
+        this.onStatusChange('encoding_comments', '编码评论区视频...');
+        await this._runFFmpeg(
+          commentVideoPath,
+          [
+            '-f', 'image2',
+            '-framerate', String(commentInfo.fps),
+            '-start_number', '0',
+            '-i', path.join(commentFramesDir, 'frame_%06d.jpg'),
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'fast',
+            '-crf', '15',
+            '-vf', `scale=420:${videoInfo.height}`,
+            '-y',
+            commentVideoPath
+          ],
+          'Merge-Comment',
+          commentInfo.durationMs,
+          '编码评论区'
+        );
+      }
 
       // 阶段2: 合并视频
       this.onStatusChange('merging', '合并视频与评论区...');
@@ -199,16 +255,17 @@ class ManualMerger {
           outputFile
         ],
         'Merge-Final',
-        videoInfo.durationMs || commentInfo.durationMs,
+        videoInfo.durationMs || commentVideoDurationMs,
         '合并视频'
       );
 
-      // 清理临时文件
-      try {
-        fs.unlinkSync(commentVideoPath);
-        fs.rmdirSync(tempDir, { recursive: true });
-      } catch (e) {
-        logger.warn('[ManualMerger] 清理临时文件失败:', e.message);
+      // 清理临时文件（仅帧目录模式下创建了临时目录；评论区视频模式直接复用用户原视频，不删除）
+      if (!useCommentVideo) {
+        try {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        } catch (e) {
+          logger.warn('[ManualMerger] 清理临时文件失败:', e.message);
+        }
       }
 
       const outputSize = fs.existsSync(outputFile) ? fs.statSync(outputFile).size : 0;
@@ -220,7 +277,7 @@ class ManualMerger {
         success: true,
         outputFile,
         outputSize,
-        commentFrames: commentInfo.frameCount
+        commentFrames: useCommentVideo ? 0 : (commentInfo ? commentInfo.frameCount : 0)
       };
 
     } catch (err) {

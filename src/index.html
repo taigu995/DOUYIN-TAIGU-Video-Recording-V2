@@ -469,12 +469,21 @@
         </div>
         
         <div class="manual-merge-section">
-          <label class="manual-merge-label">评论区帧目录 <span class="required">*</span></label>
+          <label class="manual-merge-label">评论区视频文件（推荐）</label>
+          <div class="manual-merge-file-input">
+            <input type="text" id="manual-merge-comment-video-path" class="form-input" placeholder="选择或拖拽评论区视频文件 (.mp4)" readonly>
+            <button id="manual-merge-browse-comment-video" class="btn btn-ghost">浏览...</button>
+          </div>
+          <div class="manual-merge-hint">已有评论区视频时，直接拖入此文件合并；留空则使用下方帧目录</div>
+        </div>
+        
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">评论区帧目录（备选）</label>
           <div class="manual-merge-file-input">
             <input type="text" id="manual-merge-frames-path" class="form-input" placeholder="选择或拖拽评论区帧文件夹" readonly>
             <button id="manual-merge-browse-frames" class="btn btn-ghost">浏览...</button>
           </div>
-          <div class="manual-merge-hint">包含 comment_frames 子文件夹的录制目录，或直接选择 comment_frames 文件夹</div>
+          <div class="manual-merge-hint">包含 comment_frames 子文件夹的录制目录，或直接选择 comment_frames 文件夹；评论区视频已填写时忽略此项</div>
         </div>
         
         <div class="manual-merge-section">
