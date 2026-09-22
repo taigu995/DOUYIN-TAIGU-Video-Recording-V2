@@ -617,20 +617,48 @@ class Recorder {
 
     // Step 3: 合并直播流和评论区
     const streamFileExists = fs.existsSync(this._tempStreamFile);
-    const hasCommentFrames = commentInfo && commentInfo.frameCount > 0;
+
+    // 判定是否有关注区帧：优先扫描帧目录实际文件数，避免 commentRenderer 为 null（如回滚失败/初始化失败）时误判
+    let commentFrameFiles = 0;
+    try {
+      if (this._commentFramesDir && fs.existsSync(this._commentFramesDir)) {
+        commentFrameFiles = fs.readdirSync(this._commentFramesDir)
+          .filter((f) => /^frame_\d{6}\.jpg$/.test(f)).length;
+      }
+    } catch (e) { /* 忽略扫描错误 */ }
+
+    const commentInfoFrameCount = (commentInfo && commentInfo.frameCount) || 0;
+    const hasCommentFrames = commentInfoFrameCount > 0 || commentFrameFiles > 0;
+
+    // 诊断：评论区渲染器可能因账号冲突回滚、页面容器缺失等未捕获到帧
+    if (streamFileExists && !commentFrameFiles && !commentInfo) {
+      logger.warn('[Recorder] 合并诊断: 直播间未捕获到任何评论区帧。commentRenderer状态=' +
+        (this.commentRenderer ? '运行中' : '已销毁/未创建') + ', recordMode=' + this.recordMode +
+        ', 帧目录=' + (this._commentFramesDir || 'N/A') + '. 将在输出中保留纯直播流。');
+    }
 
     if (streamFileExists && hasCommentFrames) {
       // 有直播流 + 有评论区帧 → 合并
-      logger.info('[Recorder] 开始合并直播流和评论区...');
+      logger.info(`[Recorder] 开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
       this.onStatusChange('merging', {
         roomId: this.roomId,
         streamerName: this.streamerName,
-        commentFrames: commentInfo.frameCount,
-        commentFps: commentInfo.fps
+        commentFrames: commentFrameFiles || commentInfoFrameCount,
+        commentFps: (commentInfo && commentInfo.fps) || this.commentFps
       });
 
       try {
-        await this._mergeStreamAndComments(commentInfo);
+        // commentInfo 为 null（渲染器已销毁）但帧目录仍有文件时，构造默认 commentInfo 以便触发合并
+        const mergeCommentInfo = commentInfo || {
+          frameCount: commentFrameFiles,
+          outputDir: this._commentFramesDir,
+          fps: this.commentFps,
+          duration: 0,
+          timestamps: [],
+          width: 0,
+          height: 0
+        };
+        await this._mergeStreamAndComments(mergeCommentInfo);
         this._mergeResult = { success: true, outputFile: this.outputFile };
       } catch (mergeErr) {
         logger.error('[Recorder] 合并失败:', mergeErr.message);
