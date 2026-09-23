@@ -1464,10 +1464,13 @@ function initManualMerge() {
   if (!btnManualMerge || !modal) return;
 
   // 打开弹窗
-  btnManualMerge.addEventListener('click', () => {
+  const openManualMergeModal = () => {
     modal.style.display = 'flex';
     resetManualMergeUI();
-  });
+  };
+  btnManualMerge.addEventListener('click', openManualMergeModal);
+  const btnManualMergeMain = document.getElementById('btn-manual-merge-main');
+  btnManualMergeMain?.addEventListener('click', openManualMergeModal);
 
   // 关闭弹窗
   const closeModal = () => {
