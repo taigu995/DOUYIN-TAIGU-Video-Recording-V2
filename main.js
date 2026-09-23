@@ -97,7 +97,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    icon: path.join(__dirname, 'icons', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -172,14 +172,14 @@ async function setupWindowCookies() {
 // 创建系统托盘
 function createTray() {
   // 优先使用 16x16 小图标用于托盘（Windows 推荐尺寸）
-  let iconPath = path.join(__dirname, 'assets', 'tray-icon-16.png');
+  let iconPath = path.join(__dirname, 'icons', 'tray-icon-16.png');
   if (!fs.existsSync(iconPath)) {
     // 回退到 32x32 图标
-    iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+    iconPath = path.join(__dirname, 'icons', 'tray-icon.png');
   }
   if (!fs.existsSync(iconPath)) {
     // 回退到原始图标
-    iconPath = path.join(__dirname, 'assets', 'icon.png');
+    iconPath = path.join(__dirname, 'icons', 'icon.png');
   }
   if (!fs.existsSync(iconPath)) {
     logger.warn(`图标文件不存在: ${iconPath}，无法创建系统托盘`);
