@@ -1576,6 +1576,34 @@ function initManualMerge() {
     progressFill.style.width = '0%';
     progressText.textContent = '准备中...';
 
+    // 进度 / 状态实时回调
+    const unsubscribeProgress = window.electronAPI.onManualMergeProgress
+      ? window.electronAPI.onManualMergeProgress((p) => {
+          if (!p) return;
+          const pct = Math.max(0, Math.min(100, p.progress || 0));
+          if (progressFill) progressFill.style.width = pct + '%';
+          if (progressText) {
+            if (p.progress > 0 && p.progress < 100) {
+              progressText.textContent = `${p.phaseName || '合并'}: ${pct}%`;
+            } else if (p.progress >= 100) {
+              progressText.textContent = '合并中... 99%';
+            }
+          }
+        })
+      : null;
+    const unsubscribeStatus = window.electronAPI.onManualMergeStatus
+      ? window.electronAPI.onManualMergeStatus((s) => {
+          if (!s || !progressText) return;
+          if (s.status === 'encoding_comments') {
+            progressText.textContent = `编码评论区视频... ${s.message || ''}`;
+          } else if (s.status === 'merging') {
+            progressText.textContent = '正在合并视频与评论区...';
+          } else if (s.status === 'analyzing') {
+            progressText.textContent = `准备中... ${s.message || ''}`;
+          }
+        })
+      : null;
+
     try {
       const result = await window.electronAPI.startManualMerge({
         streamPath,
@@ -1606,6 +1634,11 @@ function initManualMerge() {
     } finally {
       btnStart.disabled = false;
       btnStart.textContent = '开始合并';
+      // 清理进度 / 状态监听
+      try {
+        if (unsubscribeProgress && typeof unsubscribeProgress === 'function') unsubscribeProgress();
+        if (unsubscribeStatus && typeof unsubscribeStatus === 'function') unsubscribeStatus();
+      } catch (e) { /* ignore */ }
       // 停止进度轮询
       if (manualMergeProgressInterval) {
         clearInterval(manualMergeProgressInterval);

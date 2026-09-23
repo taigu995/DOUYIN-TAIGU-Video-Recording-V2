@@ -51,6 +51,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ========== 手动合并 ==========
   startManualMerge: (options) => ipcRenderer.invoke('start-manual-merge', options),
+  onManualMergeProgress: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('manual-merge-progress', listener);
+    return () => ipcRenderer.removeListener('manual-merge-progress', listener);
+  },
+  onManualMergeStatus: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('manual-merge-status', listener);
+    return () => ipcRenderer.removeListener('manual-merge-status', listener);
+  },
 
   // ========== 日志管理 ==========
   getLogContent: () => ipcRenderer.invoke('get-log-content'),

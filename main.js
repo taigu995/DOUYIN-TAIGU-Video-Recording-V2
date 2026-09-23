@@ -128,10 +128,10 @@ function createWindow() {
     const minimizeToTray = cfg.minimizeToTray;
     if (!app.isQuitting && minimizeToTray) {
       event.preventDefault();
-      // 真正最小化到任务栏（保留任务栏按钮），而非 hide 隐藏进托盘，
-      // 避免窗口消失后找不到，且任务栏按钮上可显示录制角标
-      mainWindow.minimize();
-      logger.info('窗口已最小化到任务栏（保留按钮，可查看录制角标）');
+      // 真正隐藏进系统托盘（任务栏按钮消失），可右键托盘图标选择"退出"。
+      // 录制角标通过托盘图标右下角红点/数字显示（见 updateStatusBadges）。
+      mainWindow.hide();
+      logger.info('窗口已最小化到系统托盘（右键托盘图标可退出）');
     }
   });
 
@@ -805,7 +805,22 @@ function setupIPC() {
         commentFramesDir: useCommentVideo ? null : framesDir,
         commentVideoFile: useCommentVideo ? commentVideoPath : null,
         outputFile: finalOutputPath,
-        commentFps
+        commentFps,
+        // 把合并进度 / 状态实时推送回渲染进程
+        onProgress: (progress) => {
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('manual-merge-progress', progress);
+            }
+          } catch (e) { /* ignore */ }
+        },
+        onStatusChange: (status, message) => {
+          try {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('manual-merge-status', { status, message });
+            }
+          } catch (e) { /* ignore */ }
+        }
       });
 
       if (result.success) {
