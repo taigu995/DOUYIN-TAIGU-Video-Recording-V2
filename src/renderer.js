@@ -121,7 +121,10 @@ async function updateLoginStatus() {
 async function init() {
   // 绑定事件 - 无论初始化是否成功都必须绑定事件
   bindEvents();
-  
+
+  // 手动合并工具：独立初始化，不依赖任何网络/配置请求结果，保证按钮始终可点
+  try { initManualMerge(); } catch (e) { console.error('[Renderer] 手动合并初始化失败:', e); }
+
   // 加载配置
   if (isElectron) {
     try {
@@ -186,9 +189,6 @@ async function init() {
 
       // 检查登录状态
       updateLoginStatus();
-      
-      // 初始化合并工具
-      initManualMerge();
     } catch (err) {
       console.error('[Renderer] 初始化失败:', err);
       showToast('初始化失败，部分功能可能不可用: ' + err.message, 'error');
@@ -1461,14 +1461,15 @@ function initManualMerge() {
   const progressText = progressEl?.querySelector('.manual-merge-progress-text');
   const resultEl = document.getElementById('manual-merge-result');
 
-  if (!btnManualMerge || !modal) return;
+  if (!modal) return;
 
   // 打开弹窗
   const openManualMergeModal = () => {
     modal.style.display = 'flex';
     resetManualMergeUI();
   };
-  btnManualMerge.addEventListener('click', openManualMergeModal);
+  // 顶部工具栏图标按钮（可能缺失，存在才绑定）
+  btnManualMerge?.addEventListener('click', openManualMergeModal);
   const btnManualMergeMain = document.getElementById('btn-manual-merge-main');
   btnManualMergeMain?.addEventListener('click', openManualMergeModal);
 
