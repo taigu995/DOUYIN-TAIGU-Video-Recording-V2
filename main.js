@@ -791,7 +791,7 @@ function setupIPC() {
     if (!fs.existsSync(streamPath)) {
       return { success: false, error: '直播流视频文件不存在' };
     }
-    const useCommentVideo = commentVideoPath && fs.existsSync(commentVideoPath);
+    const useCommentVideo = commentVideoPath && fs.existsSync(commentVideoPath) && fs.statSync(commentVideoPath).isFile();
     if (!useCommentVideo && !(framesDir && fs.existsSync(framesDir))) {
       return { success: false, error: '请提供评论区视频文件或评论区帧目录' };
     }

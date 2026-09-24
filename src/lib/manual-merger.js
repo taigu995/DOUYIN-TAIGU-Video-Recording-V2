@@ -165,7 +165,8 @@ class ManualMerger {
       if (!fs.existsSync(videoFile)) {
         throw new Error('直播流视频文件不存在');
       }
-      const useCommentVideo = commentVideoFile && fs.existsSync(commentVideoFile);
+      // 评论区视频必须是「文件」（目录会被错误当作视频，导致探测/合并异常）
+      const useCommentVideo = commentVideoFile && fs.existsSync(commentVideoFile) && fs.statSync(commentVideoFile).isFile();
       if (!useCommentVideo && !commentFramesDir) {
         throw new Error('请提供评论区视频文件或评论区帧目录');
       }
@@ -249,7 +250,11 @@ class ManualMerger {
           '-c:v', 'libx264',
           '-preset', 'fast',
           '-crf', '15',
-          '-c:a', 'copy',
+          '-pix_fmt', 'yuv420p',
+          // 音频转码为 aac（不要用 copy）：流媒体直录的 AAC 流在 faststart/moov
+          // 阶段用 copy 封装到 MP4 时容易在末尾报错，转码可稳定落盘
+          '-c:a', 'aac',
+          '-b:a', '192k',
           '-movflags', '+faststart',
           '-y',
           outputFile
@@ -386,8 +391,12 @@ class ManualMerger {
           logger.info(`[${tag}] 完成`);
           resolve();
         } else {
+          // 提取 FFmpeg stderr 中的真实错误线索，便于定位（截取最后若干错误行）
+          const errLines = stderr.split('\n').map(l => l.trim()).filter(Boolean);
+          const errHint = errLines.slice(-6).join(' | ');
           logger.error(`[${tag}] 退出码: ${code}`);
-          reject(new Error(`${tag} 失败, exit code: ${code}`));
+          logger.error(`[${tag}] stderr 末尾: ${errHint}`);
+          reject(new Error(`${tag} 失败, exit code: ${code}${errHint ? '：' + errHint : ''}`));
         }
       });
 
