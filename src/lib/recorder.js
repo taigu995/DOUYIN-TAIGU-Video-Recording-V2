@@ -321,7 +321,7 @@ class Recorder {
       '[1:v]scale=420:1080,setsar=1[comments]',
       '[stream]pad=2342:1080:0:0:black[stream_padded]',
       '[stream_padded]drawbox=x=1920:y=0:w=2:h=1080:color=black@0.5:t=fill[stream_sep]',
-      '[stream_sep][comments]overlay=1922:0:shortest=1[out]'
+      '[stream_sep][comments]overlay=1922:0:eof_action=repeat[out]'
     ].join(';');
 
     const args = [
@@ -1008,7 +1008,7 @@ class Recorder {
         `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
         `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
         `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-        `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:shortest=1[out]`,
+        `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
       '-map', '[out]',
       '-map', '0:a?',
       '-c:v', 'libx264',

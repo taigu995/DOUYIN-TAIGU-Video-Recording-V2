@@ -236,7 +236,7 @@ class ManualMerger {
         `[1:v]scale=420:${videoInfo.height},setsar=1[comments]`,
         `[stream]pad=${videoInfo.width + 420 + 2}:${videoInfo.height}:0:0:black[stream_padded]`,
         `[stream_padded]drawbox=x=${videoInfo.width}:y=0:w=2:h=${videoInfo.height}:color=black@0.5:t=fill[stream_sep]`,
-        `[stream_sep][comments]overlay=${videoInfo.width + 2}:0:shortest=1[out]`
+        `[stream_sep][comments]overlay=${videoInfo.width + 2}:0:eof_action=repeat[out]`
       ].join(';');
 
       await this._runFFmpeg(
