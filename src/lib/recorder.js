@@ -71,7 +71,7 @@ class Recorder {
     this.session = options.session;
     this.recordMode = options.recordMode || 'with-account'; // 'with-account' | 'stream-only' | 'stream+comment-no-login'
     this.commentFps = options.commentFps || 30;
-    this.giftFps = options.giftFps || 24;
+    // 评论区全程固定帧率（取消礼物自动提帧），不再保留 giftFps
     this.giftHoldMs = options.giftHoldMs || 1500;
     this.giftCheckMs = options.giftCheckMs || 300;
     this.sessionName = options.sessionName || 'persist:douyin';
@@ -446,7 +446,6 @@ class Recorder {
           outputDir: this._commentFramesDir,
           debugDir: path.dirname(this.outputFile),
           fps: this.commentFps,
-          giftFps: this.giftFps,
           giftHoldMs: this.giftHoldMs,
           giftCheckMs: this.giftCheckMs,
           sessionName: this.sessionName,
@@ -893,43 +892,16 @@ class Recorder {
     // 计算评论区视频总时长(毫秒)，默认按固定帧率
     let commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
 
-    // 尝试读取每帧时间戳（支持礼物动画「动态提帧」时的时间轴正确性）
+    // 评论区已全程使用设置的固定帧率录制（不再因礼物提帧），合并端统一按固定帧率编码，
+    // 不再使用 timestamps.json 做动态帧率编码，确保评论区视频时间轴均匀、与源视频时长对齐。
     let commentEncodeArgs = null;
     const timestampsFile = path.join(this._commentFramesDir, 'timestamps.json');
     try {
       if (fs.existsSync(timestampsFile)) {
-        const raw = JSON.parse(fs.readFileSync(timestampsFile, 'utf-8'));
-        if (Array.isArray(raw) && raw.length === commentInfo.frameCount && raw.length >= 2) {
-          const ts = raw.map(Number).filter(Number.isFinite);
-          if (ts.length === commentInfo.frameCount) {
-            const baseDur = Math.min(0.2, Math.max(0.02, (ts[ts.length - 1] - ts[0]) / ts.length / 1000));
-            const listFile = path.join(this._commentFramesDir, 'concat_list.txt');
-            const lines = [];
-            for (let i = 0; i < ts.length; i++) {
-              const d = i < ts.length - 1
-                ? Math.min(0.2, Math.max(0.02, (ts[i + 1] - ts[i]) / 1000))
-                : baseDur;
-              lines.push(`file '${path.join(this._commentFramesDir, `frame_${String(i).padStart(6, '0')}.jpg`).replace(/\\/g, '/')}'`);
-              lines.push(`duration ${d.toFixed(4)}`);
-            }
-            fs.writeFileSync(listFile, lines.join('\n'), 'utf-8');
-            commentEncodeArgs = [
-              '-f', 'concat', '-safe', '0',
-              '-i', listFile,
-              '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
-              '-c:v', 'libx264', '-preset', 'medium', '-crf', '15', '-pix_fmt', 'yuv420p',
-              '-y', commentVideoFile
-            ];
-            const spanMs = ts[ts.length - 1] - ts[0];
-            const avgStep = spanMs / (ts.length - 1);
-            commentDurationMs = Math.round(spanMs + avgStep);
-            logger.info('[Merge] 已检测到逐帧时间戳，使用动态帧率编码（礼物高帧率生效）');
-          }
-        }
+        logger.info('[Merge] 评论区为全程固定帧率，忽略 timestamps.json，统一按固定帧率编码');
       }
     } catch (e) {
-      logger.warn(`[Merge] 读取时间戳失败，回退固定帧率: ${e.message}`);
-      commentEncodeArgs = null;
+      logger.debug(`[Merge] timestamps 检查失败(忽略): ${e && e.message}`);
     }
     const commentEncodeCmd = commentEncodeArgs || [
       '-f', 'image2',
@@ -1728,7 +1700,6 @@ class Recorder {
         outputDir: this._commentFramesDir,
         debugDir: path.dirname(this.outputFile),
         fps: this.commentFps,
-        giftFps: this.giftFps,
         giftHoldMs: this.giftHoldMs,
         giftCheckMs: this.giftCheckMs,
         sessionName: this.sessionName,

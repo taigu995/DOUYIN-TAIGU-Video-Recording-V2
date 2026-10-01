@@ -300,10 +300,12 @@ class CommentRenderer {
     this.session = options.session || 'persist:douyin';
     this.outputDir = options.outputDir; // 帧保存目录
     this.debugDir = options.debugDir || options.outputDir; // 调试截图保存目录
-    this.targetFps = options.fps || 10; // 评论区基础帧率（平时）
-    this.giftFps = options.giftFps || 24;      // 礼物特效高帧率档
-    this.giftHoldMs = options.giftHoldMs || 1500; // 检测到礼物后保持高帧率的时长
-    this.giftCheckMs = options.giftCheckMs || 300; // 礼物检测轮询间隔
+    this.targetFps = options.fps || 10; // 评论区固定帧率（全程使用，不因礼物变化）
+    // 取消"检测到礼物后自动提帧"：礼物档与基准帧率保持一致，评论区全程以设置的固定帧率录制，
+    // 以消除动态提帧造成的帧时间轴偏移，缩小评论区视频与源视频的时长不一致。
+    this.giftFps = this.targetFps;      // 礼物档帧率 = 固定帧率（不再提帧）
+    this.giftHoldMs = options.giftHoldMs || 1500; // 礼物横幅/特效的保持时长（仅用于显示，不影响帧率）
+    this.giftCheckMs = options.giftCheckMs || 300; // 礼物检测轮询间隔（仅用于横幅，不影响帧率）
     this._giftActive = false;
     this._giftActiveUntil = 0;
     this._giftTimer = null;
@@ -361,7 +363,7 @@ class CommentRenderer {
     });
 
     // 提高离屏绘制帧率：捕获到的帧更新更及时，礼物特效更平滑
-    try { this.captureWindow.webContents.setFrameRate(Math.max(this.targetFps, 30)); } catch (e) {}
+    try { this.captureWindow.webContents.setFrameRate(this.targetFps); } catch (e) {}
 
     // 静音窗口，防止直播音频外放
     this.captureWindow.webContents.setAudioMuted(true);
@@ -928,7 +930,7 @@ class CommentRenderer {
     this._giftActiveUntil = 0;
     this._timestamps = [];
 
-    logger.info(`[CommentRenderer] 开始捕获评论区帧, 基准FPS: ${this.targetFps}, 礼物FPS: ${this.giftFps}, 输出目录: ${this.outputDir}`);
+    logger.info(`[CommentRenderer] 开始捕获评论区帧, 固定FPS: ${this.targetFps}（全程固定，不因礼物提帧）, 输出目录: ${this.outputDir}`);
     logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
 
     // 基准帧间隔 vs 礼物动画帧间隔
@@ -1027,7 +1029,7 @@ class CommentRenderer {
       // 记录帧时间戳（相对捕获开始，供合并精确控时）
       this._timestamps.push(this.frameCount ? Date.now() - this._captureStartTime : 0);
 
-      // 安排下一次捕获：礼物动画期间提升帧率，结束后回落基准帧率
+      // 安排下一次捕获：全程使用固定帧率（不再因礼物提帧）
       if (this.capturing) {
         const elapsed = Date.now() - now;
         const inGift = this._giftActive && Date.now() < this._giftActiveUntil;
@@ -1113,7 +1115,7 @@ class CommentRenderer {
   }
 
   /**
-   * 启动礼物特效检测（轮询页面，检测到礼物/连击/飞屏动画时临时提升保存帧率）
+   * 启动礼物特效检测（轮询页面，用于在评论区渲染礼物横幅；全程固定帧率，不影响保存帧率）
    */
   _startGiftDetection() {
     this._stopGiftDetection();
@@ -1215,12 +1217,7 @@ class CommentRenderer {
   async injectExternalGift(data) {
     try {
       if (!data || (!data.nick && !data.giftName)) return;
-      // 1) 提帧：触发礼物高帧率档，提升这几秒的评论区帧率
-      if (this.capturing) {
-        this._giftActive = true;
-        this._giftActiveUntil = Date.now() + this.giftHoldMs;
-      }
-      // 2) 横幅：调用离屏页面里已暴露的全局函数渲染礼物横幅
+      // 1) 礼物检测/横幅（全程固定帧率，此处不再触发提帧）
       await this._showExternalBanner(data);
       logger.info(`[GiftStream] 外部礼物已注入: ${data.nick} 送出 ${data.giftName} x${data.count || 1}`);
     } catch (e) {
