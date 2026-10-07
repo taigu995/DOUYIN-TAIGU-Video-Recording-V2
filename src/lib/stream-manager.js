@@ -418,13 +418,20 @@ class StreamManager {
     const config = getConfig();
     const interval = (config.checkInterval || 30) * 1000;
 
-    // 立即检查一次
-    this.checkLiveStatus(streamState);
+    // 记录是否仍在运行，避免递归定时器重复启动
+    if (streamState._monitorRunning) return;
+    streamState._monitorRunning = true;
 
-    // 定时检查
-    streamState.timer = setInterval(() => {
-      this.checkLiveStatus(streamState);
-    }, interval);
+    const runOnce = () => {
+      // 用 then 确保：上一轮【无论耗时多久】完成后，再等一个完整间隔才排下一轮。
+      // 这样即使某一轮被合并任务拖慢，也不会因 setInterval 并发触发而堆积。
+      this.checkLiveStatus(streamState).finally(() => {
+        streamState.timer = setTimeout(runOnce, interval);
+      });
+    };
+
+    // 立即检查一次
+    runOnce();
   }
 
   /**
