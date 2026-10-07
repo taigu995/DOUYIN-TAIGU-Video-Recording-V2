@@ -983,6 +983,7 @@ class Recorder {
         `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
       '-map', '[out]',
       '-map', '0:a?',
+      '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
       '-c:v', 'libx264',
       '-preset', 'medium',
       '-crf', '15',

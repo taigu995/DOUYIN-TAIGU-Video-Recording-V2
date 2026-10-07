@@ -434,17 +434,32 @@ class StreamManager {
   async checkLiveStatusFromAPI(roomId) {
     return new Promise((resolve) => {
       const { session } = require('electron');
+      const https = require('https');
+      let settled = false;
+      let req = null;
+      let timeoutHandle = null;
+
+      const finish = (value, stage) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        // 真正中止仍在挂起的请求，避免连接泄漏耗尽连接池
+        if (req && !req.destroyed) {
+          try { req.destroy(stage === 'timeout' ? new Error('timeout') : undefined); } catch (e) { /* ignore */ }
+        }
+        resolve(value);
+      };
+
       const douyinSession = session.fromPartition('persist:douyin');
-      
+
       douyinSession.cookies.get({ domain: '.douyin.com' }).then(cookies => {
         const cookieStr = cookies
           .filter(c => c.value && c.name)
           .map(c => `${c.name}=${c.value}`)
           .join('; ');
-        
+
         const url = `https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&web_rid=${roomId}`;
-        
-        const https = require('https');
+
         const options = {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
@@ -454,42 +469,46 @@ class StreamManager {
           }
         };
 
-        https.get(url, options, (res) => {
+        req = https.get(url, options, (res) => {
           let data = '';
-          res.on('data', chunk => data += chunk);
+          res.on('data', chunk => { data += chunk; });
           res.on('end', () => {
             try {
               const json = JSON.parse(data);
               const roomInfo = json?.data?.data?.[0];
-              
+
               // status: 2 = 直播中, 其他 = 未开播
               const status = roomInfo?.status;
               const isLive = status === 2;
-              
+
               // 获取主播名称
               const owner = roomInfo?.owner;
-              const streamerName = owner?.nickname || owner?.name || roomInfo?.nickname 
+              const streamerName = owner?.nickname || owner?.name || roomInfo?.nickname
                 || json?.data?.user?.nickname || null;
-              
-              resolve({ isLive, streamerName });
+
+              finish({ isLive, streamerName });
             } catch (e) {
               logger.warn(`[API] 状态检查解析失败: ${e.message}`);
-              resolve(null);
+              finish(null);
             }
           });
-        }).on('error', (e) => {
-          logger.warn(`[API] 状态检查请求失败: ${e.message}`);
-          resolve(null);
         });
-        
-        // 超时6秒（缩短以留出页面方式回退的时间，避免超过检测间隔）
-        setTimeout(() => {
-          logger.warn(`[API] 状态检查请求超时`);
-          resolve(null);
-        }, 6000);
+
+        req.on('error', (e) => {
+          // 超时主动 destroy 会触发 error，此时已 settled，直接忽略
+          if (settled) return;
+          logger.warn(`[API] 状态检查请求失败: ${e.message}`);
+          finish(null);
+        });
+
+        // 超时 8 秒；超时后 abort 请求，避免连接挂起泄漏
+        timeoutHandle = setTimeout(() => {
+          logger.warn(`[API] 状态检查请求超时: ${roomId}`);
+          finish(null, 'timeout');
+        }, 8000);
       }).catch(e => {
         logger.warn(`[API] 获取cookies失败: ${e.message}`);
-        resolve(null);
+        finish(null);
       });
     });
   }
@@ -616,7 +635,7 @@ class StreamManager {
         monitorWindow.loadURL(info.liveUrl, {
           userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
         }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('页面加载超时(15s)')), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('页面加载超时(10s)')), 10000))
       ]);
     } catch (e) {
       logger.warn(`[Monitor] 重新加载页面出错: ${e.message}`);
@@ -624,7 +643,7 @@ class StreamManager {
     }
 
     // 等待页面加载
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // 再次检查窗口是否仍然可用
     if (monitorWindow.isDestroyed()) {
