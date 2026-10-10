@@ -501,6 +501,18 @@ class Recorder {
       logger.error(`[Recorder] 启动录制失败: ${err.message}`, err);
       this.recording = false;
       await this._cleanup();
+      // 启动失败（多为直播流URL获取失败）时，删除刚创建的空会话文件夹，
+      // 避免残留"生成了录制文件夹却无录制文件"的空目录
+      if (this.outputFile) {
+        const sessionFolder = path.dirname(this.outputFile);
+        try {
+          const leftover = fs.existsSync(sessionFolder) ? fs.readdirSync(sessionFolder) : [];
+          if (leftover.length === 0) {
+            fs.rmSync(sessionFolder, { recursive: true, force: true });
+            logger.warn(`[Recorder] 启动失败，已清理空会话文件夹: ${sessionFolder}`);
+          }
+        } catch (_) { /* ignore */ }
+      }
       this.onStatusChange('error', {
         roomId: this.roomId,
         error: err.message
