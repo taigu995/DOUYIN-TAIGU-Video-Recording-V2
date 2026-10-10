@@ -1175,6 +1175,79 @@ class Recorder {
   }
 
   /**
+   * 从已加载直播页面的窗口提取直播流 URL（优先从 <video> 元素的真实 src/currentSrc 提取）
+   * 兼容抖音现网对流地址的加密/签名/明文 flv|m3u8 各类情况。
+   * @param {BrowserWindow} win 已加载直播页面的 BrowserWindow
+   * @returns {Promise<{url:string,type:string,source:string}|null>}
+   */
+  async _extractVideoSrcFromWindow(win) {
+    if (!win || win.isDestroyed()) return null;
+    try {
+      const result = await win.webContents.executeJavaScript(`
+        (function() {
+          try {
+            const videos = Array.from(document.querySelectorAll('video'));
+            const diagnostics = videos.map(v => {
+              const src = v.src || v.currentSrc || '';
+              return { src: String(src).substring(0, 300), paused: v.paused, readyState: v.readyState };
+            });
+            // 按优先级收集所有可能的流地址
+            const candidates = [];
+            for (const v of videos) {
+              const src = (v.currentSrc && v.currentSrc.trim()) || (v.src && v.src.trim()) || '';
+              if (!src) continue;
+              if (src.toLowerCase().startsWith('blob:') || src.toLowerCase().startsWith('http')) {
+                candidates.push(src);
+                // blob: 通常是对应 MediaSource，取可实际访问的 http 地址优先
+                if (!src.toLowerCase().startsWith('blob:')) break;
+              }
+            }
+            // 若 video.src 不可用，尝试 Network/performance 里抓到的流片段（m3u8/flv 关键片段）
+            let textMatches = [];
+            const html = document.documentElement ? document.documentElement.innerHTML : '';
+            const allText = html;
+            const flvM = (allText.match(/https?:\/\/[^"'\s]+\.(flv|m3u8)[^"'\s]*/g) || [])
+              .map(u => u.replace(/&amp;/g, '&'));
+            textMatches = textMatches.concat(flvM);
+            // 抖音 web 端标准 alternate link (m3u8, rel=alternate / 移动端)
+            const linkHrefs = Array.from(document.querySelectorAll('link[rel="alternate"], link[rel="stream"]'))
+              .map(l => (l.getAttribute('href') || '').trim())
+              .filter(h => h && (h.toLowerCase().includes('.m3u8') || h.toLowerCase().includes('.flv')))
+              .map(h => h.startsWith('//') ? 'https:' + h : h);
+            textMatches = textMatches.concat(linkHrefs);
+            // 来源优先级: environment_dynamic 加密房间常用 -- 先 alternate link > video_element http > page_text
+            const chosen = textMatches.length ? textMatches[0] : (candidates.length ? candidates[0] : null);
+            const chosenSrc = textMatches.length ? 'alternate_link' : (candidates.length ? 'video_element' : null);
+            // 返回视频元素诊断信息（供失败时定位）
+            return {
+              url: chosen,
+              type: (chosen || '').includes('.m3u8') ? 'hls' : 'flv',
+              source: chosenSrc,
+              diagnostics
+            };
+          } catch (e) {
+            return { error: e.message };
+          }
+        })()
+      `);
+      if (result && result.url) {
+        logger.info(`[Recorder] video元素/页面文本提取直播流成功 (来源: ${result.source})`);
+        return { url: result.url, type: result.type, source: result.source || 'video_element' };
+      }
+      if (result) {
+        const info = result.diagnostics && result.diagnostics.length
+          ? `视频元素数=${result.diagnostics.length}, 样例=${JSON.stringify(result.diagnostics.slice(0, 3)).substring(0, 400)}`
+          : `无video元素${result.error ? ', error=' + result.error : ''}`;
+        logger.warn(`[Recorder] 页面video提取未拿到流: ${info}`);
+      }
+      return null;
+    } catch (e) {
+      logger.warn(`[Recorder] video提取异常: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
    * 从抖音直播页面提取直播流URL
    * 优先使用API方式，回退到页面内fetch，最后DOM解析
    * @param {BrowserWindow} existingWindow - 可选，已加载直播页面的窗口
@@ -1420,6 +1493,18 @@ class Recorder {
             const m3u8Match = pageText.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
             if (m3u8Match) return { url: m3u8Match[0], type: 'hls', source: 'page_text' };
 
+            // 放宽 video 提取：兼容加密/签名/blob 的流地址（现网 video.src 常含 blob: 或非 .flv/.m3u8 明文）
+            const allVideos = Array.from(document.querySelectorAll('video'));
+            for (const video of allVideos) {
+              const src = (video.currentSrc && video.currentSrc.trim()) || (video.src && video.src.trim()) || '';
+              if (!src) continue;
+              const low = src.toLowerCase();
+              if (low.startsWith('blob:') || low.startsWith('http')) {
+                if (low.startsWith('blob:')) return { url: src, type: 'hls', source: 'video_blob' };
+                return { url: src, type: low.includes('.m3u8') ? 'hls' : 'flv', source: 'video_element' };
+              }
+            }
+
             return null;
           } catch (e) {
             return { error: e.message };
@@ -1437,6 +1522,15 @@ class Recorder {
       // 确保临时窗口始终被销毁，防止资源泄漏
       if (tempWin && !tempWin.isDestroyed()) {
         try { tempWin.destroy(); } catch (e) { /* ignore */ }
+      }
+    }
+
+    // 从已登录的捕获窗口 video 元素直接提取（兼容加密/签名/blob 流地址）
+    if (this.captureWindow && !this.captureWindow.isDestroyed()) {
+      const videoSrc = await this._extractVideoSrcFromWindow(this.captureWindow);
+      if (videoSrc && videoSrc.url) {
+        logger.info(`[Recorder] 捕获窗口video元素提取直播流成功 (来源: ${videoSrc.source})`);
+        return videoSrc;
       }
     }
 
@@ -1527,15 +1621,19 @@ class Recorder {
               // 从 video 元素获取
               const videos = document.querySelectorAll('video');
               for (const video of videos) {
-                const src = video.src || video.currentSrc;
-                if (src && (src.includes('.flv') || src.includes('live') || src.includes('.m3u8'))) {
-                  return { url: src, type: src.includes('.m3u8') ? 'hls' : 'flv', source: 'temp_win_video' };
+                const src = (video.currentSrc && video.currentSrc.trim()) || (video.src && video.src.trim()) || '';
+                if (!src) continue;
+                const low = src.toLowerCase();
+                if (low.startsWith('blob:') || low.startsWith('http')) {
+                  return { url: src, type: low.includes('.m3u8') ? 'hls' : 'flv', source: 'temp_win_video' };
                 }
               }
               // 从页面源码搜索
               const pageText = document.documentElement.innerHTML;
-              const flvMatch = pageText.match(/https?:\\/\\/[^"'\\s]+\\.flv[^"'\\s]*/);
+              const flvMatch = pageText.match(/https?:\/\/[^"'\s]+\.flv[^"'\s]*/);
               if (flvMatch) return { url: flvMatch[0], type: 'flv', source: 'temp_win_page' };
+              const m3u8Match = pageText.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
+              if (m3u8Match) return { url: m3u8Match[0], type: 'hls', source: 'temp_win_page' };
               return null;
             } catch (e) {
               return { error: e.message };
