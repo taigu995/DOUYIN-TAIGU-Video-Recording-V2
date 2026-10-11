@@ -640,7 +640,7 @@ function setupIPC() {
     return logger.getLogsByDate(dateStr);
   });
 
-  // 导出日志
+  // 导出日志（合并当天+全部历史日志为单文件）
   ipcMain.handle('export-logs', async () => {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '导出日志',
@@ -649,6 +649,12 @@ function setupIPC() {
     });
     if (result.canceled) return { success: false };
     
+    // 合并导出当天 + 历史备份日志（旧版仅导出当天，已修复）
+    const exportPath = logger.exportCombinedLogs(result.filePath);
+    if (exportPath) {
+      return { success: true, path: exportPath };
+    }
+    // 合并失败时回退为当天日志
     const content = logger.getRecentLogs(10000);
     fs.writeFileSync(result.filePath, content, 'utf8');
     return { success: true, path: result.filePath };

@@ -482,6 +482,68 @@ class Logger {
   }
 
   /**
+   * 合并导出「当天日志 + 全部历史备份日志」为一个文件
+   * 解决旧版导出仅包含当天日志、无法获取历史日志的问题。
+   * 优先从自动备份目录(autoBackupDir)读取历史，其次回退到 logDir 按日期文件。
+   * @param {string} targetFile - 目标导出文件路径(单文件合并)
+   * @returns {string|null} 合并后文件路径；失败返回 null
+   */
+  exportCombinedLogs(targetFile) {
+    try {
+      if (!this.autoBackupDir && !this.logDir) {
+        this.error('Failed to export combined logs: no log dir configured');
+        return null;
+      }
+
+      // 收集所有日志文件: 自动备份目录 + 当天日志目录
+      const seenByName = new Set();
+      const sources = [];
+
+      const collectDir = (dir) => {
+        if (!dir || !fs.existsSync(dir)) return;
+        let names = [];
+        try { names = fs.readdirSync(dir); } catch (_) { return; }
+        names
+          .filter(f => f.startsWith('app-') && f.endsWith('.log'))
+          .sort() // 按日期升序
+          .forEach(f => {
+            // 按文件名去重（同一 app-日期.log 在自动备份目录与 logDir 各有一份同内容副本）
+            if (seenByName.has(f)) return;
+            seenByName.add(f);
+            sources.push({ full: path.join(dir, f), name: f });
+          });
+      };
+
+      // 历史日志优先走自动备份目录(更完整、不易被清理)
+      collectDir(this.autoBackupDir);
+      // 再补充 logDir(含当天，可能含备份目录没有的最新文件)
+      collectDir(this.logDir);
+
+      if (sources.length === 0) {
+        this.warn('No log files found for combined export');
+        return null;
+      }
+
+      // 合并写入
+      const parts = [];
+      for (const s of sources) {
+        if (fs.existsSync(s.full)) {
+          const content = fs.readFileSync(s.full, 'utf8');
+          const header = `\n========== 日志文件: ${s.name} ==========\n`;
+          parts.push(header + content);
+        }
+      }
+
+      fs.writeFileSync(targetFile, parts.join('\n'), 'utf8');
+      this.info(`Exported combined logs to ${targetFile} (${sources.length} files)`);
+      return targetFile;
+    } catch (err) {
+      this.error('Failed to export combined logs', err);
+      return null;
+    }
+  }
+
+  /**
    * 设置自动轮转和清理
    * @param {number} retentionDays - 保留天数，默认30天
    */
