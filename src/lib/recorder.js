@@ -973,8 +973,19 @@ class Recorder {
     const separatorW = 2;
     const totalWithSep = streamScaleW + separatorW + commentScaleW;
 
-    // 使用直播流时长作为合并阶段的总时长(如果有)
-    const streamDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : commentDurationMs;
+    // 使用「源视频真实时长」作为 Merge-Final 进度分母。
+    // 旧版用墙钟时间(Date.now()-startTime)估算，受 FFmpeg 退出延迟影响常偏大，
+    // 导致进度条长时间卡在小百分比、看似不更新。改为探测真实媒体时长，探测失败再回退墙钟。
+    let mergeFinalDurationMs = 0;
+    try {
+      mergeFinalDurationMs = await Recorder._getMediaDuration(streamFile);
+    } catch (e) {
+      logger.warn(`[Merge] 探测源视频时长失败，回退墙钟估算: ${e.message}`);
+    }
+    if (!mergeFinalDurationMs || mergeFinalDurationMs <= 0) {
+      mergeFinalDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : commentDurationMs;
+    }
+    const streamDurationMs = mergeFinalDurationMs;
 
     // 保存最终合并阶段的进度数据
     this._mergeProgressData = {
