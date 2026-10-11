@@ -48,9 +48,17 @@ class ManualMerger {
         );
       }
       
-      return { width, height, durationMs };
+      // 解析帧率: 形如 "30 tbr" / "30 fps"
+      let fps = 30;
+      const fpsMatch = errOutput.match(/Video:[\s\S]*?([\d.]+)\s*(?:tbr|fps)/);
+      if (fpsMatch) {
+        const fv = parseFloat(fpsMatch[1]);
+        if (fv > 0 && fv <= 240) fps = fv;
+      }
+
+      return { width, height, durationMs, fps };
     }
-    return { width: 1920, height: 1080, durationMs: 0 };
+    return { width: 1920, height: 1080, durationMs: 0, fps: 30 };
   }
 
   /**
@@ -232,7 +240,7 @@ class ManualMerger {
       
       // 构建滤镜链
       const filterComplex = [
-        `[0:v]scale=${videoInfo.width}:${videoInfo.height},setsar=1[stream]`,
+        `[0:v]setpts=PTS-STARTPTS,fps=${videoInfo.fps || 30},scale=${videoInfo.width}:${videoInfo.height},setsar=1[stream]`,
         `[1:v]scale=420:${videoInfo.height},setsar=1[comments]`,
         `[stream]pad=${videoInfo.width + 420 + 2}:${videoInfo.height}:0:0:black[stream_padded]`,
         `[stream_padded]drawbox=x=${videoInfo.width}:y=0:w=2:h=${videoInfo.height}:color=black@0.5:t=fill[stream_sep]`,

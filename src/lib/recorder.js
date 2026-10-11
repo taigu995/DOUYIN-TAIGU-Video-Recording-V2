@@ -317,7 +317,7 @@ class Recorder {
 
     // 使用与 _mergeStreamAndComments 相同的滤镜
     const filterComplex = [
-      '[0:v]scale=1920:1080,setsar=1[stream]',
+      '[0:v]setpts=PTS-STARTPTS,fps=30,scale=1920:1080,setsar=1[stream]',
       '[1:v]scale=420:1080,setsar=1[comments]',
       '[stream]pad=2342:1080:0:0:black[stream_padded]',
       '[stream_padded]drawbox=x=1920:y=0:w=2:h=1080:color=black@0.5:t=fill[stream_sep]',
@@ -833,12 +833,19 @@ class Recorder {
         const errOutput = e.stderr || e.stdout || e.message || '';
         const match = errOutput.match(/Video:[\s\S]*?(\d{2,5})x(\d{2,5})/);
         if (match) {
-          return { width: parseInt(match[1]), height: parseInt(match[2]) };
+          // 同时解析帧率: 形如 "30 tbr" 或 "30 fps"
+          let fps = 30;
+          const fpsMatch = errOutput.match(/Video:[\s\S]*?([\d.]+)\s*(?:tbr|fps)/);
+          if (fpsMatch) {
+            const v = parseFloat(fpsMatch[1]);
+            if (v > 0 && v <= 240) fps = v;
+          }
+          return { width: parseInt(match[1]), height: parseInt(match[2]), fps };
         }
       } catch (e2) { /* ignore */ }
       logger.warn('[Recorder] 探测视频分辨率失败:', e.message?.substring(0, 200));
     }
-    return { width: 1920, height: 1080 }; // 默认横屏
+    return { width: 1920, height: 1080, fps: 30 }; // 默认横屏
   }
 
   /**
@@ -988,7 +995,7 @@ class Recorder {
       '-i', streamFile,
       '-i', commentVideoFile,
       '-filter_complex',
-        `[0:v]scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
+        `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
         `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
         `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
         `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
