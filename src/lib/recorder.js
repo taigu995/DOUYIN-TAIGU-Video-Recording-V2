@@ -611,6 +611,9 @@ class Recorder {
       if (this.recording) {
         logger.warn('[Recorder] 直播流中断，录制自动结束');
         this.recording = false;
+        // 标记为流中断（网络波动等），区别于用户主动停止/下播停止，
+        // _finishRecording 据此在合并前立即通知上层重启新录制，合并转后台执行
+        this._stopReason = 'stream-interrupted';
         this._finishRecording().catch(err => {
           logger.error('[Recorder] 完成录制出错:', err.message);
         });
@@ -630,6 +633,8 @@ class Recorder {
     if (!this.recording) return;
 
     this.recording = false;
+    // 主动停止（用户手动停止/检测到下播），走完整合并流程后再通知上层
+    if (!this._stopReason) this._stopReason = 'manual';
     logger.info(`[Recorder] 停止录制: ${this.streamerName}`);
 
     await this._finishRecording();
@@ -662,6 +667,24 @@ class Recorder {
 
     const commentInfoFrameCount = (commentInfo && commentInfo.frameCount) || 0;
     const hasCommentFrames = commentInfoFrameCount > 0 || commentFrameFiles > 0;
+
+    // 流中断（网络波动等）场景：直播间可能仍在直播。
+    // 这里不再让上层干等合并完成（可能数分钟）才重启录制，而是：
+    // 1) 提前销毁评论区渲染窗口（帧已保存到磁盘，合并不再需要窗口，避免与新录制的评论窗口冲突）
+    // 2) 立即通知上层「流中断」，由上层马上检测并重启新一轮录制
+    // 3) 本实例的合并/清理继续在后台执行，完成后照常发 'stopped'
+    if (this._stopReason === 'stream-interrupted') {
+      if (this.commentRenderer) {
+        try { await this.commentRenderer.destroy(); } catch (e) { /* ignore */ }
+        this.commentRenderer = null;
+      }
+      logger.warn('[Recorder] 流中断：合并转后台执行，立即通知上层重启录制');
+      this.onStatusChange('stream-interrupted', {
+        roomId: this.roomId,
+        streamerName: this.streamerName,
+        outputFile: this.outputFile
+      });
+    }
 
     // 诊断：评论区渲染器可能因账号冲突回滚、页面容器缺失等未捕获到帧
     if (streamFileExists && !commentFrameFiles && !commentInfo) {

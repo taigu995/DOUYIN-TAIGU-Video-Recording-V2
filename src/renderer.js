@@ -863,9 +863,9 @@ function createStreamCard(stream) {
     `;
   }
 
-  // 合并进度（合并中时显示）
+  // 合并进度（合并中时显示；流中断后旧录制转后台合并、新录制进行中时也显示）
   let mergeProgressHtml = '';
-  if (stream.status === 'merging' && stream.mergeProgress) {
+  if (stream.mergeProgress) {
     const progress = stream.mergeProgress.progress || 0;
     const phase = stream.mergeProgress.phase || '';
     const phaseName = stream.mergeProgress.phaseName || phase;
@@ -914,12 +914,14 @@ function createStreamCard(stream) {
 
     // 是否恢复中的合并
     const resumeTag = stream.mergeProgress.resuming ? '<span class="merge-resume-tag">恢复中</span>' : '';
+    // 录制新会话进行中时，旧会话的合并属于后台合并
+    const backgroundTag = stream.status === 'recording' ? '<span class="merge-resume-tag">后台合并</span>' : '';
 
     mergeProgressHtml = `
       <div class="merge-progress">
         <div class="merge-progress-bar" style="width: ${progress}%"></div>
         <span class="merge-progress-text">
-          ${resumeTag}${phaseName} ${progress}%${timeText}${frameText}${etaText}
+          ${resumeTag}${backgroundTag}${phaseName} ${progress}%${timeText}${frameText}${etaText}
         </span>
       </div>
     `;

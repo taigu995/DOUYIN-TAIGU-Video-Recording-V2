@@ -937,11 +937,45 @@ class StreamManager {
           streamState.status = 'recording';
           streamState.currentRecordingStart = Date.now();
           logger.info(`[StreamManager] 录制状态变更 -> recording: ${streamState.info.streamerName} (模式: ${data.mode || 'stream+comment'})`);
+        } else if (status === 'stream-interrupted') {
+          // 直播流中断（网络波动等）：旧录制实例转入后台合并，立即检测并重启新录制，
+          // 不再等待合并完成（合并可能耗时数分钟，期间直播间仍在直播会造成漏录）
+          logger.warn(`[StreamManager] 直播流中断，旧录制转入后台合并，立即检测重启录制: ${streamState.info.streamerName}`);
+          if (streamState.recorder === recorder) {
+            streamState.mergingRecorder = recorder;
+            streamState.recorder = null;
+          }
+          // 主状态恢复为 live/offline（是否真在播由随后的检测确认）；
+          // 后台合并进度仍通过 onProgress 推送到 streamState.mergeProgress，UI 继续显示
+          streamState.status = streamState.isLive ? 'live' : 'offline';
+          const shouldRetryInterrupted = getConfig().autoRecord && streamState.info.autoRecord !== false;
+          if (shouldRetryInterrupted) {
+            this.checkLiveStatus(streamState).catch(err => {
+              logger.warn(`[StreamManager] 流中断后重新检测失败: ${err.message}`);
+            });
+            // 兜底：若上面检测与周期性检查并发被跳过（_checking 冲突），5s 后再试一次；
+            // 即便都错过，周期性检测也会通过「直播在线但未录制」分支自动重录
+            setTimeout(() => {
+              if (!streamState.recorder && !streamState._checking &&
+                  getConfig().autoRecord && streamState.info.autoRecord !== false) {
+                this.checkLiveStatus(streamState).catch(err => {
+                  logger.warn(`[StreamManager] 流中断后兜底重检失败: ${err.message}`);
+                });
+              }
+            }, 5000);
+          }
         } else if (status === 'merging') {
-          streamState.status = 'merging';
+          // 已摘离的后台合并实例不覆盖主状态（此时可能正在录制新会话）
+          if (streamState.mergingRecorder !== recorder) {
+            streamState.status = 'merging';
+          }
           logger.info(`[StreamManager] 正在合并视频和评论区: ${streamState.info.streamerName}, 评论帧数: ${data.commentFrames}, FPS: ${data.commentFps ? data.commentFps.toFixed(1) : 'N/A'}`);
         } else if (status === 'stopped') {
-          streamState.status = streamState.isLive ? 'live' : 'offline';
+          // 后台合并完成的旧实例不影响新录制的主状态
+          const isDetachedMerge = streamState.mergingRecorder === recorder;
+          if (!isDetachedMerge) {
+            streamState.status = streamState.isLive ? 'live' : 'offline';
+          }
           streamState.mergeProgress = null; // 清除合并进度
           // 保存录制记录
           if (streamState.currentRecordingStart && data && data.outputFile) {
@@ -968,41 +1002,54 @@ class StreamManager {
           }
           streamState.currentRecordingStart = null;
 
-          // 录制自然结束（下播/流中断/合并完成）后清空 recorder 引用，
-          // 否则周期性检测会因为 streamState.recorder 非空而不会自动重连。
-          if (streamState.recorder) {
-            try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
-            streamState.recorder = null;
-          }
+          if (isDetachedMerge) {
+            // 后台合并完成的旧实例：仅清理 mergingRecorder 引用，
+            // 不动主状态（可能正在录制新会话）、不再触发重检（新录制已在进行或已由 stream-interrupted 处理）
+            streamState.mergingRecorder = null;
+            logger.info(`[StreamManager] 后台合并已结束: ${streamState.info.streamerName}`);
+          } else {
+            // 录制自然结束（下播/流中断/合并完成）后清空 recorder 引用，
+            // 否则周期性检测会因为 streamState.recorder 非空而不会自动重连。
+            if (streamState.recorder) {
+              try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
+              streamState.recorder = null;
+            }
 
-          // 录制结束后，如果自动录制开启，重新检测并按需继续录制
-          // 注意：录制结束可能是下播、流中断或异常。清空引用后，
-          // 周期性检测 / _autoStartRecording 会在直播仍在线时自动重连。
-          const shouldRetryAuto = getConfig().autoRecord && streamState.info.autoRecord !== false;
-          if (shouldRetryAuto) {
-            logger.info(`[StreamManager] 录制结束，自动录制开启，延迟重新检测直播状态: ${streamState.info.streamerName}`);
-            setTimeout(() => {
-              this.checkLiveStatus(streamState).catch(err => {
-                logger.warn(`[StreamManager] 录制结束后重新检测失败: ${err.message}`);
-              });
-            }, 3000);
+            // 录制结束后，如果自动录制开启，重新检测并按需继续录制
+            // 注意：录制结束可能是下播、流中断或异常。清空引用后，
+            // 周期性检测 / _autoStartRecording 会在直播仍在线时自动重连。
+            const shouldRetryAuto = getConfig().autoRecord && streamState.info.autoRecord !== false;
+            if (shouldRetryAuto) {
+              logger.info(`[StreamManager] 录制结束，自动录制开启，延迟重新检测直播状态: ${streamState.info.streamerName}`);
+              setTimeout(() => {
+                this.checkLiveStatus(streamState).catch(err => {
+                  logger.warn(`[StreamManager] 录制结束后重新检测失败: ${err.message}`);
+                });
+              }, 3000);
+            }
           }
         } else if (status === 'error') {
-          streamState.status = 'error';
           logger.error(`[StreamManager] 录制错误 (${streamState.info.streamerName}): ${data && data.error}`);
-          // 录制发生错误后，清空 recorder 引用，使周期性检测能够自动重连
-          if (streamState.recorder) {
-            try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
-            streamState.recorder = null;
-          }
-          const shouldRetryAutoOnError = getConfig().autoRecord && streamState.info.autoRecord !== false;
-          if (shouldRetryAutoOnError) {
-            logger.info(`[StreamManager] 录制错误后自动重连(延迟10s): ${streamState.info.streamerName}`);
-            setTimeout(() => {
-              this.checkLiveStatus(streamState).catch(err => {
-                logger.warn(`[StreamManager] 错误重连检测失败: ${err.message}`);
-              });
-            }, 10000);
+          if (streamState.mergingRecorder === recorder) {
+            // 后台合并实例报错：不覆盖主状态（可能正在录制新会话），仅清理引用
+            streamState.mergingRecorder = null;
+            streamState.mergeProgress = null;
+          } else {
+            streamState.status = 'error';
+            // 录制发生错误后，清空 recorder 引用，使周期性检测能够自动重连
+            if (streamState.recorder) {
+              try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
+              streamState.recorder = null;
+            }
+            const shouldRetryAutoOnError = getConfig().autoRecord && streamState.info.autoRecord !== false;
+            if (shouldRetryAutoOnError) {
+              logger.info(`[StreamManager] 录制错误后自动重连(延迟10s): ${streamState.info.streamerName}`);
+              setTimeout(() => {
+                this.checkLiveStatus(streamState).catch(err => {
+                  logger.warn(`[StreamManager] 错误重连检测失败: ${err.message}`);
+                });
+              }, 10000);
+            }
           }
         }
         this.notifyUpdate();
@@ -1251,8 +1298,8 @@ class StreamManager {
       throw new Error('直播间不存在');
     }
 
-    // 检查是否正在录制或合并
-    if (state.recorder || state.status === 'merging') {
+    // 检查是否正在录制或合并（含后台合并中的旧实例）
+    if (state.recorder || state.status === 'merging' || state.mergingRecorder) {
       throw new Error('正在录制或合并中，无法手动合并');
     }
 
@@ -1526,8 +1573,8 @@ class StreamManager {
    * 检查是否可以手动合并（中间文件存在）
    */
   _canManualMerge(state) {
-    // 只有在非录制、非合并状态下才可能手动合并
-    if (state.recorder || state.status === 'merging') {
+    // 只有在非录制、非合并（含后台合并）状态下才可能手动合并
+    if (state.recorder || state.status === 'merging' || state.mergingRecorder) {
       return false;
     }
     // 检查输出目录是否存在中间文件
@@ -1594,6 +1641,13 @@ class StreamManager {
           await state.recorder.destroy(); 
         } catch (e) { /* ignore */ }
         state.recorder = null;
+      }
+      // 销毁后台合并中的旧录制实例
+      if (state.mergingRecorder) {
+        try {
+          await state.mergingRecorder.destroy();
+        } catch (e) { /* ignore */ }
+        state.mergingRecorder = null;
       }
       // 销毁监控窗口
       if (state.monitorWindow && !state.monitorWindow.isDestroyed()) {
