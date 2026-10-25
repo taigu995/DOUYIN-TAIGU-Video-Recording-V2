@@ -501,15 +501,26 @@ class Recorder {
       logger.error(`[Recorder] 启动录制失败: ${err.message}`, err);
       this.recording = false;
       await this._cleanup();
-      // 启动失败（多为直播流URL获取失败）时，删除刚创建的空会话文件夹，
-      // 避免残留"生成了录制文件夹却无录制文件"的空目录
+      // 启动失败（多为直播流URL获取失败）时，若本次会话未产生任何有效录制内容，
+      // 则删除刚创建的空会话文件夹，避免残留"生成了录制文件夹却无录制文件"的空目录。
+      // 注意：Step1 会先创建 .temp/ 与 .temp/comments/，因此不能用"文件夹是否为空"判断，
+      // 必须检测是否存在有效录制产出（输出文件 / 非空流文件 / 评论帧）。
       if (this.outputFile) {
         const sessionFolder = path.dirname(this.outputFile);
         try {
-          const leftover = fs.existsSync(sessionFolder) ? fs.readdirSync(sessionFolder) : [];
-          if (leftover.length === 0) {
+          const hasOutput = fs.existsSync(this.outputFile) && fs.statSync(this.outputFile).size > 0;
+          const tempStream = path.join(sessionFolder, '.temp', 'stream.mp4');
+          const hasTempStream = fs.existsSync(tempStream) && fs.statSync(tempStream).size > 0;
+          const commentsDir = path.join(sessionFolder, '.temp', 'comments');
+          let hasCommentFrames = false;
+          if (fs.existsSync(commentsDir)) {
+            hasCommentFrames = fs.readdirSync(commentsDir).some(f => /\.(jpe?g|png|webp)$/i.test(f));
+          }
+          if (!hasOutput && !hasTempStream && !hasCommentFrames) {
             fs.rmSync(sessionFolder, { recursive: true, force: true });
-            logger.warn(`[Recorder] 启动失败，已清理空会话文件夹: ${sessionFolder}`);
+            logger.warn(`[Recorder] 启动失败且无录制产出，已清理空会话文件夹: ${sessionFolder}`);
+          } else {
+            logger.info(`[Recorder] 启动失败但检测到录制产出(输出=${hasOutput}, 流=${hasTempStream}, 帧=${hasCommentFrames})，保留: ${sessionFolder}`);
           }
         } catch (_) { /* ignore */ }
       }
@@ -1280,6 +1291,8 @@ class Recorder {
       let cookies = '';
       try {
         cookies = await this._getSessionCookies('live.douyin.com');
+        const cookieLen = cookies ? cookies.length : 0;
+        logger.info(`[Recorder] 已获取 session cookies (长度: ${cookieLen})${cookieLen === 0 ? ' - 警告: cookie为空，可能未登录或登录已失效' : ''}`);
       } catch (cookieErr) {
         logger.warn(`[Recorder] 获取cookies失败: ${cookieErr.message}`);
       }
@@ -1552,7 +1565,11 @@ class Recorder {
       }
     }
 
-    logger.warn('[Recorder] 所有方式均未能提取到直播流URL');
+    // 汇总诊断：帮助快速区分"未登录/cookie失效"、"数据结构变化"、"直播间特殊加密"等失败方向
+    const hasCaptureWin = !!(this.captureWindow && !this.captureWindow.isDestroyed());
+    logger.warn(`[Recorder] 所有方式均未能提取到直播流URL - 诊断: 捕获窗口=${hasCaptureWin ? '存在' : '无'}, ` +
+      `录制模式=${this.recordMode || '未知'}, roomId=${this.roomId}. ` +
+      `提示: 若上方日志显示"cookie为空"则为未登录/登录失效；若显示"API返回数据中未找到stream_url"则为该直播间数据结构特殊。`);
     return null;
   }
 

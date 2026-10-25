@@ -524,18 +524,30 @@ class Logger {
         return null;
       }
 
-      // 合并写入
-      const parts = [];
+      // 逐个文件流式追加写入：不在内存拼接超大字符串
+      // （历史日志累积过多时 parts.join() 会触发 RangeError: Invalid string length）
+      fs.writeFileSync(targetFile, '', 'utf8'); // 先清空/创建
+      let totalBytes = 0;
+      const CHUNK = 4 * 1024 * 1024; // 4MB 读缓冲
+      const buf = Buffer.allocUnsafe(CHUNK);
       for (const s of sources) {
-        if (fs.existsSync(s.full)) {
-          const content = fs.readFileSync(s.full, 'utf8');
-          const header = `\n========== 日志文件: ${s.name} ==========\n`;
-          parts.push(header + content);
+        if (!fs.existsSync(s.full)) continue;
+        const header = `\n========== 日志文件: ${s.name} ==========\n`;
+        fs.appendFileSync(targetFile, header, 'utf8');
+        // 分块读写，单个超大日志文件也不会撑爆内存
+        const fd = fs.openSync(s.full, 'r');
+        try {
+          let n;
+          while ((n = fs.readSync(fd, buf, 0, CHUNK, null)) > 0) {
+            fs.appendFileSync(targetFile, buf.subarray(0, n));
+            totalBytes += n;
+          }
+        } finally {
+          fs.closeSync(fd);
         }
       }
 
-      fs.writeFileSync(targetFile, parts.join('\n'), 'utf8');
-      this.info(`Exported combined logs to ${targetFile} (${sources.length} files)`);
+      this.info(`Exported combined logs to ${targetFile} (${sources.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
       return targetFile;
     } catch (err) {
       this.error('Failed to export combined logs', err);
