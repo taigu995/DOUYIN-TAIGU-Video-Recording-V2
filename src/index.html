@@ -540,6 +540,31 @@
     </div>
   </div>
 
+  <!-- 导出日志日期选择 -->
+  <div id="export-log-modal" class="modal-overlay" style="display:none;">
+    <div class="modal" style="max-width:420px;">
+      <div class="modal-header">
+        <h3>导出日志</h3>
+        <button class="modal-close" id="export-log-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">开始日期</label>
+          <input type="date" id="export-log-start" class="form-input">
+        </div>
+        <div class="manual-merge-section">
+          <label class="manual-merge-label">结束日期</label>
+          <input type="date" id="export-log-end" class="form-input">
+        </div>
+        <div class="manual-merge-hint">留空表示不限；导出内容已自动过滤高频监控噪声</div>
+      </div>
+      <div class="modal-footer">
+        <button id="export-log-all" class="btn btn-ghost">导出全部</button>
+        <button id="export-log-confirm" class="btn btn-primary">导出所选区间</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast 通知 -->
   <div id="toast-container" class="toast-container"></div>
 

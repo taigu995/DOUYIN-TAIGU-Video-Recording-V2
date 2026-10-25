@@ -124,6 +124,7 @@ async function init() {
 
   // 手动合并工具：独立初始化，不依赖任何网络/配置请求结果，保证按钮始终可点
   try { initManualMerge(); } catch (e) { console.error('[Renderer] 手动合并初始化失败:', e); }
+  try { initExportLogModal(); } catch (e) { console.error('[Renderer] 导出日志弹窗初始化失败:', e); }
 
   // 加载配置
   if (isElectron) {
@@ -621,21 +622,70 @@ async function openLogFolder() {
   }
 }
 
-async function exportLogs() {
+// 点击"导出日志"：打开日期区间选择弹窗
+function exportLogs() {
   if (!isElectron) {
     showToast('导出功能仅在桌面应用中可用', 'warning');
     return;
   }
+  openExportLogModal();
+}
+
+function openExportLogModal() {
+  const modal = document.getElementById('export-log-modal');
+  if (!modal) return;
+  // 默认选择今天（本地日期）
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const today = fmt(new Date());
+  const startEl = document.getElementById('export-log-start');
+  const endEl = document.getElementById('export-log-end');
+  if (startEl && !startEl.value) startEl.value = today;
+  if (endEl && !endEl.value) endEl.value = today;
+  modal.style.display = 'flex';
+}
+
+function closeExportLogModal() {
+  const modal = document.getElementById('export-log-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+// 实际执行导出（startDate/endDate 为 YYYY-MM-DD，空串表示不限）
+async function doExportLogs(startDate, endDate) {
   try {
-    const result = await window.electronAPI.exportLogs();
+    const result = await window.electronAPI.exportLogs(startDate || '', endDate || '');
     if (result.success) {
       showToast(`日志已导出到: ${result.path}`, 'success');
+      closeExportLogModal();
     } else if (!result.canceled) {
       showToast('导出失败: ' + result.error, 'error');
     }
   } catch (err) {
     showToast('导出出错: ' + err.message, 'error');
   }
+}
+
+function initExportLogModal() {
+  const modal = document.getElementById('export-log-modal');
+  if (!modal) return;
+  const btnClose = document.getElementById('export-log-close');
+  const btnAll = document.getElementById('export-log-all');
+  const btnConfirm = document.getElementById('export-log-confirm');
+  const startEl = document.getElementById('export-log-start');
+  const endEl = document.getElementById('export-log-end');
+
+  btnClose?.addEventListener('click', closeExportLogModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeExportLogModal(); });
+
+  btnAll?.addEventListener('click', () => doExportLogs('', ''));
+  btnConfirm?.addEventListener('click', () => {
+    const start = startEl?.value || '';
+    const end = endEl?.value || '';
+    if (start && end && start > end) {
+      showToast('开始日期不能晚于结束日期', 'warning');
+      return;
+    }
+    doExportLogs(start, end);
+  });
 }
 
 async function clearLogs() {

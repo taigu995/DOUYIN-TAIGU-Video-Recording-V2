@@ -488,7 +488,7 @@ class Logger {
    * @param {string} targetFile - 目标导出文件路径(单文件合并)
    * @returns {Promise<string|null>} 合并后文件路径；失败返回 null
    */
-  async exportCombinedLogs(targetFile) {
+  async exportCombinedLogs(targetFile, options = {}) {
     try {
       if (!this.autoBackupDir && !this.logDir) {
         this.error('Failed to export combined logs: no log dir configured');
@@ -519,8 +519,22 @@ class Logger {
       // 再补充 logDir(含当天，可能含备份目录没有的最新文件)
       collectDir(this.logDir);
 
-      if (sources.length === 0) {
-        this.warn('No log files found for combined export');
+      // 日期区间过滤（文件名形如 app-YYYY-MM-DD.log，ISO 日期字符串可直接比较）
+      const { startDate = null, endDate = null } = options;
+      let filteredSources = sources;
+      if (startDate || endDate) {
+        filteredSources = sources.filter(s => {
+          const m = s.name.match(/app-(\d{4}-\d{2}-\d{2})/);
+          if (!m) return false; // 无日期信息的历史文件在指定区间时排除
+          const d = m[1];
+          if (startDate && d < startDate) return false;
+          if (endDate && d > endDate) return false;
+          return true;
+        });
+      }
+
+      if (filteredSources.length === 0) {
+        this.warn(`No log files found for combined export (range: ${startDate || '...'} ~ ${endDate || '...'})`);
         return null;
       }
 
@@ -543,7 +557,7 @@ class Logger {
       const out = fs.createWriteStream(targetFile, { encoding: 'utf8' });
       let keptLines = 0, filteredLines = 0;
 
-      for (const s of sources) {
+      for (const s of filteredSources) {
         if (!fs.existsSync(s.full)) continue;
         if (!out.write(`\n========== 日志文件: ${s.name} ==========\n`)) {
           await new Promise(r => out.once('drain', r));
@@ -568,7 +582,7 @@ class Logger {
       await new Promise((resolve, reject) => { out.end(err => (err ? reject(err) : resolve())); });
 
       const totalBytes = fs.statSync(targetFile).size;
-      this.info(`Exported combined logs to ${targetFile} (${sources.length} files, kept ${keptLines} lines, filtered ${filteredLines} noise lines, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
+      this.info(`Exported combined logs to ${targetFile} (range: ${startDate || '...'}~${endDate || '...'}, ${filteredSources.length} files, kept ${keptLines} lines, filtered ${filteredLines} noise lines, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
       return targetFile;
     } catch (err) {
       this.error('Failed to export combined logs', err);

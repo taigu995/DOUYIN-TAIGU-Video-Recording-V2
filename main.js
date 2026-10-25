@@ -643,7 +643,7 @@ function setupIPC() {
   });
 
   // 导出日志（合并当天+全部历史日志为单文件）
-  ipcMain.handle('export-logs', async () => {
+  ipcMain.handle('export-logs', async (event, startDate, endDate) => {
     const result = await dialog.showSaveDialog(mainWindow, {
       title: '导出日志',
       defaultPath: `douyin-recorder-logs-${Date.now()}.log`,
@@ -652,9 +652,13 @@ function setupIPC() {
     if (result.canceled) return { success: false };
     
     // 合并导出当天 + 历史备份日志（旧版仅导出当天，已修复；自动过滤高频监控噪声以控制体积）
-    const exportPath = await logger.exportCombinedLogs(result.filePath);
+    const exportPath = await logger.exportCombinedLogs(result.filePath, { startDate: startDate || null, endDate: endDate || null });
     if (exportPath) {
       return { success: true, path: exportPath };
+    }
+    // 指定日期区间但没有日志文件
+    if (startDate || endDate) {
+      return { success: false, error: '所选日期区间内没有日志文件' };
     }
     // 合并失败时回退为当天日志
     const content = logger.getRecentLogs(10000);

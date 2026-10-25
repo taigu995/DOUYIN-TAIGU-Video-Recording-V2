@@ -68,7 +68,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLogFiles: () => ipcRenderer.invoke('get-log-files'),
   getLogStats: () => ipcRenderer.invoke('get-log-stats'),
   getLogsByDate: (dateStr) => ipcRenderer.invoke('get-logs-by-date', dateStr),
-  exportLogs: () => ipcRenderer.invoke('export-logs'),
+  exportLogs: (startDate, endDate) => ipcRenderer.invoke('export-logs', startDate, endDate),
   exportAllLogs: () => ipcRenderer.invoke('export-all-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
 
