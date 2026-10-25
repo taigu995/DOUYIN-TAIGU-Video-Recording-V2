@@ -376,10 +376,13 @@ class ManualMerger {
         }
       };
 
+      // FFmpeg 高频进度统计行（frame=/time=/size=）不写日志，只用于解析进度，避免长时间合并刷屏
+      const isProgressStat = (s) => /frame=\s*\d+/.test(s) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(s) || /^(size|Lsize)=/.test(s);
+
       proc.stdout.on('data', (data) => {
         const msg = data.toString().trim();
         if (msg) {
-          logger.info(`[${tag}] ${msg}`);
+          if (!isProgressStat(msg)) logger.info(`[${tag}] ${msg.slice(0, 1000)}`);
           parseProgress(msg);
         }
       });
@@ -387,9 +390,11 @@ class ManualMerger {
       proc.stderr.on('data', (data) => {
         const msg = data.toString();
         stderr += msg;
-        const trimmed = msg.trim();
-        if (trimmed) {
-          logger.info(`[${tag}] ${trimmed}`);
+        const parts = msg.split(/[\r\n]/);
+        for (const raw of parts) {
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          if (!isProgressStat(trimmed)) logger.info(`[${tag}] ${trimmed.slice(0, 1000)}`);
           parseProgress(trimmed);
         }
       });

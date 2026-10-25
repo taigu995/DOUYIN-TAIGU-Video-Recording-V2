@@ -430,66 +430,84 @@ class CommentRenderer {
 
     // 加载直播页面（带超时、重试和容错机制）
     logger.info(`[CommentRenderer] 加载直播页面: ${this.liveUrl}`);
-    let pageLoadSuccess = false;
     const maxRetries = 3;
-    const loadTimeout = 30000; // 30秒超时
-    
+    const loadTimeout = 30000;    // 单次 loadURL 超时 30s
+    const probeTimeout = 4000;    // readyState 探测超时（防止导航 pending 时 executeJavaScript 永久挂起）
+    const totalDeadline = 150000; // 整体加载兜底超时，杜绝任何意外路径的永久挂起
+    const loadStartedAt = Date.now();
+
+    const winAlive = () => !!(this.captureWindow && !this.captureWindow.isDestroyed());
+    // 超时后必须主动终止导航：页面停留在 pending 时，后续 executeJavaScript 会无限挂起
+    const stopLoading = () => {
+      try { if (winAlive()) this.captureWindow.webContents.stop(); } catch (e) {}
+    };
+    // 带超时的 readyState 探测，永不 reject、永不无限挂起
+    const probeReady = (waitMs) => new Promise((resolve) => {
+      let settled = false;
+      const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const timer = setTimeout(() => finish(false), waitMs);
+      if (!winAlive()) { clearTimeout(timer); return finish(false); }
+      this.captureWindow.webContents.executeJavaScript(
+        'document.readyState === "complete" || document.readyState === "interactive"'
+      ).then((v) => { clearTimeout(timer); finish(!!v); })
+       .catch(() => { clearTimeout(timer); finish(false); });
+    });
+
+    let pageLoadSuccess = false;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // 整体兜底：超过总时限直接失败，确保上层 startRecording 能进 catch 清理
+      if (Date.now() - loadStartedAt > totalDeadline) {
+        logger.error(`[CommentRenderer] 页面加载总耗时超过 ${totalDeadline / 1000}s，放弃等待`);
+        break;
+      }
+      if (!winAlive()) {
+        logger.error('[CommentRenderer] 窗口已被销毁，无法继续加载');
+        break;
+      }
       try {
-        // 使用 Promise.race 实现超时控制
         const loadPromise = this.captureWindow.loadURL(this.liveUrl, {
           userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
         });
+        // race 超时后 loadPromise 仍 pending，吞掉其后续 reject（stop 触发的 ERR_ABORTED）
+        loadPromise.catch(() => {});
         const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error(`页面加载超时 (${loadTimeout/1000}s)`)), loadTimeout);
+          setTimeout(() => reject(new Error(`页面加载超时 (${loadTimeout / 1000}s)`)), loadTimeout);
         });
-        
+
         await Promise.race([loadPromise, timeoutPromise]);
         pageLoadSuccess = true;
         logger.info(`[CommentRenderer] 页面加载成功 (尝试 ${attempt}/${maxRetries})`);
         break;
       } catch (loadErr) {
         logger.warn(`[CommentRenderer] 页面加载失败 (尝试 ${attempt}/${maxRetries}): ${loadErr.message}`);
-        
-        // 检查窗口是否仍然有效
-        if (!this.captureWindow || this.captureWindow.isDestroyed()) {
+        if (!winAlive()) {
           logger.error('[CommentRenderer] 窗口已被销毁，无法继续加载');
           break;
         }
-        
-        // 如果是 ERR_FAILED 错误或超时，页面可能仍在后台加载，等待一下再检查
-        if (loadErr.message && (loadErr.message.includes('ERR_FAILED') || loadErr.message.includes('超时'))) {
-          logger.info('[CommentRenderer] 等待页面后台加载...');
-          // 等待页面可能完成加载
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // 检查页面是否已加载（通过执行简单 JS 测试）
-          try {
-            if (this.captureWindow && !this.captureWindow.isDestroyed()) {
-              const isLoaded = await this.captureWindow.webContents.executeJavaScript(
-                'document.readyState === "complete" || document.readyState === "interactive"'
-              );
-              if (isLoaded) {
-                logger.info('[CommentRenderer] 页面已在后台加载完成');
-                pageLoadSuccess = true;
-                break;
-              }
-            }
-          } catch (checkErr) {
-            logger.warn('[CommentRenderer] 检查页面状态失败:', checkErr.message);
-          }
+
+        // 超时/ERR_FAILED 时页面可能仍在后台加载：先终止挂起的导航，再带超时地探测 readyState
+        logger.info('[CommentRenderer] 等待页面后台加载...');
+        stopLoading();
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const isLoaded = await probeReady(probeTimeout);
+        if (isLoaded) {
+          logger.info('[CommentRenderer] 页面已在后台加载完成');
+          pageLoadSuccess = true;
+          break;
         }
-        
-        // 如果还有重试机会，等待后重试
+        logger.warn(`[CommentRenderer] 后台加载探测未就绪 (尝试 ${attempt}/${maxRetries})`);
+
+        // 还有重试机会：确保导航已停止后等待重试
+        stopLoading();
         if (attempt < maxRetries) {
           logger.info(`[CommentRenderer] 等待 2 秒后重试...`);
           await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
     }
-    
+
     if (!pageLoadSuccess) {
-      throw new Error(`页面加载失败，已重试 ${maxRetries} 次`);
+      throw new Error(`页面加载失败，已重试 ${maxRetries} 次（直播页持续加载超时，可能网络受限或触发风控）`);
     }
 
     // 加载后再次确保静音（某些页面可能会重置静音状态）

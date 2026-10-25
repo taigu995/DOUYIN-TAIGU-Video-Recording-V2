@@ -567,28 +567,39 @@ class Recorder {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
+    // 判断是否为 FFmpeg 高频进度统计行（录制 stream copy 时数小时持续刷屏）
+    const isStreamProgressStat = (s) => /frame=\s*\d+/.test(s) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(s) || /^(size|Lsize)=/.test(s);
+
     this.ffmpegProcess.stdout.on('data', (data) => {
       const msg = data.toString().trim();
-      if (msg) logger.info(`[FFmpeg-Stream] ${msg}`);
+      if (msg && !isStreamProgressStat(msg)) logger.info(`[FFmpeg-Stream] ${msg.slice(0, 1000)}`);
     });
 
     this.ffmpegProcess.stderr.on('data', (data) => {
-      const msg = data.toString().trim();
-      if (msg) logger.info(`[FFmpeg-Stream] ${msg}`);
+      // FFmpeg 进度常以 \r 刷新，拆分逐条处理
+      const raw = data.toString();
+      const lines = raw.split(/[\r\n]/);
+      for (const lineRaw of lines) {
+        const msg = lineRaw.trim();
+        if (!msg) continue;
+        if (!isStreamProgressStat(msg)) {
+          logger.info(`[FFmpeg-Stream] ${msg.slice(0, 1000)}`);
+        }
 
-      // 检测第一帧输出，此时才真正开始录制和计时
-      if (!this._firstFrameReceived && /frame=\s*\d+/.test(msg)) {
-        this._firstFrameReceived = true;
-        this.startTime = new Date(); // 从第一帧开始计时
-        logger.info(`[Recorder] 录制实际开始（第一帧已输出）: ${this.streamerName} -> ${this.outputFile}`);
-        this.onStatusChange('recording', {
-          roomId: this.roomId,
-          streamerName: this.streamerName,
-          outputFile: this.outputFile,
-          startTime: this.startTime,
-          hasAudio: this.hasAudio,
-          mode: this.recordMode
-        });
+        // 检测第一帧输出，此时才真正开始录制和计时
+        if (!this._firstFrameReceived && /frame=\s*\d+/.test(msg)) {
+          this._firstFrameReceived = true;
+          this.startTime = new Date(); // 从第一帧开始计时
+          logger.info(`[Recorder] 录制实际开始（第一帧已输出）: ${this.streamerName} -> ${this.outputFile}`);
+          this.onStatusChange('recording', {
+            roomId: this.roomId,
+            streamerName: this.streamerName,
+            outputFile: this.outputFile,
+            startTime: this.startTime,
+            hasAudio: this.hasAudio,
+            mode: this.recordMode
+          });
+        }
       }
     });
 
@@ -1064,20 +1075,16 @@ class Recorder {
 
       let stderr = '';
       let lastProgressEmit = 0;
-      let progressParseCount = 0;
+      let lastLoggedPercent = -1;
+      // 判断是否为 FFmpeg 高频进度统计行（frame=... fps=... time=... bitrate=... speed=...）
+      // 这类行每秒输出数十次，不写入日志（否则长时间合并会产生数百万行、上 GB 日志），只用于解析进度。
+      const isProgressStat = (s) => /frame=\s*\d+/.test(s) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(s) || /^(size|Lsize)=/.test(s);
+
       const parseProgress = (msg) => {
-        // 调试：记录 parseProgress 被调用的情况
-        if (msg.includes('time=')) {
-          logger.info(`[Recorder] parseProgress 被调用, msg 包含 time=, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
-        }
         // 解析 FFmpeg 进度输出
         if (totalDurationMs > 0 && phaseName) {
           const timeMatch = msg.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
           if (timeMatch) {
-            progressParseCount++;
-            if (progressParseCount <= 3) {
-              logger.info(`[Recorder] 进度解析成功: tag=${tag}, time=${timeMatch[0]}, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
-            }
             const hours = parseInt(timeMatch[1], 10);
             const minutes = parseInt(timeMatch[2], 10);
             const seconds = parseInt(timeMatch[3], 10);
@@ -1099,7 +1106,7 @@ class Recorder {
               currentFrame = Math.round(totalFrames * progress / 100);
             }
 
-            // 每 500ms 最多发送一次进度更新
+            // 每 500ms 最多发送一次进度更新（UI 刷新）
             const now = Date.now();
             if (now - lastProgressEmit > 500) {
               lastProgressEmit = now;
@@ -1114,7 +1121,11 @@ class Recorder {
                 currentFrame,
                 totalFrames
               };
-              logger.info(`[Recorder] 发送合并进度: ${phaseName} ${progress}% (帧: ${currentFrame}/${totalFrames})`);
+              // 日志仅在进度跨越整 10% 或到 100% 时记录一条，避免逐帧刷屏
+              if (progress === 100 || progress >= lastLoggedPercent + 10) {
+                lastLoggedPercent = Math.floor(progress / 10) * 10;
+                logger.info(`[Recorder] 合并进度: ${phaseName} ${progress}% (帧 ${currentFrame}/${totalFrames})`);
+              }
               this.onProgress(progressData);
 
               // 持久化进度到文件（每2秒保存一次，避免频繁IO）
@@ -1135,36 +1146,26 @@ class Recorder {
         }
       };
 
-      let stdoutCallCount = 0;
-      let stderrCallCount = 0;
-      
+      // FFmpeg 的进度/诊断全部走 stderr；stdout 一般无内容。
+      // 仅记录非进度统计的有意义输出（Input/Stream mapping/编码器信息/Error/Warning）。
       proc.stdout.on('data', (data) => {
-        stdoutCallCount++;
         const msg = data.toString().trim();
         if (msg) {
-          logger.info(`[${tag}] ${msg}`);
-          if (stdoutCallCount <= 3) {
-            logger.info(`[Recorder] stdout 第 ${stdoutCallCount} 次调用, msg 长度=${msg.length}, 包含 time=${msg.includes('time=')}`);
-          }
-          if (msg.includes('time=')) {
-            logger.info(`[Recorder] stdout 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
-          }
+          if (!isProgressStat(msg)) logger.info(`[${tag}] ${msg.slice(0, 1000)}`);
           parseProgress(msg);
         }
       });
 
       proc.stderr.on('data', (data) => {
-        stderrCallCount++;
         const msg = data.toString();
         stderr += msg;
-        const trimmed = msg.trim();
-        if (trimmed) {
-          logger.info(`[${tag}] ${trimmed}`);
-          if (stderrCallCount <= 3) {
-            logger.info(`[Recorder] stderr 第 ${stderrCallCount} 次调用, msg 长度=${trimmed.length}, 包含 time=${trimmed.includes('time=')}`);
-          }
-          if (trimmed.includes('time=')) {
-            logger.info(`[Recorder] stderr 包含 time=, 调用 parseProgress, totalDurationMs=${totalDurationMs}, phaseName=${phaseName}`);
+        // FFmpeg 进度常以 \r 刷新，按 \r 或 \n 拆分逐条处理
+        const parts = msg.split(/[\r\n]/);
+        for (const raw of parts) {
+          const trimmed = raw.trim();
+          if (!trimmed) continue;
+          if (!isProgressStat(trimmed)) {
+            logger.info(`[${tag}] ${trimmed.slice(0, 1000)}`);
           }
           parseProgress(trimmed);
         }
