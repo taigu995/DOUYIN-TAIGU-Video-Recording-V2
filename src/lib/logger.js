@@ -486,9 +486,9 @@ class Logger {
    * 解决旧版导出仅包含当天日志、无法获取历史日志的问题。
    * 优先从自动备份目录(autoBackupDir)读取历史，其次回退到 logDir 按日期文件。
    * @param {string} targetFile - 目标导出文件路径(单文件合并)
-   * @returns {string|null} 合并后文件路径；失败返回 null
+   * @returns {Promise<string|null>} 合并后文件路径；失败返回 null
    */
-  exportCombinedLogs(targetFile) {
+  async exportCombinedLogs(targetFile) {
     try {
       if (!this.autoBackupDir && !this.logDir) {
         this.error('Failed to export combined logs: no log dir configured');
@@ -524,30 +524,51 @@ class Logger {
         return null;
       }
 
-      // 逐个文件流式追加写入：不在内存拼接超大字符串
-      // （历史日志累积过多时 parts.join() 会触发 RangeError: Invalid string length）
-      fs.writeFileSync(targetFile, '', 'utf8'); // 先清空/创建
-      let totalBytes = 0;
-      const CHUNK = 4 * 1024 * 1024; // 4MB 读缓冲
-      const buf = Buffer.allocUnsafe(CHUNK);
+      // 流式逐行写入并过滤高频监控噪声，控制导出文件体积
+      // 历史日志 99% 是监控采样，合并导出曾达 1.6GB，无法用于排查。
+      // 过滤策略：纯心跳噪声直接丢弃；直播状态轮询按房间状态去重（仅在状态变化时保留），保留排查价值。
+      const readline = require('readline');
+      // 高频监控噪声（实测占日志约99%）：匹配后按"日期+去时间戳内容"去重，每天每种仅保留首条样本，
+      // 既大幅减小体积，又保留"当日监控确在运行/状态曾变化"的排查线索。
+      const NOISE_PATTERNS = [
+        /\[Monitor\] 检查直播状态/,   // 直播状态轮询（每30秒×房间）
+        /updateStatusBadges/,          // 角标刷新
+        /推送状态更新到 UI/,            // UI 状态推送
+        /notifyUpdate: 推送状态更新/,
+        /notifyUpdate: 推送 \d+ 个直播间/,
+      ];
+      const seenNoise = new Set();
+      const stripTs = (line) => line.replace(/^\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
+
+      const out = fs.createWriteStream(targetFile, { encoding: 'utf8' });
+      let keptLines = 0, filteredLines = 0;
+
       for (const s of sources) {
         if (!fs.existsSync(s.full)) continue;
-        const header = `\n========== 日志文件: ${s.name} ==========\n`;
-        fs.appendFileSync(targetFile, header, 'utf8');
-        // 分块读写，单个超大日志文件也不会撑爆内存
-        const fd = fs.openSync(s.full, 'r');
-        try {
-          let n;
-          while ((n = fs.readSync(fd, buf, 0, CHUNK, null)) > 0) {
-            fs.appendFileSync(targetFile, buf.subarray(0, n));
-            totalBytes += n;
+        if (!out.write(`\n========== 日志文件: ${s.name} ==========\n`)) {
+          await new Promise(r => out.once('drain', r));
+        }
+        const rl = readline.createInterface({
+          input: fs.createReadStream(s.full, { encoding: 'utf8' }),
+          crlfDelay: Infinity,
+        });
+        for await (const line of rl) {
+          // 高频噪声：按"日期+去时间戳内容"去重，每种仅保留首条样本
+          if (NOISE_PATTERNS.some(re => re.test(line))) {
+            const key = `${s.name}|${stripTs(line)}`;
+            if (seenNoise.has(key)) { filteredLines++; continue; }
+            seenNoise.add(key);
           }
-        } finally {
-          fs.closeSync(fd);
+          if (!out.write(line + '\n')) {
+            await new Promise(r => out.once('drain', r));
+          }
+          keptLines++;
         }
       }
+      await new Promise((resolve, reject) => { out.end(err => (err ? reject(err) : resolve())); });
 
-      this.info(`Exported combined logs to ${targetFile} (${sources.length} files, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
+      const totalBytes = fs.statSync(targetFile).size;
+      this.info(`Exported combined logs to ${targetFile} (${sources.length} files, kept ${keptLines} lines, filtered ${filteredLines} noise lines, ${(totalBytes / 1024 / 1024).toFixed(1)} MB)`);
       return targetFile;
     } catch (err) {
       this.error('Failed to export combined logs', err);

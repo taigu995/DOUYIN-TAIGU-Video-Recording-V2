@@ -322,13 +322,15 @@ function setupIPC() {
 
   ipcMain.handle('logout-account', async (event, accountId) => {
     try {
-      // 检查账号是否被某个直播间使用
+      // 自动解除占用该账号的直播间绑定。
+      // （原逻辑：被占用则直接拒绝移除，且渲染层吞掉 success:false 返回值，导致"无法移除"且原因不可见。
+      //   config.removeAccount 本就设计为移除时自动解绑直播间，此处对齐该行为，让移除能真正完成。）
       const streams = getStreams();
-      const usedBy = streams.find(s => s.accountId === accountId);
-      if (usedBy) {
-        return { success: false, error: `账号正在被直播间「${usedBy.customName || usedBy.roomId}」使用，请先取消分配` };
+      const usedByStreams = streams.filter(s => s.accountId === accountId);
+      for (const st of usedByStreams) {
+        configUpdateStream(st.roomId, { accountId: null });
       }
-      
+
       await accountManager.removeAccount(accountId);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('login-status-changed', {
@@ -337,7 +339,7 @@ function setupIPC() {
           accountId: null
         });
       }
-      return { success: true };
+      return { success: true, unboundCount: usedByStreams.length };
     } catch (error) {
       logger.error(`登出失败: ${error.message}`);
       return { success: false, error: error.message };
@@ -649,8 +651,8 @@ function setupIPC() {
     });
     if (result.canceled) return { success: false };
     
-    // 合并导出当天 + 历史备份日志（旧版仅导出当天，已修复）
-    const exportPath = logger.exportCombinedLogs(result.filePath);
+    // 合并导出当天 + 历史备份日志（旧版仅导出当天，已修复；自动过滤高频监控噪声以控制体积）
+    const exportPath = await logger.exportCombinedLogs(result.filePath);
     if (exportPath) {
       return { success: true, path: exportPath };
     }

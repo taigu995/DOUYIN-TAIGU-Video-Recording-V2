@@ -699,10 +699,16 @@ async function loadAccountList() {
 }
 
 window.handleRemoveAccount = async function (accountId) {
-  if (!await showConfirm('确定要移除该账号吗？移除后需要重新登录。')) return;
+  if (!await showConfirm('确定要移除该账号吗？移除后需要重新登录。若该账号已分配给直播间，将自动解除分配。')) return;
   try {
-    await window.electronAPI.removeAccount(accountId);
-    showToast('账号已移除', 'success');
+    const result = await window.electronAPI.removeAccount(accountId);
+    // 原逻辑未检查返回值，后端返回 success:false 时仍提示"已移除"，导致"无法移除"且原因不可见
+    if (result && result.success === false) {
+      showToast('移除失败: ' + (result.error || '未知错误'), 'error');
+      return;
+    }
+    const unbound = (result && result.unboundCount) || 0;
+    showToast(unbound > 0 ? `账号已移除，并解除 ${unbound} 个直播间的账号分配` : '账号已移除', 'success');
     await updateLoginStatus();
     loadAccountList();
   } catch (e) {
