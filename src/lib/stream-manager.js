@@ -530,9 +530,20 @@ class StreamManager {
     if (!config.autoRecord || streamState.info.autoRecord === false) {
       return;
     }
-    // 已有录制实例（正在录制或合并中）则不重复启动
+    // 已有录制实例（正在录制）则不重复启动；
+    // 若实例已不在录制（如下播停止后正在合并，主播又快速复播），
+    // 则将其摘离为后台合并并放行新录制，避免"合并期间复播漏录"。
     if (streamState.recorder) {
-      return;
+      if (!streamState.recorder.recording) {
+        logger.warn(`[Monitor] 检测到复播时旧录制仍在合并，转入后台合并并立即重录: ${info.streamerName}`);
+        if (streamState.mergingRecorder && streamState.mergingRecorder !== streamState.recorder) {
+          try { streamState.mergingRecorder.destroy(); } catch (e) { /* ignore */ }
+        }
+        streamState.mergingRecorder = streamState.recorder;
+        streamState.recorder = null;
+      } else {
+        return;
+      }
     }
     // 防止短时间内重复触发
     if (streamState._autoStartPending) {
@@ -578,6 +589,30 @@ class StreamManager {
         }
 
         const wasLive = streamState.isLive;
+
+        // 录制中检测到"下播"时需二次确认：API 抖动/主播断流重推间隙都可能瞬间返回 false，
+        // 一次误判就停录代价很大（停录+合并期间无法重录，造成长时间漏录）。
+        // 首次检测到 false 时保持原状态不变，15s 后复查；连续 2 次均为 false 才确认下播。
+        if (!isLive && wasLive && streamState.recorder && streamState.recorder.recording) {
+          streamState._offlineStreak = (streamState._offlineStreak || 0) + 1;
+          if (streamState._offlineStreak < 2) {
+            streamState.lastCheck = Date.now();
+            logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，录制中需确认)，15s后复查`);
+            setTimeout(() => {
+              // 复查条件：仍在录制且尚未确认下播
+              if (streamState.recorder && streamState.recorder.recording && streamState.isLive) {
+                this.checkLiveStatus(streamState).catch(err => {
+                  logger.warn(`[Monitor] 下播确认复查失败: ${err.message}`);
+                });
+              }
+            }, 15000);
+            this.notifyUpdate();
+            return;
+          }
+          logger.warn(`[Monitor] ${info.streamerName} 连续${streamState._offlineStreak}次检测下播，确认下播`);
+        }
+        streamState._offlineStreak = 0;
+
         streamState.isLive = isLive;
         streamState.lastCheck = Date.now();
         // 只有在没有录制时才更新状态，避免覆盖 'recording'/'merging' 状态
@@ -715,6 +750,27 @@ class StreamManager {
     }
 
     const wasLive = streamState.isLive;
+
+    // 录制中检测到"下播"需二次确认（页面误判/断流重推间隙防护），与 API 分支同策略
+    if (!isLive && wasLive && streamState.recorder && streamState.recorder.recording) {
+      streamState._offlineStreak = (streamState._offlineStreak || 0) + 1;
+      if (streamState._offlineStreak < 2) {
+        streamState.lastCheck = Date.now();
+        logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，页面检测/录制中需确认)，15s后复查`);
+        setTimeout(() => {
+          if (streamState.recorder && streamState.recorder.recording && streamState.isLive) {
+            this.checkLiveStatus(streamState).catch(err => {
+              logger.warn(`[Monitor] 下播确认复查失败: ${err.message}`);
+            });
+          }
+        }, 15000);
+        this.notifyUpdate();
+        return;
+      }
+      logger.warn(`[Monitor] ${info.streamerName} 连续${streamState._offlineStreak}次检测下播，确认下播(页面检测)`);
+    }
+    streamState._offlineStreak = 0;
+
     streamState.isLive = isLive;
     streamState.lastCheck = Date.now();
     // 只有在没有录制时才更新状态，避免覆盖 'recording'/'merging' 状态
@@ -953,16 +1009,19 @@ class StreamManager {
             this.checkLiveStatus(streamState).catch(err => {
               logger.warn(`[StreamManager] 流中断后重新检测失败: ${err.message}`);
             });
-            // 兜底：若上面检测与周期性检查并发被跳过（_checking 冲突），5s 后再试一次；
+            // 兜底复查：流中断多由网络波动/主播断流重推引起，中断瞬间的"下播"结果可信度低。
+            // 5s/20s/45s 多次复查，任一时刻发现复播即重启录制；
             // 即便都错过，周期性检测也会通过「直播在线但未录制」分支自动重录
-            setTimeout(() => {
-              if (!streamState.recorder && !streamState._checking &&
-                  getConfig().autoRecord && streamState.info.autoRecord !== false) {
-                this.checkLiveStatus(streamState).catch(err => {
-                  logger.warn(`[StreamManager] 流中断后兜底重检失败: ${err.message}`);
-                });
-              }
-            }, 5000);
+            for (const delayMs of [5000, 20000, 45000]) {
+              setTimeout(() => {
+                if (!streamState.recorder && !streamState._checking &&
+                    getConfig().autoRecord && streamState.info.autoRecord !== false) {
+                  this.checkLiveStatus(streamState).catch(err => {
+                    logger.warn(`[StreamManager] 流中断后兜底重检(${delayMs / 1000}s)失败: ${err.message}`);
+                  });
+                }
+              }, delayMs);
+            }
           }
         } else if (status === 'merging') {
           // 已摘离的后台合并实例不覆盖主状态（此时可能正在录制新会话）
