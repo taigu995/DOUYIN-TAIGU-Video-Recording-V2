@@ -239,7 +239,13 @@ const GIFT_BANNER_SCRIPT = `(() => {
       window.__giftHeartbeatTimer = setInterval(() => {
         try {
           const ct = findChatContainer();
-          if (!ct) { console.log('[GiftHeartbeat] 评论区容器未找到(可能未登录导致不渲染/选择器变化)'); return; }
+          if (!ct) {
+            // 区分页面状态：直播已结束（页面失效，主进程可据此自愈刷新）vs 未登录/选择器变化
+            let ended = false;
+            try { ended = /直播已结束/.test((document.body && document.body.innerText) || ''); } catch (e2) {}
+            console.log('[GiftHeartbeat] 评论区容器未找到' + (ended ? ' [直播已结束]' : ' [容器缺失]'));
+            return;
+          }
           // 统计容器内消息（兼容结构化礼物消息：用候选文本块而非仅叶子）
           const cands = [];
           const els = ct.querySelectorAll('*');
@@ -370,9 +376,19 @@ class CommentRenderer {
     logger.info('[CommentRenderer] 窗口音频已静音');
 
     // 透传离屏页面 console 日志，便于诊断评论区/礼物检测是否正常工作
+    // 同时统计"评论区容器未找到"的连续心跳，持续缺失(约60s)时自动刷新页面自愈
     this.captureWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
       try {
         const msg = String(message || '').slice(0, 500);
+        if (msg.includes('[GiftHeartbeat]')) {
+          if (msg.includes('容器未找到')) {
+            this._noContainerStreak = (this._noContainerStreak || 0) + 1;
+            this._maybeReloadDeadPage(msg.includes('[直播已结束]'));
+          } else if (msg.includes('评论区消息=')) {
+            // 容器正常，页面健康
+            this._noContainerStreak = 0;
+          }
+        }
         if (
           msg.includes('[GiftBanner]') ||
           msg.includes('[CommentProbe]') ||
@@ -588,6 +604,78 @@ class CommentRenderer {
 
     // 注入礼物横幅常驻脚本：评论区顶部显示"谁送了礼物+图标"提示条
     await this.injectGiftBanner();
+  }
+
+  /**
+   * 评论区容器持续缺失时判断是否触发自愈刷新
+   * - 容器连续 12 次心跳(约60s)未找到 → 认为页面失效（典型场景：页面卡在"直播已结束"，主播实际在播）
+   * - 限频：两次刷新间隔 >= 90s；单场录制最多刷新 10 次；仅在捕获中执行
+   */
+  _maybeReloadDeadPage(pageShowsEnded) {
+    try {
+      if (!this.capturing) return;
+      if (this._reloading) return;
+      if ((this._noContainerStreak || 0) < 12) return;
+      const now = Date.now();
+      if (this._lastReloadAt && now - this._lastReloadAt < 90000) return;
+      if ((this._reloadCount || 0) >= 10) return;
+      logger.warn(`[CommentRenderer] 评论区容器持续缺失约60s${pageShowsEnded ? '（页面显示直播已结束）' : ''}，触发页面刷新自愈`);
+      this._reloadPageForRecovery().catch((e) => {
+        logger.warn('[CommentRenderer] 页面自愈刷新异常:', e && e.message);
+      });
+    } catch (e) {}
+  }
+
+  /**
+   * 刷新评论页面并恢复捕获状态：
+   * reload → 等待加载完成 → 等待动态渲染 → 重注入礼物横幅/心跳脚本 → 重新 DOM 探测评论区并更新裁剪区域
+   */
+  async _reloadPageForRecovery() {
+    if (this._reloading) return;
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+    this._reloading = true;
+    this._noContainerStreak = 0;
+    this._lastReloadAt = Date.now();
+    this._reloadCount = (this._reloadCount || 0) + 1;
+    const wc = this.captureWindow.webContents;
+    try {
+      logger.warn(`[CommentRenderer] 刷新评论页面（第${this._reloadCount}次）以恢复评论区渲染`);
+      wc.reload();
+      // 等待本次加载完成（带超时，防止导航挂起）
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 20000);
+        wc.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
+      });
+      // 等待动态内容渲染（评论区为异步渲染）
+      await new Promise((r) => setTimeout(r, 8000));
+      if (!this.capturing || this.captureWindow.isDestroyed()) return;
+
+      // 刷新后页面脚本丢失，重新注入礼物横幅/心跳检测
+      await this.injectGiftBanner();
+
+      // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
+      const detectedRect = await this._detectCommentAreaFromDOM();
+      if (detectedRect && detectedRect.width > 80 && detectedRect.height > 100) {
+        let pageH = this._commentRect ? this._commentRect.height : 1040;
+        try {
+          const img = await wc.capturePage();
+          pageH = img.getSize().height || pageH;
+        } catch (e) {}
+        this._commentRect = {
+          x: detectedRect.x,
+          y: 0,
+          width: detectedRect.width,
+          height: pageH
+        };
+        logger.info(`[CommentRenderer] 刷新后重新探测评论区: x=${this._commentRect.x}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
+      } else {
+        logger.warn('[CommentRenderer] 刷新后评论区探测仍失败，保持原裁剪区域，等待下一轮心跳判定');
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] 页面自愈刷新失败:', e && e.message);
+    } finally {
+      this._reloading = false;
+    }
   }
 
   /**
@@ -947,6 +1035,12 @@ class CommentRenderer {
     this._giftActive = false;
     this._giftActiveUntil = 0;
     this._timestamps = [];
+
+    // 页面自愈状态（容器缺失自愈刷新）：每个录制会话重置
+    this._noContainerStreak = 0;
+    this._reloadCount = 0;
+    this._lastReloadAt = 0;
+    this._reloading = false;
 
     logger.info(`[CommentRenderer] 开始捕获评论区帧, 固定FPS: ${this.targetFps}（全程固定，不因礼物提帧）, 输出目录: ${this.outputDir}`);
     logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
