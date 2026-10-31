@@ -548,6 +548,17 @@ class Recorder {
       // 网络超时设置（10秒，直播流无数据则报错退出并触发断流处理）
       '-rw_timeout', '10000000',
       '-timeout', '10000000',
+      // HTTP/FLV 断流自动重连：抖音 CDN 会周期性回收长连接（FLV EOF 后进程 code:0 退出），
+      // 开启后 EOF/网络错误由 FFmpeg 内部透明重连（退避上限5s），录制连续不中断，
+      // 避免"整会话销毁重建"造成的碎片文件与重录间隙漏录。
+      // 注：HTTP 4xx/5xx（如流地址签名过期）默认不触发重连，会报错退出，
+      //     此时走上层 stream-interrupted 全量重录（重新取流地址），两层机制互补。
+      '-reconnect', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_at_eof', '1',
+      '-reconnect_on_network_error', '1',
+      '-reconnect_delay_max', '5',
+      '-multiple_requests', '1',
       // 输入: 直播流
       '-i', this._streamUrl,
       // 输出: stream copy（不重新编码）
