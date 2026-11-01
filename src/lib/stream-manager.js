@@ -530,6 +530,19 @@ class StreamManager {
     if (!config.autoRecord || streamState.info.autoRecord === false) {
       return;
     }
+    // 启动失败熔断：连续"启动即失败"（FFmpeg 秒退无输出）后暂停自动重录一段时间，
+    // 避免无限循环创建空录制文件夹；熔断期结束后自动恢复尝试
+    if (streamState._startRetryBlockedUntil) {
+      if (Date.now() < streamState._startRetryBlockedUntil) {
+        return;
+      }
+      streamState._startRetryBlockedUntil = null;
+      streamState._startFailStreak = 0;
+      if (streamState.info.lastError === '录制连续启动失败，已暂停自动重试5分钟') {
+        delete streamState.info.lastError;
+      }
+      logger.info(`[Monitor] ${info.streamerName} 启动失败熔断期结束，恢复自动录制尝试`);
+    }
     // 已有录制实例（正在录制）则不重复启动；
     // 若实例已不在录制（如下播停止后正在合并，主播又快速复播），
     // 则将其摘离为后台合并并放行新录制，避免"合并期间复播漏录"。
@@ -992,11 +1005,30 @@ class StreamManager {
         } else if (status === 'recording') {
           streamState.status = 'recording';
           streamState.currentRecordingStart = Date.now();
+          // 录制真正开始（FFmpeg 已输出第一帧）：清零启动失败熔断计数
+          streamState._startFailStreak = 0;
+          streamState._startRetryBlockedUntil = null;
           logger.info(`[StreamManager] 录制状态变更 -> recording: ${streamState.info.streamerName} (模式: ${data.mode || 'stream+comment'})`);
         } else if (status === 'stream-interrupted') {
           // 直播流中断（网络波动等）：旧录制实例转入后台合并，立即检测并重启新录制，
           // 不再等待合并完成（合并可能耗时数分钟，期间直播间仍在直播会造成漏录）
           logger.warn(`[StreamManager] 直播流中断，旧录制转入后台合并，立即检测重启录制: ${streamState.info.streamerName}`);
+          // 启动即失败熔断：FFmpeg 进程启动后极短时间(<10s)内未输出第一帧就退出
+          // （如参数不兼容/流地址失效导致秒退），连续多次则暂停自动重录，避免无限创建空会话文件夹
+          const aliveMs = data && typeof data.aliveMs === 'number' ? data.aliveMs : null;
+          const hadFirstFrame = !!(data && data.hadFirstFrame);
+          if (aliveMs !== null && aliveMs < 10000 && !hadFirstFrame) {
+            streamState._startFailStreak = (streamState._startFailStreak || 0) + 1;
+            if (streamState._startFailStreak >= 3 && !streamState._startRetryBlockedUntil) {
+              streamState._startRetryBlockedUntil = Date.now() + 5 * 60 * 1000;
+              streamState.info.lastError = '录制连续启动失败，已暂停自动重试5分钟';
+              logger.error(`[Monitor] ${streamState.info.streamerName} 连续${streamState._startFailStreak}次启动即失败（FFmpeg秒退且无输出帧），暂停自动重录5分钟`);
+            } else {
+              logger.warn(`[Monitor] ${streamState.info.streamerName} 启动即失败（存活${Math.round(aliveMs / 1000)}s、无第一帧），第${streamState._startFailStreak}次`);
+            }
+          } else {
+            streamState._startFailStreak = 0;
+          }
           if (streamState.recorder === recorder) {
             streamState.mergingRecorder = recorder;
             streamState.recorder = null;

@@ -556,7 +556,8 @@ class Recorder {
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_at_eof', '1',
-      '-reconnect_on_network_error', '1',
+      // 注意：不使用 -reconnect_on_network_error（FFmpeg 4.2+/2019-04 才加入），
+      // @ffmpeg-installer 打包的 N-92722 (2019初) 无法识别会直接退出(code 1)。
       '-reconnect_delay_max', '5',
       '-multiple_requests', '1',
       // 输入: 直播流
@@ -577,6 +578,8 @@ class Recorder {
     this.ffmpegProcess = spawn(resolvedPath, args, {
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    // FFmpeg 进程启动时间（用于判定"启动即失败"，如参数不兼容/地址失效导致秒退）
+    this._launchTime = Date.now();
 
     // 判断是否为 FFmpeg 高频进度统计行（录制 stream copy 时数小时持续刷屏）
     const isStreamProgressStat = (s) => /frame=\s*\d+/.test(s) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(s) || /^(size|Lsize)=/.test(s);
@@ -693,7 +696,10 @@ class Recorder {
       this.onStatusChange('stream-interrupted', {
         roomId: this.roomId,
         streamerName: this.streamerName,
-        outputFile: this.outputFile
+        outputFile: this.outputFile,
+        // 启动失败熔断判定数据：FFmpeg 进程存活时长 + 是否输出过第一帧
+        aliveMs: this._launchTime ? Date.now() - this._launchTime : null,
+        hadFirstFrame: !!this._firstFrameReceived
       });
     }
 
