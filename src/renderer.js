@@ -45,6 +45,7 @@ const elements = {
   btnOpenLogFile: document.getElementById('btn-open-log-file'),
   btnExportLogs: document.getElementById('btn-export-logs'),
   btnClearLogs: document.getElementById('btn-clear-logs'),
+  btnClearHistoryLogs: document.getElementById('btn-clear-history-logs'),
   logSizeInfo: document.getElementById('log-size-info'),
   inputStreamerName: document.getElementById('input-streamer-name')
 };
@@ -329,6 +330,7 @@ function bindEvents() {
   if (elements.btnOpenLogFile) elements.btnOpenLogFile.addEventListener('click', openLogFolder);
   if (elements.btnExportLogs) elements.btnExportLogs.addEventListener('click', exportLogs);
   if (elements.btnClearLogs) elements.btnClearLogs.addEventListener('click', clearLogs);
+  if (elements.btnClearHistoryLogs) elements.btnClearHistoryLogs.addEventListener('click', clearHistoryLogs);
 
   // 功能介绍按钮
   const btnAbout = document.getElementById('btn-about');
@@ -701,6 +703,26 @@ async function clearLogs() {
     }
   } catch (err) {
     showToast('清空出错: ' + err.message, 'error');
+  }
+}
+
+async function clearHistoryLogs() {
+  if (!isElectron) return;
+  if (!await showConfirm('确定要清理历史日志吗？\n将删除今天之前的所有日志文件（含"文档\\抖音直播录制工具V2\\logs"备份目录），保留今天的日志。')) return;
+  try {
+    const result = await window.electronAPI.clearHistoryLogs();
+    if (result.success) {
+      if (result.deletedCount > 0) {
+        showToast(`已清理 ${result.deletedCount} 个历史日志，释放 ${result.freedText}`, 'success');
+      } else {
+        showToast('没有需要清理的历史日志', 'info');
+      }
+      await loadLogs();
+    } else {
+      showToast('清理失败: ' + (result.error || '未知错误'), 'error');
+    }
+  } catch (err) {
+    showToast('清理出错: ' + err.message, 'error');
   }
 }
 

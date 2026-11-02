@@ -684,6 +684,18 @@ function setupIPC() {
     return { success: true };
   });
 
+  // 清理历史日志（保留今天，删除主日志目录与自动备份目录中的历史文件）
+  ipcMain.handle('clear-history-logs', () => {
+    try {
+      const result = logger.cleanupHistoryLogs(0);
+      logger.info(`手动清理历史日志: 删除 ${result.deletedCount} 个文件，释放 ${result.freedText}`);
+      return { success: true, ...result };
+    } catch (err) {
+      logger.error('清理历史日志失败', err);
+      return { success: false, error: err.message };
+    }
+  });
+
   // ========== 手动合并工具 ==========
   const ManualMerger = require('./src/lib/manual-merger');
   const manualMerger = new ManualMerger();

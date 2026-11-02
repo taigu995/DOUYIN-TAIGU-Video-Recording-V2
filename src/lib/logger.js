@@ -103,9 +103,74 @@ class Logger {
       this.write('INFO', `OS: ${process.platform} ${process.arch}`);
       this.write('INFO', `Log directory: ${this.logDir}`);
       this.write('INFO', `Auto backup directory: ${this.autoBackupDir}`);
+
+      // 启动时自动清理 7 天前的历史日志（静默执行，防止历史日志无限堆积占满磁盘）
+      try {
+        const autoClean = this.cleanupHistoryLogs(7);
+        if (autoClean.deletedCount > 0) {
+          this.write('INFO', `自动清理 ${autoClean.deletedCount} 个过期日志文件，释放 ${autoClean.freedText}`);
+        }
+      } catch (e) {
+        console.error('Auto cleanup old logs failed:', e);
+      }
     } catch (err) {
       console.error('Failed to initialize logger:', err);
     }
+  }
+
+  /**
+   * 清理历史日志文件（主日志目录 + 自动备份目录）
+   * @param {number} keepDays 保留最近天数：0=只保留今天；7=保留最近7天
+   * @returns {{deletedCount:number, freedBytes:number, freedText:string}}
+   */
+  cleanupHistoryLogs(keepDays = 0) {
+    const result = { deletedCount: 0, freedBytes: 0, freedText: '0 B' };
+    try {
+      // 计算截止日期（早于该日期的文件将被删除），格式 YYYY-MM-DD 可直接字符串比较
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - Math.max(0, keepDays));
+      cutoff.setHours(0, 0, 0, 0);
+      const cutoffStr = this._getDateStr(cutoff);
+
+      const dirs = [this.logDir, this.autoBackupDir].filter(Boolean);
+      for (const dir of dirs) {
+        if (!fs.existsSync(dir)) continue;
+        const files = fs.readdirSync(dir);
+        for (const f of files) {
+          // 匹配 app-YYYY-MM-DD.log / app-YYYY-MM-DD-时间戳.log / crash-时间戳.log
+          const dateMatch = f.match(/^app-(\d{4}-\d{2}-\d{2})/);
+          const isCrash = f.startsWith('crash-') && f.endsWith('.log');
+          if (!dateMatch && !isCrash) continue;
+          const fullPath = path.join(dir, f);
+          try {
+            const stat = fs.statSync(fullPath);
+            if (isCrash) {
+              // crash 日志无日期前缀，按修改时间判断是否在保留期内
+              if (stat.mtimeMs >= cutoff.getTime()) continue;
+            } else {
+              // 在保留期内的跳过；今天的运行日志（正在写入）必定在保留期内
+              if (dateMatch[1] >= cutoffStr) continue;
+            }
+            fs.unlinkSync(fullPath);
+            result.deletedCount++;
+            result.freedBytes += stat.size;
+          } catch (e) {
+            // 单个文件删除失败不阻塞整体清理
+          }
+        }
+      }
+      result.freedText = this._formatBytes(result.freedBytes);
+    } catch (err) {
+      this.error('清理历史日志失败', err);
+    }
+    return result;
+  }
+
+  _formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
   }
 
   /**

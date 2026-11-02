@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportLogs: (startDate, endDate) => ipcRenderer.invoke('export-logs', startDate, endDate),
   exportAllLogs: () => ipcRenderer.invoke('export-all-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
+  clearHistoryLogs: () => ipcRenderer.invoke('clear-history-logs'),
 
   // ========== 事件监听 ==========
   onStreamsUpdated: (callback) => {
