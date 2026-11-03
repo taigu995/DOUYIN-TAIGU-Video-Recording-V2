@@ -881,7 +881,12 @@ function updateStatusBadges(statusList) {
         st.includes('merg') || st.includes('合并'));
     }).length;
 
-    logger.info(`[角标] updateStatusBadges: 房间数=${list.length}, 录制/合并中=${active}, platform=${process.platform}`);
+    // 角标日志仅在录制/合并中数量变化时记录（该函数随 UI 推送每 500ms 调用一次，原日志严重刷屏）
+    const badgeChanged = active !== updateStatusBadges._lastActiveCount;
+    updateStatusBadges._lastActiveCount = active;
+    if (badgeChanged) {
+      logger.info(`[角标] updateStatusBadges: 房间数=${list.length}, 录制/合并中=${active}, platform=${process.platform}`);
+    }
 
     // 1) 任务栏角标（仅当窗口在任务栏有按钮时可见）
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -894,7 +899,9 @@ function updateStatusBadges(statusList) {
           // 明确缩放到 32x32，保证 Windows overlay 正确渲染
           img = img.resize({ width: 32, height: 32, quality: 'best' });
           mainWindow.setOverlayIcon(img, `正在录制/合并 ${active} 个直播间`);
-          logger.info(`[角标] 已设置任务栏 overlay 角标 count=${active}, size=${JSON.stringify(img.getSize())}`);
+          if (badgeChanged) {
+            logger.info(`[角标] 已设置任务栏 overlay 角标 count=${active}, size=${JSON.stringify(img.getSize())}`);
+          }
         }
       } else {
         mainWindow.setOverlayIcon(null, '');
@@ -942,7 +949,9 @@ function updateStatusBadges(statusList) {
           if (!img.isEmpty()) tray.setImage(img.resize({ width: 16, height: 16, quality: 'best' }));
         }
         tray.setToolTip(`抖音直播录制工具V2 - 正在录制/合并 ${active} 个直播间`);
-        logger.info(`[角标] 已设置托盘角标 count=${active}`);
+        if (badgeChanged) {
+          logger.info(`[角标] 已设置托盘角标 count=${active}`);
+        }
       } else {
         if (defaultTrayIcon) tray.setImage(defaultTrayIcon);
         tray.setToolTip('抖音直播录制工具V2');
@@ -993,7 +1002,7 @@ app.whenReady().then(async () => {
   streamManager = new StreamManager(getAll(), accountManager, (statusList) => {
     // 状态变化时推送最新列表到前端
     if (mainWindow && !mainWindow.isDestroyed()) {
-      logger.debug(`[Main] 推送状态更新到 UI: ${statusList.length} 个直播间`);
+      // 该推送每 500ms 触发一次，DEBUG 日志会严重刷屏，不再记录（logger 层亦有重复抑制兜底）
       mainWindow.webContents.send('streams-update', statusList);
       // 同步更新任务栏角标与托盘图标（最小化/托盘下可见）
       updateStatusBadges(statusList);

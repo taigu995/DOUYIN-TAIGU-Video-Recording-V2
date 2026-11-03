@@ -54,7 +54,7 @@ class StreamManager {
   notifyUpdate() {
     if (this.onUpdate) {
       const status = this.getAllStatus();
-      logger.debug(`[StreamManager] notifyUpdate: 推送 ${status.length} 个直播间状态到 UI`);
+      // 该推送每 500ms 触发一次，DEBUG 日志会严重刷屏，不再记录（logger 层亦有重复抑制兜底）
       this.onUpdate(status);
     } else {
       logger.warn(`[StreamManager] notifyUpdate: onUpdate 回调未设置`);
@@ -1151,8 +1151,14 @@ class StreamManager {
         this.notifyUpdate();
       },
       onProgress: (progressData) => {
-        // 将进度信息存储到 streamState 中，供 UI 读取
-        logger.info(`[StreamManager] 收到合并进度: ${progressData.phaseName} ${progressData.progress}%`);
+        // 将进度信息存储到 streamState 中，供 UI 读取（推送每 500ms 一次，日志按阶段每 10% 节流一条）
+        const phaseKey = `${progressData.phaseName || ''}`;
+        const pct = Math.floor((progressData.progress || 0) / 10) * 10;
+        if (streamState._lastLoggedMergePhase !== phaseKey || streamState._lastLoggedMergePct !== pct) {
+          logger.info(`[StreamManager] 收到合并进度: ${phaseKey} ${progressData.progress}%`);
+          streamState._lastLoggedMergePhase = phaseKey;
+          streamState._lastLoggedMergePct = pct;
+        }
         streamState.mergeProgress = progressData;
         this.notifyUpdate();
       }

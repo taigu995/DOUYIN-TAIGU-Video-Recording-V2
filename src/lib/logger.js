@@ -357,7 +357,32 @@ class Logger {
       if (!this._initialized) {
         this._ensureInitialized();
       }
-      
+
+      // 高频重复消息抑制（DEBUG/INFO）：完全相同的消息在 5 秒窗口内重复出现时只写第一条，
+      // 窗口后消息再次出现时补一条汇总。防止 UI 推送/心跳类日志撑爆文件（曾致单天日志 300MB+）。
+      // WARN/ERROR/FATAL 不抑制，保证问题可追溯。
+      if (level === 'DEBUG' || level === 'INFO') {
+        const key = String(message);
+        const now = Date.now();
+        const sup = this._suppressMap || (this._suppressMap = new Map());
+        const entry = sup.get(key);
+        if (entry && now - entry.lastLogAt < 5000) {
+          entry.count++;
+          return; // 窗口内重复，抑制
+        }
+        if (entry && entry.count > 0) {
+          // 窗口已过且期间有抑制记录，先补一条汇总
+          const summary = this.formatMessage('INFO', `[日志抑制] 上条消息在窗口期内重复 ${entry.count} 次`);
+          this.logBuffer.push(summary);
+        }
+        sup.set(key, { lastLogAt: now, count: 0 });
+        // 防止消息种类过多导致 map 无限增长
+        if (sup.size > 500) {
+          const oldestKey = sup.keys().next().value;
+          sup.delete(oldestKey);
+        }
+      }
+
       const formatted = this.formatMessage(level, message, meta);
       this.logBuffer.push(formatted);
       

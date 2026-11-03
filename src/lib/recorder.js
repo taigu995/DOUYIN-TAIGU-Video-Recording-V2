@@ -580,6 +580,25 @@ class Recorder {
     });
     // FFmpeg 进程启动时间（用于判定"启动即失败"，如参数不兼容/地址失效导致秒退）
     this._launchTime = Date.now();
+    // 最近一次有输出进展的时间（进度行），用于停滞看门狗
+    this._lastProgressAt = Date.now();
+    this._stallRestarting = false;
+
+    // 停滞看门狗：进程活着但长时间无任何输出进展（如流停滞/重连后假死），
+    // 强制杀掉进程，走 close -> stream-interrupted 重录路径，避免"源视频只录了一半但状态显示录制中"
+    this._stallWatchdog = setInterval(() => {
+      try {
+        if (!this.recording || !this.ffmpegProcess || this._stallRestarting) return;
+        // 第一帧前用启动时间做宽限，第一帧后用最近进度时间
+        const base = this._firstFrameReceived ? this._lastProgressAt : this._launchTime;
+        const silentMs = Date.now() - (base || 0);
+        if (silentMs > 60000) {
+          this._stallRestarting = true;
+          logger.warn(`[Recorder] 录制进程 ${Math.round(silentMs / 1000)}s 无任何输出进展（进程假死/流停滞），强制重启: ${this.streamerName}`);
+          try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
+        }
+      } catch (e) { /* 看门狗自身异常不影响录制 */ }
+    }, 10000);
 
     // 判断是否为 FFmpeg 高频进度统计行（录制 stream copy 时数小时持续刷屏）
     const isStreamProgressStat = (s) => /frame=\s*\d+/.test(s) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(s) || /^(size|Lsize)=/.test(s);
@@ -598,6 +617,11 @@ class Recorder {
         if (!msg) continue;
         if (!isStreamProgressStat(msg)) {
           logger.info(`[FFmpeg-Stream] ${msg.slice(0, 1000)}`);
+        }
+
+        // 有输出进展（进度行），刷新看门狗计时
+        if (/frame=\s*\d+/.test(msg) || /(^|\s)time=\d{2}:\d{2}:\d{2}/.test(msg)) {
+          this._lastProgressAt = Date.now();
         }
 
         // 检测第一帧输出，此时才真正开始录制和计时
@@ -620,6 +644,7 @@ class Recorder {
     this.ffmpegProcess.on('close', (code) => {
       logger.info(`[FFmpeg-Stream] 进程退出, code: ${code}`);
       this.ffmpegProcess = null;
+      if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
 
       // 如果仍在录制中，流中断意味着录制结束
       if (this.recording) {
@@ -647,6 +672,7 @@ class Recorder {
     if (!this.recording) return;
 
     this.recording = false;
+    if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
     // 主动停止（用户手动停止/检测到下播），走完整合并流程后再通知上层
     if (!this._stopReason) this._stopReason = 'manual';
     logger.info(`[Recorder] 停止录制: ${this.streamerName}`);
@@ -1941,12 +1967,9 @@ class Recorder {
    * 销毁录制器
    */
   async destroy() {
-    if (this.recording) {
-      this.recording = false;
-      await this._cleanup();
-    } else {
-      await this._cleanup();
-    }
+    this.recording = false;
+    if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
+    await this._cleanup();
   }
 
   /**
