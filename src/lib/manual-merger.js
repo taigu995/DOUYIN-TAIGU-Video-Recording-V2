@@ -389,7 +389,8 @@ class ManualMerger {
 
       proc.stderr.on('data', (data) => {
         const msg = data.toString();
-        stderr += msg;
+        // 仅保留尾部片段用于错误诊断，避免长时间合并时字符串无限增长
+        stderr = (stderr + msg).slice(-8000);
         const parts = msg.split(/[\r\n]/);
         for (const raw of parts) {
           const trimmed = raw.trim();

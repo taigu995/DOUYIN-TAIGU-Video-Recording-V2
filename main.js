@@ -76,6 +76,7 @@ app.on('will-quit', () => {
 let mainWindow = null;
 let tray = null;
 let streamManager = null;
+let globalManualMerger = null; // 手动合并实例（退出时取消，避免孤儿 FFmpeg）
 let defaultTrayIcon = null; // 托盘原始图标（空闲置时还原）
 let trayBadgeTestActive = false; // 托盘菜单"测试角标"状态
 // accountManager 已通过 require 导入
@@ -699,6 +700,7 @@ function setupIPC() {
   // ========== 手动合并工具 ==========
   const ManualMerger = require('./src/lib/manual-merger');
   const manualMerger = new ManualMerger();
+  globalManualMerger = manualMerger;
 
   // 选择视频文件
   ipcMain.handle('manual-merge-select-video', async () => {
@@ -1058,6 +1060,10 @@ app.on('before-quit', () => {
   if (tray) {
     tray.destroy();
     tray = null;
+  }
+  // 取消手动合并任务，避免退出后孤儿 FFmpeg 进程残留
+  if (globalManualMerger) {
+    try { globalManualMerger.cancel(); } catch (e) { /* ignore */ }
   }
   if (streamManager) {
     streamManager.destroyAll();

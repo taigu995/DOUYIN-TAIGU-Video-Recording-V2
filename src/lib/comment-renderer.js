@@ -650,7 +650,10 @@ class CommentRenderer {
       await new Promise((r) => setTimeout(r, 8000));
       if (!this.capturing || this.captureWindow.isDestroyed()) return;
 
-      // 刷新后页面脚本丢失，重新注入礼物横幅/心跳检测
+      // 刷新后页面脚本与样式全部丢失，需恢复与 init 一致的状态：
+      // 1) 重新注入评论区隐藏 CSS（否则视频播放器/导航重新渲染，布局漂移且浪费资源）
+      await this._injectCommentOnlyCSS();
+      // 2) 重新注入礼物横幅/心跳检测
       await this.injectGiftBanner();
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）

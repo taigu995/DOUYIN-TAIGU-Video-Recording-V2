@@ -526,6 +526,8 @@ class StreamManager {
    */
   _autoStartRecording(streamState, reason) {
     const { info } = streamState;
+    // 房间已被移除（异步检测回调迟到），不再自动开录
+    if (this.streams.get(info.roomId) !== streamState) return;
     const config = getConfig();
     if (!config.autoRecord || streamState.info.autoRecord === false) {
       return;
@@ -578,6 +580,8 @@ class StreamManager {
    * 检查直播状态（优先使用API，失败时回退到页面方式）
    */
   async checkLiveStatus(streamState) {
+    // 房间已被移除（异步回调迟到），不再继续检测
+    if (this.streams.get(streamState.info.roomId) !== streamState) return;
     // 防止并发检查
     if (streamState._checking) {
       return;
@@ -637,7 +641,10 @@ class StreamManager {
         if (isLive && !wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 开播了!`);
           streamState.status = 'live';
-          this._autoStartRecording(streamState, '检测到开播');
+          // 房间可能已在异步检测期间被用户移除
+          if (this.streams.get(info.roomId) === streamState) {
+            this._autoStartRecording(streamState, '检测到开播');
+          }
         } else if (!isLive && wasLive) {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
           streamState.status = 'offline';
@@ -1314,6 +1321,12 @@ class StreamManager {
     if (streamState.recorder) {
       await streamState.recorder.stopRecording();
       streamState.recorder.destroy();
+    }
+
+    // 销毁后台合并中的旧录制实例（否则合并 FFmpeg 成为孤儿进程，且会继续写已删房间的目录）
+    if (streamState.mergingRecorder) {
+      try { await streamState.mergingRecorder.destroy(); } catch (e) { /* ignore */ }
+      streamState.mergingRecorder = null;
     }
 
     // 停止监控

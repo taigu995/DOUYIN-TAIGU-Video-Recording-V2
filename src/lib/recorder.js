@@ -847,16 +847,20 @@ class Recorder {
         outputFile
       ];
       const proc = spawn(resolvedPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      this._mergeProcesses = this._mergeProcesses || new Set();
+      this._mergeProcesses.add(proc);
+      const unregisterProc = () => { try { this._mergeProcesses.delete(proc); } catch (e) {} };
       let stderr = '';
-      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.stderr.on('data', (d) => { stderr = (stderr + d.toString()).slice(-4000); });
       proc.on('close', (code) => {
+        unregisterProc();
         if (code === 0 && fs.existsSync(outputFile)) {
           resolve();
         } else {
           reject(new Error(`标准化失败 (code ${code}): ${stderr.slice(-300)}`));
         }
       });
-      proc.on('error', (err) => reject(err));
+      proc.on('error', (err) => { unregisterProc(); reject(err); });
     });
   }
 
@@ -1138,6 +1142,10 @@ class Recorder {
       logger.info(`[${tag}] 启动: ${ffmpegPath} ${args.slice(0, 6).join(' ')}...`);
 
       const proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      // 注册合并进程，确保 destroy/应用退出时能统一终止，避免孤儿 FFmpeg 残留
+      this._mergeProcesses = this._mergeProcesses || new Set();
+      this._mergeProcesses.add(proc);
+      const unregisterProc = () => { try { this._mergeProcesses.delete(proc); } catch (e) {} };
 
       let stderr = '';
       let lastProgressEmit = 0;
@@ -1224,7 +1232,8 @@ class Recorder {
 
       proc.stderr.on('data', (data) => {
         const msg = data.toString();
-        stderr += msg;
+        // 仅保留尾部片段用于错误诊断，避免长时间合并时字符串无限增长占用内存
+        stderr = (stderr + msg).slice(-8000);
         // FFmpeg 进度常以 \r 刷新，按 \r 或 \n 拆分逐条处理
         const parts = msg.split(/[\r\n]/);
         for (const raw of parts) {
@@ -1238,6 +1247,8 @@ class Recorder {
       });
 
       proc.on('close', (code) => {
+        clearTimeout(timeoutTimer);
+        unregisterProc();
         if (code === 0) {
           logger.info(`[${tag}] 完成`);
           resolve();
@@ -1248,6 +1259,8 @@ class Recorder {
       });
 
       proc.on('error', (err) => {
+        clearTimeout(timeoutTimer);
+        unregisterProc();
         logger.error(`[${tag}] 进程错误:`, err);
         reject(err);
       });
@@ -1260,10 +1273,11 @@ class Recorder {
       const timeoutMinutes = Math.round(effectiveTimeout / 60000);
       logger.info(`[${tag}] 超时保护: ${timeoutMinutes} 分钟`);
 
-      setTimeout(() => {
+      const timeoutTimer = setTimeout(() => {
         if (proc.exitCode === null) {
           logger.warn(`[${tag}] 超时(${timeoutMinutes}分钟)，强制终止`);
           try { proc.kill('SIGKILL'); } catch (e) { /* ignore */ }
+          unregisterProc();
           reject(new Error(`${tag} 超时`));
         }
       }, effectiveTimeout);
@@ -1947,6 +1961,22 @@ class Recorder {
         }
       } catch (e) { /* ignore */ }
       this.ffmpegProcess = null;
+    }
+
+    // 终止仍在运行的合并/标准化 FFmpeg 进程（后台合并中退出或销毁时，避免孤儿进程）
+    if (this._mergeProcesses && this._mergeProcesses.size > 0) {
+      for (const proc of this._mergeProcesses) {
+        try {
+          if (proc && proc.exitCode === null) {
+            if (process.platform === 'win32') {
+              execSync(`taskkill /pid ${proc.pid} /f /t 2>nul`, { stdio: 'ignore' });
+            } else {
+              proc.kill('SIGKILL');
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }
+      this._mergeProcesses.clear();
     }
 
     // 销毁评论区渲染器
