@@ -632,14 +632,26 @@ class Logger {
       // 历史日志 99% 是监控采样，合并导出曾达 1.6GB，无法用于排查。
       // 过滤策略：纯心跳噪声直接丢弃；直播状态轮询按房间状态去重（仅在状态变化时保留），保留排查价值。
       const readline = require('readline');
-      // 高频监控噪声（实测占日志约99%）：匹配后按"日期+去时间戳内容"去重，每天每种仅保留首条样本，
-      // 既大幅减小体积，又保留"当日监控确在运行/状态曾变化"的排查线索。
-      const NOISE_PATTERNS = [
-        /\[Monitor\] 检查直播状态/,   // 直播状态轮询（每30秒×房间）
+      // 噪声分两类处理：
+      // A. 直接丢弃（内容逐条不同或完全无排查价值，去重无法收敛）：
+      //    FFmpeg 逐帧进度、角标设置、合并进度推送、UI 状态推送等——这些是 314MB 导出的主体。
+      const DROP_PATTERNS = [
+        /frame=\s*\d+\s+fps=/,        // FFmpeg 逐帧进度行（v2.12.0 前历史日志，每条帧号都不同）
+        /\[FFmpeg[^\]]*\] (size|Lsize)=/,  // FFmpeg 进度行变体
+        /time=\d{2}:\d{2}:\d{2}\.\d{2}.*(?:bitrate|speed)=/, // FFmpeg 进度行（含时间戳字段）
+        /\[角标\]/,                    // 任务栏/托盘角标设置（每500ms×2条，无排查价值）
         /updateStatusBadges/,          // 角标刷新
-        /推送状态更新到 UI/,            // UI 状态推送
-        /notifyUpdate: 推送状态更新/,
-        /notifyUpdate: 推送 \d+ 个直播间/,
+        /收到合并进度/,                 // 合并进度转发（每500ms）
+        /merge-progress/,              // renderer 合并进度推送
+        /推送状态更新到 UI/,            // UI 状态推送 DEBUG（每500ms）
+        /notifyUpdate: 推送/,          // StreamManager 推送 DEBUG（每500ms）
+        /\[Recorder\] 推送房间状态/,     // renderer 房间状态推送
+      ];
+      // B. 去重采样（按"文件+去时间戳内容"去重，每种仅保留首条样本，
+      //    保留"当日监控确在运行"的排查线索）：
+      const SAMPLE_PATTERNS = [
+        /\[Monitor\] 检查直播状态/,   // 直播状态轮询（每30秒×房间）
+        /\[GiftHeartbeat\] 评论区消息=/, // 评论心跳正常样本（保留少量证明评论捕获在运行）
       ];
       const seenNoise = new Set();
       const stripTs = (line) => line.replace(/^\[[^\]]*\]\s*/, '').replace(/\s+/g, ' ').trim();
@@ -657,8 +669,13 @@ class Logger {
           crlfDelay: Infinity,
         });
         for await (const line of rl) {
-          // 高频噪声：按"日期+去时间戳内容"去重，每种仅保留首条样本
-          if (NOISE_PATTERNS.some(re => re.test(line))) {
+          // A 类：高频无价值噪声，直接丢弃
+          if (DROP_PATTERNS.some(re => re.test(line))) {
+            filteredLines++;
+            continue;
+          }
+          // B 类：周期心跳按"文件+去时间戳内容"去重，每种仅保留首条样本
+          if (SAMPLE_PATTERNS.some(re => re.test(line))) {
             const key = `${s.name}|${stripTs(line)}`;
             if (seenNoise.has(key)) { filteredLines++; continue; }
             seenNoise.add(key);
