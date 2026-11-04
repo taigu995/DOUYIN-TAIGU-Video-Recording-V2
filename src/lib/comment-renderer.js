@@ -541,6 +541,25 @@ class CommentRenderer {
       throw new Error(`页面加载失败，已重试 ${maxRetries} 次（直播页持续加载超时，可能网络受限或触发风控）`);
     }
 
+    // 开播捕捉前强制刷新一次页面（忽略缓存）：
+    // 首次加载可能命中 session/磁盘缓存中的"直播已结束"旧快照（尤其下播后复播场景），
+    // 强制刷新确保拿到开播后的实时页面，再进行评论区探测与捕捉
+    logger.info('[CommentRenderer] 开播捕捉前强制刷新页面（忽略缓存），获取实时直播页面...');
+    try {
+      const reloaded = new Promise((resolve) => {
+        const timer = setTimeout(resolve, 20000);
+        this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
+      });
+      this.captureWindow.webContents.reloadIgnoringCache();
+      await reloaded;
+      if (!this.captureWindow || this.captureWindow.isDestroyed()) {
+        throw new Error('评论窗口已在刷新期间被销毁');
+      }
+    } catch (e) {
+      if (e && e.message === '评论窗口已在刷新期间被销毁') throw e;
+      logger.warn('[CommentRenderer] 强制刷新页面异常（按当前页面继续初始化）:', e && e.message);
+    }
+
     // 加载后再次确保静音（某些页面可能会重置静音状态）
     this.captureWindow.webContents.setAudioMuted(true);
 
@@ -567,11 +586,12 @@ class CommentRenderer {
         if (!pageEnded) break; // 非结束页：可能是结构变化，交给心跳自愈机制处理
         logger.warn(`[CommentRenderer] 页面仍显示"直播已结束"（开播快照延迟），快速刷新重试 (${attempt}/2)`);
         try {
-          this.captureWindow.webContents.reload();
-          await new Promise((resolve) => {
+          const reloaded = new Promise((resolve) => {
             const timer = setTimeout(resolve, 15000);
             this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
           });
+          this.captureWindow.webContents.reload();
+          await reloaded;
           await new Promise((r) => setTimeout(r, 8000));
           if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
           detectedRect = await this._detectCommentAreaFromDOM();
@@ -692,12 +712,14 @@ class CommentRenderer {
     const wc = this.captureWindow.webContents;
     try {
       logger.warn(`[CommentRenderer] 刷新评论页面（第${this._reloadCount}次）以恢复评论区渲染`);
-      wc.reload();
-      // 等待本次加载完成（带超时，防止导航挂起）
-      await new Promise((resolve) => {
+      // 先注册加载完成监听再 reload，避免快速缓存页面在注册前触发事件导致等到超时
+      const reloaded = new Promise((resolve) => {
         const timer = setTimeout(resolve, 20000);
         wc.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
       });
+      wc.reload();
+      // 等待本次加载完成（带超时，防止导航挂起）
+      await reloaded;
       // 等待动态内容渲染（评论区为异步渲染）
       await new Promise((r) => setTimeout(r, 8000));
       if (!this.capturing || this.captureWindow.isDestroyed()) return;
