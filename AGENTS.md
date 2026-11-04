@@ -94,3 +94,4 @@ pnpm run build:dir
 - 录制结束后需要合并处理，期间会显示"合并中..."状态
 - 合并过程需要重新编码视频（CRF 15），音频直接复制
 - 评论区帧率默认 10fps（评论区不需要高帧率）
+- 评论区容器选择器必须三处同步：init DOM探测/注入脚本内嵌探测（`[class*="webcast-chatroom"]` 等）与心跳 `findCommentRoot()`（comment-renderer.js 约92行）。当前抖音评论区容器 class 为 `webcast-chatroom-*`；心跳选择器若缺少它会导致每5秒误报"容器未找到"，60秒后误触发自愈刷新把正常页面刷坏（v2.12.10 修复）

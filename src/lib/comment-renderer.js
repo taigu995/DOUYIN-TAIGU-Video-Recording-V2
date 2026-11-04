@@ -91,9 +91,16 @@ const GIFT_BANNER_SCRIPT = `(() => {
     // 评论区容器统一定位（含 DOM 探测已验证的完整选择器集合）
     function findCommentRoot() {
       if (window.__commentBannerRoot && window.__commentBannerRoot.isConnected) return window.__commentBannerRoot;
+      // 注意：选择器必须与主进程 _detectCommentAreaFromDOM 保持同步，
+      // 当前抖音评论区容器 class 为 webcast-chatroom-*（缺失会导致心跳误报"容器未找到"）
       const sels = [
+        '[class*="webcast-chatroom"]',
         '[data-e2e="live-chat"]','[data-e2e="chat-room"]',
         '[class*="chat-list"]','[class*="ChatList"]',
+        '[class*="chat-room"]','[class*="ChatRoom"]',
+        '[class*="room-chat"]','[class*="RoomChat"]',
+        '[class*="live-chat"]','[class*="LiveChat"]',
+        '[class*="side-chat"]',
         '[class*="message-list"]','[class*="MessageList"]',
         '[class*="chat-container"]','[class*="ChatContainer"]',
         '[class*="comment-list"]','[class*="CommentList"]',
@@ -243,7 +250,15 @@ const GIFT_BANNER_SCRIPT = `(() => {
             // 区分页面状态：直播已结束（页面失效，主进程可据此自愈刷新）vs 未登录/选择器变化
             let ended = false;
             try { ended = /直播已结束/.test((document.body && document.body.innerText) || ''); } catch (e2) {}
-            console.log('[GiftHeartbeat] 评论区容器未找到' + (ended ? ' [直播已结束]' : ' [容器缺失]'));
+            // 每60秒附带一次页面诊断（URL/标题），便于排查真死页还是选择器失效
+            let diag = '';
+            try {
+              window.__giftHbMissCount = (window.__giftHbMissCount || 0) + 1;
+              if (window.__giftHbMissCount % 12 === 1) {
+                diag = ' [诊断] url=' + (location.pathname || '') + ' title=' + String(document.title || '').slice(0, 30);
+              }
+            } catch (e3) {}
+            console.log('[GiftHeartbeat] 评论区容器未找到' + (ended ? ' [直播已结束]' : ' [容器缺失]') + diag);
             return;
           }
           // 统计容器内消息（兼容结构化礼物消息：用候选文本块而非仅叶子）
@@ -538,7 +553,38 @@ class CommentRenderer {
     if (detectedRect) {
       logger.info(`[CommentRenderer] DOM探测评论区: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
     } else {
-      logger.info('[CommentRenderer] DOM探测失败，使用右侧区域估算');
+      // 开播瞬间页面可能仍是"直播已结束"快照（服务端/CDN缓存延迟），
+      // 若继续按右侧估算裁剪，整场录制右侧会停留在"猜你喜欢"推荐页。
+      // 快速刷新重试最多2次（每次约10秒），争取录制一开始就拿到直播页
+      for (let attempt = 1; attempt <= 2 && !detectedRect; attempt++) {
+        if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
+        let pageEnded = false;
+        try {
+          pageEnded = await this.captureWindow.webContents.executeJavaScript(
+            '/直播已结束/.test((document.body && document.body.innerText) || "")'
+          );
+        } catch (e) { break; }
+        if (!pageEnded) break; // 非结束页：可能是结构变化，交给心跳自愈机制处理
+        logger.warn(`[CommentRenderer] 页面仍显示"直播已结束"（开播快照延迟），快速刷新重试 (${attempt}/2)`);
+        try {
+          this.captureWindow.webContents.reload();
+          await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 15000);
+            this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
+          });
+          await new Promise((r) => setTimeout(r, 8000));
+          if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
+          detectedRect = await this._detectCommentAreaFromDOM();
+        } catch (e) {
+          logger.warn('[CommentRenderer] 快速刷新重试异常:', e && e.message);
+          break;
+        }
+      }
+      if (detectedRect) {
+        logger.info(`[CommentRenderer] 快速刷新后DOM探测成功: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
+      } else {
+        logger.info('[CommentRenderer] DOM探测失败，使用右侧区域估算');
+      }
     }
 
     // 捕获页面尺寸
@@ -618,7 +664,13 @@ class CommentRenderer {
       if ((this._noContainerStreak || 0) < 12) return;
       const now = Date.now();
       if (this._lastReloadAt && now - this._lastReloadAt < 90000) return;
-      if ((this._reloadCount || 0) >= 10) return;
+      if ((this._reloadCount || 0) >= 10) {
+        if (!this._reloadCapWarned) {
+          this._reloadCapWarned = true;
+          logger.warn('[CommentRenderer] 本场自愈刷新已达10次上限，后续容器缺失不再自动刷新（可停止录制后重新开始以重置）');
+        }
+        return;
+      }
       logger.warn(`[CommentRenderer] 评论区容器持续缺失约60s${pageShowsEnded ? '（页面显示直播已结束）' : ''}，触发页面刷新自愈`);
       this._reloadPageForRecovery().catch((e) => {
         logger.warn('[CommentRenderer] 页面自愈刷新异常:', e && e.message);
@@ -657,7 +709,16 @@ class CommentRenderer {
       await this.injectGiftBanner();
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
-      const detectedRect = await this._detectCommentAreaFromDOM();
+      let detectedRect = await this._detectCommentAreaFromDOM();
+      if ((!detectedRect || detectedRect.width <= 80 || detectedRect.height <= 100)
+          && this.capturing && !this.captureWindow.isDestroyed()) {
+        // 评论区异步渲染可能慢于8秒等待，延迟10秒重试一次，避免整场沿用过期裁剪区
+        logger.info('[CommentRenderer] 刷新后首次探测未命中，10秒后重试探测...');
+        await new Promise((r) => setTimeout(r, 10000));
+        if (this.capturing && !this.captureWindow.isDestroyed()) {
+          detectedRect = await this._detectCommentAreaFromDOM();
+        }
+      }
       if (detectedRect && detectedRect.width > 80 && detectedRect.height > 100) {
         let pageH = this._commentRect ? this._commentRect.height : 1040;
         try {
@@ -1044,6 +1105,7 @@ class CommentRenderer {
     this._reloadCount = 0;
     this._lastReloadAt = 0;
     this._reloading = false;
+    this._reloadCapWarned = false;
 
     logger.info(`[CommentRenderer] 开始捕获评论区帧, 固定FPS: ${this.targetFps}（全程固定，不因礼物提帧）, 输出目录: ${this.outputDir}`);
     logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
