@@ -96,3 +96,5 @@ pnpm run build:dir
 - 评论区帧率默认 10fps（评论区不需要高帧率）
 - 评论区容器选择器必须三处同步：init DOM探测/注入脚本内嵌探测（`[class*="webcast-chatroom"]` 等）与心跳 `findCommentRoot()`（comment-renderer.js 约92行）。当前抖音评论区容器 class 为 `webcast-chatroom-*`；心跳选择器若缺少它会导致每5秒误报"容器未找到"，60秒后误触发自愈刷新把正常页面刷坏（v2.12.10 修复）
 - 每次开播录制 init 时会先 `reloadIgnoringCache()` 强制刷新评论页面再探测捕捉（v2.12.11），规避 session/磁盘缓存中的"直播已结束"旧快照；此过程增加约10-30秒评论区初始化延迟（FFmpeg流录制不受影响）
+- 流时间戳损坏检测（v2.12.12）：FFmpeg stderr 的 `Non-monotonous DTS` 警告分两形态处理——①current 为负或回退超一半=时间轴回绕，累计3次 kill 重录；②视频轨(0:0) current==previous 连续60次(约2分钟)=视频轨停滞（画面卡死但 frame= 仍涨、停滞看门狗检不出），kill 重录。两类警告及 `Application provided duration`/`invalid dropping`/`pts has no value`/`changing to` 拆行等时间戳噪声统一计数+60秒汇总一条日志（逐条写曾致单场140万行/300MB）；导出过滤同步 DROP 这些模式
+- Merge-Final 合并输入带 `-fflags +discardcorrupt`（v2.12.12）：源流含损坏段时丢弃坏帧完成合并，避免解码失败（Conversion failed）后兜底标准化用纯流覆盖输出导致评论区丢失；合并失败兜底时录制完成报告显示"合并失败(已保留源视频...)"而非误导性的"合并: true"

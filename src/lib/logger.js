@@ -646,6 +646,13 @@ class Logger {
         /推送状态更新到 UI/,            // UI 状态推送 DEBUG（每500ms）
         /notifyUpdate: 推送/,          // StreamManager 推送 DEBUG（每500ms）
         /\[Recorder\] 推送房间状态/,     // renderer 房间状态推送
+        /Non-monotonous DTS in output stream/, // FFmpeg 流时间戳警告（每条 DTS 值不同，曾单场 140 万行）
+        /Application provided duration: .*is out of range/, // FLV 元数据 duration 非法警告（单场 27 万行）
+        /\[FFmpeg[^\]]*\] (DTS|PTS) -?\d+, next:-?\d+ invalid dropping st:-?\d+/, // 时间戳丢帧警告
+        /\[FFmpeg[^\]]*\] changing to -?\d+\. This may result in incorrect timestamps/, // Non-monotonous 拆行后半段
+        /\[FFmpeg[^\]]*\] .*pts has no value/,  // PTS 缺失警告
+        /\[FFmpeg[^\]]*\] \[(mp4|flv|http|https|mov|tcp) @ [0-9a-fA-Fx]+\]\s*$/, // 警告被\r拆行后的空地址前缀
+        /\[日志抑制\] 上条消息在窗口期内重复/,    // 抑制汇总行本身（仅说明"有重复"，无诊断价值）
       ];
       // B. 去重采样（按"文件+去时间戳内容"去重，每种仅保留首条样本，
       //    保留"当日监控确在运行"的排查线索）：

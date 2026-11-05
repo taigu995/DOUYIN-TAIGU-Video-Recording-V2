@@ -1096,7 +1096,10 @@ class StreamManager {
               streamState.info.recordingHistory = streamState.info.recordingHistory.slice(0, 50);
             }
             updateStream(streamState.info.roomId, { recordingHistory: streamState.info.recordingHistory });
-            logger.info(`[StreamManager] 录制完成: ${data.outputFile}, 大小: ${data.fileSize} bytes, 合并: ${data.merged}, 评论帧: ${data.commentFrames}`);
+            const mergeStatusText = data.mergeResult && data.mergeResult.fallback
+              ? '合并失败(已保留源视频，评论区为分离文件可手动合并)'
+              : (data.mergeResult && data.mergeResult.noComments ? '无评论区(纯源视频)' : data.merged);
+            logger.info(`[StreamManager] 录制完成: ${data.outputFile}, 大小: ${data.fileSize} bytes, 合并: ${mergeStatusText}, 评论帧: ${data.commentFrames}`);
           }
           streamState.currentRecordingStart = null;
 

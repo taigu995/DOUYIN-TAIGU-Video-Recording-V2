@@ -583,6 +583,11 @@ class Recorder {
     // 最近一次有输出进展的时间（进度行），用于停滞看门狗
     this._lastProgressAt = Date.now();
     this._stallRestarting = false;
+    // 流时间戳异常统计（Non-monotonous DTS：CDN 重连后时间轴回绕/视频轨停滞）
+    this._dtsWarnCount = 0;
+    this._dtsRewindCount = 0;
+    this._dtsDupCount = 0;
+    this._dtsWarnLastLogAt = 0;
 
     // 停滞看门狗：进程活着但长时间无任何输出进展（如流停滞/重连后假死），
     // 强制杀掉进程，走 close -> stream-interrupted 重录路径，避免"源视频只录了一半但状态显示录制中"
@@ -615,6 +620,51 @@ class Recorder {
       for (const lineRaw of lines) {
         const msg = lineRaw.trim();
         if (!msg) continue;
+
+        // 时间戳类噪声（CDN 流时间戳/元数据异常警告）：逐条内容不同，logger 重复抑制无效，
+        // 曾致单场日志 140 万行/300MB，统一计数 + 每 60 秒汇总一条。
+        // 两种损坏形态均需 kill 重录（产物播放画面卡住、合并解码失败导致评论区丢失）：
+        //  ① 时间轴回绕：current 为负或回退超一半（CDN 重连后时间戳重置，如 142903018→1162928），累计 3 次
+        //  ② 视频轨停滞：current == previous（CDN 重复发同一时间戳的视频包，画面卡住但连接活着，
+        //     frame= 仍在增长使停滞看门狗失效），连续约 2 分钟（60 次×2s）无正常进展
+        const isTsNoise = msg.includes('Non-monotonous DTS in output stream')
+          || msg.includes('Application provided duration')
+          || /^(DTS|PTS) -?\d+, next:-?\d+ st:-?\d+ invalid dropping/.test(msg)
+          || /^changing to -?\d+\./.test(msg)
+          || msg.includes('pts has no value');
+        if (isTsNoise) {
+          this._dtsWarnCount++;
+          const m = msg.match(/Non-monotonous DTS in output stream \d+:(\d+); previous:\s*(-?\d+),\s*current:\s*(-?\d+)/);
+          if (m && m[1] === '0') { // 只看视频轨（0:0），音频停滞不误判
+            const prevTs = parseInt(m[2], 10);
+            const curTs = parseInt(m[3], 10);
+            if (curTs < 0 || curTs < prevTs / 2) {
+              this._dtsRewindCount++;
+              this._dtsDupCount = 0;
+            } else if (curTs <= prevTs) {
+              this._dtsDupCount++; // 重复/微倒退：视频轨无进展
+            } else {
+              this._dtsDupCount = 0; // 正常前进，重置停滞计数
+            }
+          }
+          const now = Date.now();
+          if (now - this._dtsWarnLastLogAt >= 60000) {
+            this._dtsWarnLastLogAt = now;
+            logger.warn(`[FFmpeg-Stream] 流时间戳异常警告累计 ${this._dtsWarnCount} 次（时间轴回绕 ${this._dtsRewindCount} 次，视频轨停滞连续 ${this._dtsDupCount} 次），样本: ${msg.slice(0, 160)}`);
+          }
+          const stallKill = this._dtsDupCount >= 60;
+          const rewindKill = this._dtsRewindCount >= 3;
+          if (this.recording && (stallKill || rewindKill) && !this._stallRestarting) {
+            this._stallRestarting = true;
+            const reason = rewindKill
+              ? `流时间轴回绕损坏（DTS 大幅回退 ×${this._dtsRewindCount}）`
+              : `视频轨停滞（DTS 连续 ${this._dtsDupCount} 次无进展，画面已卡死但连接未断）`;
+            logger.warn(`[Recorder] ${reason}，继续录制将产出画面卡住且不可合并的损坏文件，强制重启录制: ${this.streamerName}`);
+            try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
+          }
+          continue; // 不进入常规逐条日志输出
+        }
+
         if (!isStreamProgressStat(msg)) {
           logger.info(`[FFmpeg-Stream] ${msg.slice(0, 1000)}`);
         }
@@ -1095,6 +1145,9 @@ class Recorder {
     });
 
     await this._runFFmpeg(resolvedPath, [
+      // 源流可能含损坏段（CDN 时间戳回绕/丢包），丢弃损坏帧而非中止整个合并，
+      // 避免解码失败（Conversion failed）后兜底成纯流输出导致评论区丢失
+      '-fflags', '+discardcorrupt',
       '-i', streamFile,
       '-i', commentVideoFile,
       '-filter_complex',
