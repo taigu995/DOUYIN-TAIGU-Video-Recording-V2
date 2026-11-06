@@ -545,19 +545,26 @@ class CommentRenderer {
     // 首次加载可能命中 session/磁盘缓存中的"直播已结束"旧快照（尤其下播后复播场景），
     // 强制刷新确保拿到开播后的实时页面，再进行评论区探测与捕捉
     logger.info('[CommentRenderer] 开播捕捉前强制刷新页面（忽略缓存），获取实时直播页面...');
+    let refreshFinished = false;
     try {
       const reloaded = new Promise((resolve) => {
         const timer = setTimeout(resolve, 20000);
-        this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
+        this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); refreshFinished = true; resolve(); });
       });
       this.captureWindow.webContents.reloadIgnoringCache();
       await reloaded;
       if (!this.captureWindow || this.captureWindow.isDestroyed()) {
         throw new Error('评论窗口已在刷新期间被销毁');
       }
+      if (!refreshFinished) {
+        // 20s 超时：页面导航仍 pending，必须主动终止——否则后续 executeJavaScript 会无限挂起（曾致整场 init 挂死、无任何录制产出）
+        logger.warn('[CommentRenderer] 强制刷新20秒内未完成加载，终止挂起导航后继续初始化');
+        try { this.captureWindow.webContents.stop(); } catch (e) {}
+      }
     } catch (e) {
       if (e && e.message === '评论窗口已在刷新期间被销毁') throw e;
       logger.warn('[CommentRenderer] 强制刷新页面异常（按当前页面继续初始化）:', e && e.message);
+      try { if (this.captureWindow && !this.captureWindow.isDestroyed()) this.captureWindow.webContents.stop(); } catch (e2) {}
     }
 
     // 加载后再次确保静音（某些页面可能会重置静音状态）
@@ -989,7 +996,8 @@ class CommentRenderer {
     if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
 
     try {
-      const result = await this.captureWindow.webContents.executeJavaScript(`
+      // 超时兜底：页面导航 pending 时 executeJavaScript 会无限挂起（曾致 init 挂死整场无产出），8s 未返回按探测失败处理
+      const jsPromise = this.captureWindow.webContents.executeJavaScript(`
         (function() {
           const pageW = document.documentElement.clientWidth || window.innerWidth;
           const pageH = document.documentElement.clientHeight || window.innerHeight;
@@ -1090,6 +1098,15 @@ class CommentRenderer {
           return null;
         })();
       `);
+      jsPromise.catch(() => {}); // race 超时后吞掉其后续 reject
+      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('__PROBE_TIMEOUT__'), 8000));
+      const raced = await Promise.race([jsPromise, timeoutPromise]);
+      if (raced === '__PROBE_TIMEOUT__') {
+        logger.warn('[CommentRenderer] DOM探测超时(8s, 页面导航可能仍pending)，按探测失败处理');
+        try { this.captureWindow.webContents.stop(); } catch (e) {}
+        return null;
+      }
+      const result = raced;
 
       if (result && result.width > 80 && result.height > 100) {
         logger.info(`[CommentRenderer] DOM探测策略: ${result.strategy || 'unknown'}, selector: ${result.selector || 'N/A'}`);

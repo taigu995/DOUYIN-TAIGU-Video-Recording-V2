@@ -77,6 +77,7 @@ class Recorder {
     this.sessionName = options.sessionName || 'persist:douyin';
 
     this.recording = false;
+    this._startingUp = false; // 启动中（init/取流/FFmpeg启动阶段），供 stopRecording 识别"启动挂起被取消"
     this.ffmpegProcess = null;
     this.commentRenderer = null;
     this.outputFile = '';
@@ -384,6 +385,7 @@ class Recorder {
     }
 
     logger.info(`[Recorder] 准备开始录制 - 房间: ${this.roomId}, 主播: ${this.streamerName}`);
+    this._startingUp = true;
 
     try {
       const config = getConfig();
@@ -493,6 +495,7 @@ class Recorder {
 
       // 录制状态 - 计时器将在 FFmpeg 输出第一帧时启动
       this.recording = true;
+      this._startingUp = false;
       this.hasAudio = true;
       this._firstFrameReceived = false;
 
@@ -500,6 +503,7 @@ class Recorder {
     } catch (err) {
       logger.error(`[Recorder] 启动录制失败: ${err.message}`, err);
       this.recording = false;
+      this._startingUp = false;
       await this._cleanup();
       // 启动失败（多为直播流URL获取失败）时，若本次会话未产生任何有效录制内容，
       // 则删除刚创建的空会话文件夹，避免残留"生成了录制文件夹却无录制文件"的空目录。
@@ -719,6 +723,13 @@ class Recorder {
    * 停止录制
    */
   async stopRecording() {
+    // 启动阶段被取消（init 挂起/超时等导致 recording 尚未置 true）：
+    // 销毁评论窗口会令其内部挂起的 executeJavaScript reject，startRecording 进入 catch 统一清理并发 error 事件
+    if (!this.recording && this._startingUp) {
+      logger.warn(`[Recorder] 录制启动阶段被停止（初始化未完成），执行取消清理: ${this.streamerName}`);
+      await this._cleanup();
+      return;
+    }
     if (!this.recording) return;
 
     this.recording = false;

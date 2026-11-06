@@ -550,12 +550,19 @@ class StreamManager {
     // 则将其摘离为后台合并并放行新录制，避免"合并期间复播漏录"。
     if (streamState.recorder) {
       if (!streamState.recorder.recording) {
-        logger.warn(`[Monitor] 检测到复播时旧录制仍在合并，转入后台合并并立即重录: ${info.streamerName}`);
-        if (streamState.mergingRecorder && streamState.mergingRecorder !== streamState.recorder) {
-          try { streamState.mergingRecorder.destroy(); } catch (e) { /* ignore */ }
+        if (streamState.recorder._startingUp) {
+          // 旧实例卡在启动阶段（如评论页init挂起），无合并价值，直接销毁放行新录制
+          logger.warn(`[Monitor] 旧录制实例卡在启动阶段（初始化未完成），直接销毁并重新录制: ${info.streamerName}`);
+          try { streamState.recorder.destroy(); } catch (e) { /* ignore */ }
+          streamState.recorder = null;
+        } else {
+          logger.warn(`[Monitor] 检测到复播时旧录制仍在合并，转入后台合并并立即重录: ${info.streamerName}`);
+          if (streamState.mergingRecorder && streamState.mergingRecorder !== streamState.recorder) {
+            try { streamState.mergingRecorder.destroy(); } catch (e) { /* ignore */ }
+          }
+          streamState.mergingRecorder = streamState.recorder;
+          streamState.recorder = null;
         }
-        streamState.mergingRecorder = streamState.recorder;
-        streamState.recorder = null;
       } else {
         return;
       }
@@ -649,9 +656,9 @@ class StreamManager {
           logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
           streamState.status = 'offline';
 
-          // 录制中则停止
-          if (streamState.recorder && streamState.recorder.recording) {
-            logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
+          // 录制中则停止；启动中(_startingUp，如评论页init挂起)的recorder也要取消清理，避免永久挂起残留空会话目录
+          if (streamState.recorder && (streamState.recorder.recording || streamState.recorder._startingUp)) {
+            logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}${streamState.recorder.recording ? '' : '（启动阶段取消）'}`);
             this.stopRecording(info.roomId);
           }
         } else if (isLive && wasLive && !streamState.recorder) {
@@ -807,8 +814,8 @@ class StreamManager {
       logger.info(`[Monitor] ${info.streamerName} (${info.roomId}) 下播了`);
       streamState.status = 'offline';
 
-      if (streamState.recorder && streamState.recorder.recording) {
-        logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}`);
+      if (streamState.recorder && (streamState.recorder.recording || streamState.recorder._startingUp)) {
+        logger.info(`[Monitor] 直播结束，停止录制: ${info.streamerName}${streamState.recorder.recording ? '' : '（启动阶段取消）'}`);
         this.stopRecording(info.roomId);
       }
     } else if (isLive && wasLive && !streamState.recorder) {
