@@ -1156,9 +1156,8 @@ class Recorder {
     });
 
     await this._runFFmpeg(resolvedPath, [
-      // 源流可能含损坏段（CDN 时间戳回绕/丢包），丢弃损坏帧而非中止整个合并，
-      // 避免解码失败（Conversion failed）后兜底成纯流输出导致评论区丢失
-      '-fflags', '+discardcorrupt',
+      // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
+      '-fflags', '+genpts',
       '-i', streamFile,
       '-i', commentVideoFile,
       '-filter_complex',
