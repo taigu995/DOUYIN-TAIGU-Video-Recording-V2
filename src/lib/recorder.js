@@ -1726,6 +1726,13 @@ class Recorder {
     const roomId = this.roomId;
     logger.info(`[Recorder] 无渲染模式获取直播流URL, roomId: ${roomId}`);
 
+    // 60 秒总超时兜底，避免临时窗口加载/脚本注入永久挂起
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('无渲染模式获取流URL超时（60秒）')), 60000);
+    });
+
+    const impl = (async () => {
+
     // 方式1: 通过 Douyin API 获取（无需 cookies）
     try {
       const apiUrl = `https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=120.0.0.0&web_rid=${roomId}`;
@@ -1786,6 +1793,7 @@ class Recorder {
           offscreen: true
         }
       });
+      this._tempStreamWin = tempWin;
 
       try {
         await tempWin.loadURL(`https://live.douyin.com/${roomId}`, {
@@ -1827,6 +1835,7 @@ class Recorder {
         }
       } finally {
         if (!tempWin.isDestroyed()) tempWin.destroy();
+        this._tempStreamWin = null;
       }
     } catch (err) {
       logger.warn(`[Recorder] 临时窗口提取直播流失败 (无渲染模式): ${err.message}`);
@@ -1834,6 +1843,9 @@ class Recorder {
 
     logger.warn('[Recorder] 无渲染模式所有方式均未能提取到直播流URL');
     return null;
+    })();
+
+    return Promise.race([impl, timeoutPromise]);
   }
 
   /**
@@ -2041,6 +2053,14 @@ class Recorder {
         } catch (e) { /* ignore */ }
       }
       this._mergeProcesses.clear();
+    }
+
+    // 销毁 stream-only 模式的临时流提取窗口（避免挂起时泄漏）
+    if (this._tempStreamWin) {
+      try {
+        if (!this._tempStreamWin.isDestroyed()) this._tempStreamWin.destroy();
+      } catch (e) { /* ignore */ }
+      this._tempStreamWin = null;
     }
 
     // 销毁评论区渲染器
