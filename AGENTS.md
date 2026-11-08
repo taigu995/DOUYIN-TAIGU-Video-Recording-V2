@@ -101,3 +101,4 @@ pnpm run build:dir
 - 评论页 init 挂起防护（v2.12.13）：强制刷新/DOM探测的 executeJavaScript 在页面导航 pending 时会无限挂起（Electron 特性），曾致整场录制无任何文件且残留 .temp 空目录。防护：①强制刷新 20s 超时后必须 `webContents.stop()` 终止挂起导航；②`_detectCommentAreaFromDOM` executeJavaScript 加 8s race 超时；③Recorder 新增 `_startingUp` 标志（startRecording 入口置位、FFmpeg 启动成功/失败清除），stopRecording 与下播分支（API/页面两处）识别 `_startingUp` 走取消清理（destroy 窗口→挂起点 reject→startRecording catch 统一清空文件夹）；④`_autoStartRecording` 摘离旧实例时，`_startingUp` 实例直接 destroy 而非转入 mergingRecorder
 - stream-only 模式流提取超时防护（v2.12.14）：`_getStreamUrlWithoutRenderer` 加 60 秒总超时 race，避免临时窗口 loadURL/executeJavaScript 永久挂起；临时窗口注册到 `this._tempStreamWin`，`_cleanup` 统一销毁
 - 合并命令改用 `-fflags +genpts`（v2.12.15）：源视频在某个时间点画面卡住（但单文件播放正常）的问题是 `+discardcorrupt` 丢弃了损坏帧导致后续视频轨无帧输出；`+genpts` 自动修复时间戳异常而不丢弃帧，保证画面连续
+- 合并命令加 `-err_detect ignore_err`（v2.12.16）：源视频含损坏帧时 FFmpeg 解码失败后停止输出视频帧（画面卡住），`ignore_err` 让解码器忽略错误继续处理后续帧，保证画面连续

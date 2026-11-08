@@ -1157,7 +1157,9 @@ class Recorder {
 
     await this._runFFmpeg(resolvedPath, [
       // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
+      // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
       '-fflags', '+genpts',
+      '-err_detect', 'ignore_err',
       '-i', streamFile,
       '-i', commentVideoFile,
       '-filter_complex',
