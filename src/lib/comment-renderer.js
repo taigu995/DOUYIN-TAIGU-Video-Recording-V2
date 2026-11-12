@@ -15,304 +15,7 @@ const COMMENT_WIDTH = 500;   // 评论区宽度（捕获区域宽度）
 const COMMENT_HEIGHT = 1080; // 评论区高度（与主视频对齐）
 const CAPTURE_QUALITY = 92;  // JPEG 压缩质量 (1-100)
 
-// 礼物/连击/进场特效检测脚本（在直播页面内执行，返回是否有送礼特效）
-const GIFT_DETECT_SCRIPT = `(() => {
-  try {
-    const b = document.body;
-    if (!b || !b.innerText) return false;
-    const txt = b.innerText.slice(-5000);
-    // 送礼/连击/飞屏特征文字
-    const hasGiftTxt = /送出[\\s\\S]{0,8}(×|x|X)?\\s*\\d*|\\b连击\\b|飞屏|打赏|礼物/.test(txt);
-    // 可见的礼物/开屏/特效动画容器（宽度在 30~800 之间、有子元素即认为正在播放）
-    let visibleAnim = false;
-    const sel = '[class*="gift" i],[class*="Gift"],[class*="anim" i],[class*="Anim"],[class*="effect" i],[class*="Effect"],[class*="screen" i],[class*="Screen"]';
-    const nodes = b.querySelectorAll(sel);
-    for (let i = 0; i < nodes.length; i++) {
-      const n = nodes[i];
-      if (!n.children || !n.children.length || !n.getBoundingClientRect) continue;
-      const r = n.getBoundingClientRect();
-      if (r.width > 30 && r.height > 30 && r.width < 900 && r.height < 900) { visibleAnim = true; break; }
-    }
-    return hasGiftTxt || visibleAnim;
-  } catch (e) { return false; }
-})()`;
 
-// 礼物横幅注入脚本：常驻监听评论区礼物消息，提炼"谁送的什么礼物+图标"提示条
-// 横幅作为 DOM 元素插入评论区顶部，天然被帧捕获录进画面
-const GIFT_BANNER_SCRIPT = `(() => {
-  try {
-    if (window.__giftBannerInstalled) return 'already';
-    window.__giftBannerInstalled = true;
-
-    const lastKey = new Set();
-    let lastMsgCount = 0;
-
-    // 从一条礼物消息文本里解析 昵称/礼物名/数量
-    // 抖音礼物消息可能是结构化拆分，也可能是纯文本，格式多变：
-    //   "昵称 送出 火箭 ×1" / "送出 火箭×1" / "🎁 火箭 ×1"（无昵称） / "送出了 宇宙之心"
-    function parseGiftText(text) {
-      const t = (text || '').replace(/\\s+/g, ' ').trim();
-      if (!t) return null;
-      // 定位"送出/赠送/打赏"作为分隔锚点（"送出了"表示选择器整体优先用后者避免吞"了"）
-      const sep = t.match(/(送出了|送出|赠送|打赏)/);
-      if (!sep) return null;
-      const k = sep.index;
-      // 昵称 = 锚点之前（去除开头的 emoji/符号/空白），长度上限放宽避免吞掉旁边消息
-      let nick = '';
-      const before = t.slice(0, k);
-      // 昵称通常是一串不含"送出/数字×数量"的字符；取其末尾连续可读部分
-      const nickHit = before.match(/([\\s\\S]{1,30}?)\\s*$/);
-      if (nickHit && /[\\u4e00-\\u9fa5\\w]/.test(nickHit[1])) nick = (nickHit[1] || '').trim();
-
-      const after = t.slice(k + sep[0].length);
-      // 礼物名 + 数量：礼物名取到 ×数量 之前，去掉前导 emoji/箭头/符号
-      let gname = '';
-      let num = 1;
-      const mNum = after.match(/([\\s\\S]{1,20}?)\\s*[×xX]\\s*(\\d{1,4})/);
-      if (mNum) {
-        gname = (mNum[1] || '').replace(/^[\\s:：\\u{1F300}-\\u{1FAFF}🎁📦\\u{2600}-\\u{27BF}]+/u, '').trim();
-        num = parseInt(mNum[2], 10);
-        if (!(num > 0)) num = 1;
-      } else {
-        gname = after.replace(/^[\\s:：\\u{1F300}-\\u{1FAFF}🎁📦\\u{2600}-\\u{27BF}]+/u, '').trim();
-        num = 1;
-      }
-      if (!gname) return null;
-      return { nick, gift: gname, num, count: num, raw: t };
-    }
-
-    function roundRect(r, p) {
-      const o = Math.floor(p / 2);
-      const b = p % 2;
-      return { x: Math.round(r.x) + o, y: Math.round(r.y) + o, w: Math.floor(r.width - p) - b, h: Math.floor(r.height - p) - b };
-    }
-
-    // 创建横幅 DOM 并渲染到评论区容器顶部
-    // 评论区容器统一定位（含 DOM 探测已验证的完整选择器集合）
-    function findCommentRoot() {
-      if (window.__commentBannerRoot && window.__commentBannerRoot.isConnected) return window.__commentBannerRoot;
-      // 注意：选择器必须与主进程 _detectCommentAreaFromDOM 保持同步，
-      // 当前抖音评论区容器 class 为 webcast-chatroom-*（缺失会导致心跳误报"容器未找到"）
-      const sels = [
-        '[class*="webcast-chatroom"]',
-        '[data-e2e="live-chat"]','[data-e2e="chat-room"]',
-        '[class*="chat-list"]','[class*="ChatList"]',
-        '[class*="chat-room"]','[class*="ChatRoom"]',
-        '[class*="room-chat"]','[class*="RoomChat"]',
-        '[class*="live-chat"]','[class*="LiveChat"]',
-        '[class*="side-chat"]',
-        '[class*="message-list"]','[class*="MessageList"]',
-        '[class*="chat-container"]','[class*="ChatContainer"]',
-        '[class*="comment-list"]','[class*="CommentList"]',
-        '[class*="danmu-list"]','[class*="DanmuList"]',
-        '[class*="interact-container"]','[class*="InteractContainer"]',
-        '[class*="scaffold-right"]','[class*="ScaffoldRight"]',
-        '[class*="right-side"]','[class*="RightSide"]',
-        '[class*="side-panel"]','[class*="SidePanel"]',
-        '[class*="live-side"]','[class*="LiveSide"]'
-      ];
-      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__commentBannerRoot = el; return el; } }
-      return null;
-    }
-
-    function renderBanner(data, iconSrc) {
-      // 找到评论区容器（复用 DOM 探测已验证的选择器集合）
-      const ct = findCommentRoot();
-      if (!ct) { console.log('[GiftBanner] 未找到评论区容器，跳过横幅渲染'); return; }
-
-      // 复用或新建横幅容器。用 fixed 覆盖定位在评论区上方：不占流内空间、不被 React 滚动/重渲染清掉、不改变评论区截图布局
-      let box = document.getElementById('dylive-gift-banner');
-      if (!box) {
-        box = document.createElement('div');
-        box.id = 'dylive-gift-banner';
-        box.style.cssText = 'position:fixed;right:12px;top:10px;z-index:2147483000;max-width:calc(100% - 24px);';
-        document.body.appendChild(box);
-      }
-
-      // 清空并填充
-      box.innerHTML = '';
-      const inner = document.createElement('div');
-      inner.style.cssText = 'display:flex;align-items:center;gap:8px;background:rgba(0,0,0,0.72);';
-      inner.style.cssText += 'border:1px solid #ff3b57;border-radius:8px;padding:8px 12px;color:#fff;font-size:14px;box-shadow:0 2px 12px rgba(0,0,0,0.4);backdrop-filter:blur(2px);';
-
-      const icon = document.createElement('img');
-      icon.alt = '礼物';
-      icon.style.cssText = 'width:28px;height:28px;border-radius:6px;object-fit:cover;background:#ff3b5718;flex:none;';
-      icon.src = iconSrc || 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><rect width="28" height="28" rx="6" fill="#ff3b57"/><text x="14" y="20" font-size="16" fill="#fff" text-anchor="middle">🎁</text></svg>');
-
-      const txt = document.createElement('div');
-      txt.style.cssText = 'display:flex;flex-direction:column;justify-content:center;line-height:1.15;min-width:0;';
-      const name = document.createElement('div');
-      name.style.cssText = 'font-weight:700;color:#ffd24d;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px;';
-      name.textContent = data.nick || '';
-      const act = document.createElement('div');
-      act.style.cssText = 'color:#fff;font-size:13px;';
-      act.textContent = '送出 ' + (data.gift || '礼物') + (data.num > 1 ? ' ×' + data.num : '');
-
-      inner.appendChild(icon);
-      txt.appendChild(name);
-      txt.appendChild(act);
-      inner.appendChild(txt);
-      box.appendChild(inner);
-
-      // 动画：进入 + 3秒后淡出
-      inner.style.transition = 'opacity .6s ease, transform .6s ease';
-      inner.style.opacity = '0';
-      inner.style.transform = 'translateY(-8px)';
-      requestAnimationFrame(() => { inner.style.opacity = '1'; inner.style.transform = 'translateY(0)'; });
-
-      if (data.__timer) clearTimeout(data.__timer);
-      data.__timer = setTimeout(() => {
-        inner.style.opacity = '0';
-        inner.style.transform = 'translateY(-8px)';
-        setTimeout(() => { if (box && box.parentNode) box.remove(); }, 650);
-      }, 3000);
-    }
-
-    // 在礼物消息节点里找礼物图标
-    function findIcon(node) {
-      if (!node) return null;
-      const imgs = node.querySelectorAll ? Array.from(node.querySelectorAll('img')) : [];
-      for (const img of imgs) {
-        const s = (img.src || '').toLowerCase();
-        if (s && !s.startsWith('data:') && /gift|reward|anim|icon/.test(s)) return img.src;
-      }
-      return null;
-    }
-
-    // 从文本里分离出"谁送的什么礼物"的完整描述：优先定位到包含关键字的最近文本块
-    // 抖音礼物消息可能是结构化多节点（昵称/送出/礼物名/数量分散在不同标签），
-    // 因此不能只取叶子节点，而要向上取到"消息容器"再解析。
-    function candidatesOf(root) {
-      // 收集所有可能含礼物描述的文本块（含父元素），避免只命中叶子导致的"送出/礼物名"被拆散
-      const out = [];
-      const seen = new Set();
-      if (!root) return out;
-      const all = Array.from(root.querySelectorAll('*'));
-      for (let i = 0; i < all.length; i++) {
-        const n = all[i];
-        const txt = (n.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!txt || txt.length > 80) continue;
-        if (!/(送出|赠送|打赏|送出了)/.test(txt)) continue;
-        const k = txt;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        // 尽量取"尽可能小但完整"的文本块：若父元素文本与子相同则跳过（避免重复）
-        out.push({ node: n, txt: k });
-      }
-      // 按下标的叶子优先：小(浅)节点更精确
-      out.sort((a, b) => a.txt.length - b.txt.length);
-      return out;
-    }
-
-    // 扫描新增节点
-    function scan(root) {
-      const cands = candidatesOf(root || document.documentElement);
-      for (const c of cands) {
-        const txt = c.txt;
-        const key = txt;
-        if (lastKey.has(key)) continue;
-        if (lastKey.size > 400) lastKey.clear();
-        lastKey.add(key);
-        const data = parseGiftText(txt);
-        if (data) {
-          console.log('[GiftBanner] 命中礼物文本: ' + txt + ' → ' + (data.nick || '匿名') + '送出' + data.gift + 'x' + data.num);
-          const icon = findIcon(c.node);
-          renderBanner(data, icon);
-        }
-      }
-    }
-
-    // MutationObserver 监听动态插入的礼物消息
-    let mo = window.__giftBannerMO;
-    if (!mo) {
-      mo = new MutationObserver((muts) => {
-        // 抖音礼物消息常被拆成多个节点分批插入（昵称/送出/礼物名/数量分散），
-        // 单看新增节点可能不完整，因此每次 DOM 变化都基于整页全量扫描并用 lastKey 去重。
-        for (const m of muts) {
-          if (m.type !== 'childList') continue;
-        }
-        scan(document.documentElement);
-      });
-      mo.observe(document.body, { childList: true, subtree: true, characterData: true });
-      window.__giftBannerMO = mo;
-    }
-
-    // ---- 心跳诊断：每5秒统计评论区实时消息数，确认游客态评论区是否有实时流 ----
-    function findChatContainer() {
-      return findCommentRoot();
-    }
-    if (!window.__giftHeartbeatTimer) {
-      window.__giftHeartbeatTimer = setInterval(() => {
-        try {
-          const ct = findChatContainer();
-          if (!ct) {
-            // 区分页面状态：直播已结束（页面失效，主进程可据此自愈刷新）vs 未登录/选择器变化
-            let ended = false;
-            try { ended = /直播已结束/.test((document.body && document.body.innerText) || ''); } catch (e2) {}
-            // 每60秒附带一次页面诊断（URL/标题），便于排查真死页还是选择器失效
-            let diag = '';
-            try {
-              window.__giftHbMissCount = (window.__giftHbMissCount || 0) + 1;
-              if (window.__giftHbMissCount % 12 === 1) {
-                diag = ' [诊断] url=' + (location.pathname || '') + ' title=' + String(document.title || '').slice(0, 30);
-              }
-            } catch (e3) {}
-            console.log('[GiftHeartbeat] 评论区容器未找到' + (ended ? ' [直播已结束]' : ' [容器缺失]') + diag);
-            return;
-          }
-          // 统计容器内消息（兼容结构化礼物消息：用候选文本块而非仅叶子）
-          const cands = [];
-          const els = ct.querySelectorAll('*');
-          const seenC = new Set();
-          for (let i = 0; i < els.length; i++) {
-            const el = els[i];
-            const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!t || t.length > 80) continue;
-            if (seenC.has(t)) continue;
-            seenC.add(t);
-            cands.push(t);
-          }
-          cands.sort((a, b) => a.length - b.length);
-          let total = cands.length, gift = 0, sample = '';
-          for (const t of cands) {
-            if (/(送出|赠送|打赏)/.test(t)) {
-              gift++;
-              if (!sample) sample = t.slice(0, 30);
-            }
-          }
-          const delta = total - (window.__hbLastTotal || 0);
-          window.__hbLastTotal = total;
-          console.log('[GiftHeartbeat] 评论区消息=' + total + ' 新增~' + delta + ' 礼物消息=' + gift + (sample ? ' 例:' + sample : ''));
-        } catch (e) { console.log('[GiftHeartbeat] 统计异常: ' + e.message); }
-      }, 5000);
-    }
-
-    // 暴露全局入口，供主进程 WS 礼物流外部注入（保底：渲染与提帧复用同一套）
-    window.__showGiftBanner = function (gdata, iconSrc) {
-      try {
-        if (!gdata) return false;
-        const gift = gdata.gift || gdata.giftName || '';
-        if (!gift) return false;
-        const num = gdata.num || gdata.count || 1;
-        renderBanner({ nick: gdata.nick || '', gift: gift, num: num, __timer: null }, iconSrc);
-        return true;
-      } catch (e) { return false; }
-    };
-    // ---- 探测信息（用于日志定位，不影响功能） ----
-    var probe = { pageLoaded: !!document.body, giftLikeNodes: 0, bannerMounted: !!window.__giftBannerMO };
-    try {
-      var all = document.querySelectorAll('*');
-      for (var pi = 0; pi < all.length; pi++) {
-        var el = all[pi];
-        if (el.children && el.children.length) continue;
-        var t = (el.textContent || '').trim();
-        if (t && t.length < 80 && /(送出|赠送|打赏)/.test(t)) probe.giftLikeNodes++;
-      }
-    } catch (e) {}
-    return 'installed|probe=' + JSON.stringify(probe);
-  } catch (e) { return 'error:' + e.message; }
-})()`;
 
 class CommentRenderer {
   constructor(options) {
@@ -324,12 +27,6 @@ class CommentRenderer {
     this.targetFps = options.fps || 10; // 评论区固定帧率（全程使用，不因礼物变化）
     // 取消"检测到礼物后自动提帧"：礼物档与基准帧率保持一致，评论区全程以设置的固定帧率录制，
     // 以消除动态提帧造成的帧时间轴偏移，缩小评论区视频与源视频的时长不一致。
-    this.giftFps = this.targetFps;      // 礼物档帧率 = 固定帧率（不再提帧）
-    this.giftHoldMs = options.giftHoldMs || 1500; // 礼物横幅/特效的保持时长（仅用于显示，不影响帧率）
-    this.giftCheckMs = options.giftCheckMs || 300; // 礼物检测轮询间隔（仅用于横幅，不影响帧率）
-    this._giftActive = false;
-    this._giftActiveUntil = 0;
-    this._giftTimer = null;
     this._timestamps = []; // 帧时间戳(ms)，供合并端精确控制时间轴
 
     // 续帧起始编号：录制中检测到账号冲突回滚重建渲染器时，从已有帧数继续编号，避免覆盖已录帧
@@ -405,7 +102,6 @@ class CommentRenderer {
           }
         }
         if (
-          msg.includes('[GiftBanner]') ||
           msg.includes('[CommentProbe]') ||
           msg.includes('[BannerInfo]') ||
           msg.includes('[GiftHeartbeat]') ||
@@ -675,8 +371,6 @@ class CommentRenderer {
 
     logger.info('[CommentRenderer] 初始化完成');
 
-    // 注入礼物横幅常驻脚本：评论区顶部显示"谁送了礼物+图标"提示条
-    await this.injectGiftBanner();
   }
 
   /**
@@ -734,8 +428,6 @@ class CommentRenderer {
       // 刷新后页面脚本与样式全部丢失，需恢复与 init 一致的状态：
       // 1) 重新注入评论区隐藏 CSS（否则视频播放器/导航重新渲染，布局漂移且浪费资源）
       await this._injectCommentOnlyCSS();
-      // 2) 重新注入礼物横幅/心跳检测
-      await this.injectGiftBanner();
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
       let detectedRect = await this._detectCommentAreaFromDOM();
@@ -945,29 +637,6 @@ class CommentRenderer {
     }
   }
 
-  // 注入礼物横幅常驻脚本：监听评论区礼物消息 → 在评论区顶部插入"谁送了什么礼物"提示条
-  async injectGiftBanner() {
-    try {
-      if (!this.captureWindow || this.captureWindow.isDestroyed()) {
-        logger.warn('[CommentRenderer] 注入礼物横幅失败: 窗口不可用');
-        return;
-      }
-      const ret = await this.captureWindow.webContents.executeJavaScript(GIFT_BANNER_SCRIPT);
-      logger.info(`[CommentRenderer] 礼物横幅脚本注入结果: ${ret}`);
-      // 解析探测信息
-      const pm = String(ret || '').match(/probe=(\{.*\})/);
-      if (pm) {
-        try {
-          const p = JSON.parse(pm[1]);
-          logger.info(`[CommentRenderer] 页面检查: 页面已加载=${p.pageLoaded}, 含礼物文字节点数=${p.giftLikeNodes}, 横幅已挂载=${p.bannerMounted}`);
-          if (!p.pageLoaded) { logger.warn('[CommentRenderer] 页面body未加载，评论区可能为空/未登录'); }
-          if (p.giftLikeNodes === 0) { logger.warn('[CommentRenderer] 未检测到任何"送出/赠送/打赏"文字，确认页面是否有实时礼物消息(可能未登录)'); }
-        } catch (e) {}
-      }
-    } catch (e) {
-      logger.warn('[CommentRenderer] 注入礼物横幅失败:', e.message);
-    }
-  }
 
   /**
    * 探测评论区在页面中的实际位置
@@ -1134,9 +803,6 @@ class CommentRenderer {
     this._startTime = Date.now();
     this._captureStartTime = this._startTime;
 
-    // 动态帧率状态（礼物特效检测）
-    this._giftActive = false;
-    this._giftActiveUntil = 0;
     this._timestamps = [];
 
     // 页面自愈状态（容器缺失自愈刷新）：每个录制会话重置
@@ -1151,7 +817,6 @@ class CommentRenderer {
 
     // 基准帧间隔 vs 礼物动画帧间隔
     this._baseInterval = Math.floor(1000 / this.targetFps);
-    this._giftInterval = Math.floor(1000 / this.giftFps);
     let capturing = false;
 
     const captureFrame = async () => {
@@ -1162,8 +827,7 @@ class CommentRenderer {
       // 防止重入
       if (capturing) {
         if (this.capturing) {
-          const _inGift = this._giftActive && Date.now() < this._giftActiveUntil;
-          this._captureTimer = setTimeout(captureFrame, _inGift ? this._giftInterval : this._baseInterval);
+          this._captureTimer = setTimeout(captureFrame, this._baseInterval);
         }
         return;
       }
@@ -1245,18 +909,13 @@ class CommentRenderer {
       // 记录帧时间戳（相对捕获开始，供合并精确控时）
       this._timestamps.push(this.frameCount ? Date.now() - this._captureStartTime : 0);
 
-      // 安排下一次捕获：全程使用固定帧率（不再因礼物提帧）
+      // 安排下一次捕获：全程使用固定帧率
       if (this.capturing) {
         const elapsed = Date.now() - now;
-        const inGift = this._giftActive && Date.now() < this._giftActiveUntil;
-        const curInterval = inGift ? this._giftInterval : this._baseInterval;
-        const nextDelay = Math.max(0, curInterval - elapsed);
+        const nextDelay = Math.max(0, this._baseInterval - elapsed);
         this._captureTimer = setTimeout(captureFrame, nextDelay);
       }
     };
-
-    // 启动礼物检测（后台轮询，不影响帧捕获）
-    this._startGiftDetection();
 
     // 启动账号冲突检测（仅对有账号模式且注册了回调时启用）
     if (this.onAccountConflict && !this.noLoginMode) {
@@ -1279,8 +938,6 @@ class CommentRenderer {
       this._captureTimer = null;
     }
 
-    // 停止礼物检测
-    this._stopGiftDetection();
 
     const duration = this._startTime ? Date.now() - this._startTime : 0;
     const actualFps = duration > 0 ? (this.frameCount / (duration / 1000)) : this.targetFps;
@@ -1330,43 +987,6 @@ class CommentRenderer {
     };
   }
 
-  /**
-   * 启动礼物特效检测（轮询页面，用于在评论区渲染礼物横幅；全程固定帧率，不影响保存帧率）
-   */
-  _startGiftDetection() {
-    this._stopGiftDetection();
-    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
-
-    this._giftActive = false;
-    this._giftActiveUntil = 0;
-    this._giftTimer = setInterval(() => {
-      if (!this.capturing || !this.captureWindow || this.captureWindow.isDestroyed()) {
-        this._stopGiftDetection();
-        return;
-      }
-      this.captureWindow.webContents
-        .executeJavaScript(GIFT_DETECT_SCRIPT, true)
-        .then((active) => {
-          if (active) {
-            this._giftActive = true;
-            this._giftActiveUntil = Date.now() + this.giftHoldMs;
-          } else if (Date.now() > this._giftActiveUntil) {
-            this._giftActive = false;
-          }
-        })
-        .catch(() => {});
-    }, this.giftCheckMs);
-  }
-
-  /**
-   * 停止礼物特效检测
-   */
-  _stopGiftDetection() {
-    if (this._giftTimer) {
-      clearInterval(this._giftTimer);
-      this._giftTimer = null;
-    }
-  }
 
   /**
    * 启动账号冲突检测（防呆）：周期性检查评论区页面是否提示"已在其它设备登录"
@@ -1425,55 +1045,7 @@ class CommentRenderer {
     }
   }
 
-  /**
-   * 外部礼物注入接口（供 WS 礼物流等调用，完全与内部 DOM 检测解耦）
-   * @param {object} data - { nick, giftName, count, iconUrl }
-   * 说明：任何异常都静默吞掉，绝不影响评论区录制与源画面录制主流程。
-   */
-  async injectExternalGift(data) {
-    try {
-      if (!data || (!data.nick && !data.giftName)) return;
-      // 1) 礼物检测/横幅（全程固定帧率，此处不再触发提帧）
-      await this._showExternalBanner(data);
-      logger.info(`[GiftStream] 外部礼物已注入: ${data.nick} 送出 ${data.giftName} x${data.count || 1}`);
-    } catch (e) {
-      // 保底：绝不让外部礼物流的异常影响录制主链路
-      if (e && (e.code === 'ERR_OFFSCREEN' || /destroyed|destroy|Object has been/i.test(e.message || ''))) {
-        logger.debug('[GiftStream] 渲染器已销毁，忽略外部礼物注入');
-      } else {
-        logger.warn('[GiftStream] 外部礼物注入失败(不影响录制):', e && e.message);
-      }
-    }
-  }
 
-  /**
-   * 在离屏页面渲染礼物横幅（调用页面暴露的 window.__showGiftBanner）
-   */
-  async _showExternalBanner(data) {
-    if (!this.captureWindow || this.captureWindow.isDestroyed() || this.captureWindow.webContents.isDestroyed()) {
-      return;
-    }
-    const icon = data.iconUrl ? `'${String(data.iconUrl).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'` : 'null';
-    const nick = String(data.nick || '');
-    const gift = String(data.giftName || '');
-    const cnt = Number(data.count) || 1;
-    const src = `(()=>{try{
-      if (typeof window.__showGiftBanner === 'function') {
-        window.__showGiftBanner({ nick: ${JSON.stringify(nick)}, giftName: ${JSON.stringify(gift)}, count: ${cnt} }, ${icon});
-        return 'ok';
-      }
-      // 兜底：横幅函数未就绪时，直接注入一条模拟礼物消息触发 MutationObserver 路径
-      if (window.__commentBannerRoot) {
-        const el = document.createElement('li');
-        el.textContent = ${JSON.stringify(nick + ' 送出 ' + gift + ' x' + cnt)};
-        el.setAttribute('data-gift-banner', '1');
-        window.__commentBannerRoot.appendChild(el);
-        return 'fallback';
-      }
-      return 'noop';
-    }catch(err){ return 'err'; }})()`;
-    await this.captureWindow.webContents.executeJavaScript(src, true);
-  }
 
   /**
    * 清理所有资源

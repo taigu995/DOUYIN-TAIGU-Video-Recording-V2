@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-基于 Electron 的抖音直播录制桌面工具，采用**流媒体直录 + 离屏评论区渲染**架构，实现高质量音视频录制并拼接右侧评论区弹幕和礼物特效，支持 Windows 系统。
+基于 Electron 的抖音直播录制桌面工具，采用**流媒体直录 + 离屏评论区渲染**架构，实现高质量音视频录制并拼接右侧评论区弹幕，支持 Windows 系统。
 
 ## 技术栈
 
@@ -54,7 +54,7 @@ Phase 2 (录制结束后):
 
 ### 评论区渲染器 (src/lib/comment-renderer.js)
 - 使用 Electron 离屏渲染 (offscreen: true) 创建隐藏 BrowserWindow
-- 加载直播页面后注入 CSS，仅显示右侧评论区（弹幕+礼物特效）
+- 加载直播页面后注入 CSS，仅显示右侧评论区（弹幕）
 - 通过 `webContents.capturePage()` + crop 裁剪到评论区区域
 - 帧保存为 JPEG 文件序列，供后续 FFmpeg 合并
 

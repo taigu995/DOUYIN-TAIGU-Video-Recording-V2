@@ -1000,8 +1000,6 @@ class StreamManager {
       session: sessionName,
       recordMode: recordMode,
       commentFps: streamState.info.commentFps || config.commentFps || 30,
-      giftHoldMs: config.giftHoldMs || 1500,
-      giftCheckMs: config.giftCheckMs || 300,
       sessionName: sessionName,
       onStatusChange: (status, data) => {
         if (status === 'mode-rolled-back') {

@@ -71,9 +71,6 @@ class Recorder {
     this.session = options.session;
     this.recordMode = options.recordMode || 'with-account'; // 'with-account' | 'stream-only' | 'stream+comment-no-login'
     this.commentFps = options.commentFps || 30;
-    // 评论区全程固定帧率（取消礼物自动提帧），不再保留 giftFps
-    this.giftHoldMs = options.giftHoldMs || 1500;
-    this.giftCheckMs = options.giftCheckMs || 300;
     this.sessionName = options.sessionName || 'persist:douyin';
 
     this.recording = false;
@@ -448,8 +445,6 @@ class Recorder {
           outputDir: this._commentFramesDir,
           debugDir: path.dirname(this.outputFile),
           fps: this.commentFps,
-          giftHoldMs: this.giftHoldMs,
-          giftCheckMs: this.giftCheckMs,
           sessionName: this.sessionName,
           noLoginMode: this.recordMode === 'stream+comment-no-login',
           onAccountConflict: () => {
@@ -2004,8 +1999,6 @@ class Recorder {
         outputDir: this._commentFramesDir,
         debugDir: path.dirname(this.outputFile),
         fps: this.commentFps,
-        giftHoldMs: this.giftHoldMs,
-        giftCheckMs: this.giftCheckMs,
         sessionName: this.sessionName,
         noLoginMode: true,
         frameStartIndex: absoluteCount
