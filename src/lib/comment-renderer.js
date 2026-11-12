@@ -15,6 +15,76 @@ const COMMENT_WIDTH = 500;   // 评论区宽度（捕获区域宽度）
 const COMMENT_HEIGHT = 1080; // 评论区高度（与主视频对齐）
 const CAPTURE_QUALITY = 92;  // JPEG 压缩质量 (1-100)
 
+// 评论区心跳检测脚本：每5秒检测评论区容器是否存在，用于触发自愈刷新
+const HEARTBEAT_SCRIPT = `(() => {
+  try {
+    if (window.__heartbeatInstalled) return 'already';
+    window.__heartbeatInstalled = true;
+
+    // 评论区容器定位（选择器必须与主进程 _detectCommentAreaFromDOM 保持同步）
+    function findCommentRoot() {
+      if (window.__commentRoot && window.__commentRoot.isConnected) return window.__commentRoot;
+      const sels = [
+        '[class*="webcast-chatroom"]',
+        '[data-e2e="live-chat"]','[data-e2e="chat-room"]',
+        '[class*="chat-list"]','[class*="ChatList"]',
+        '[class*="chat-room"]','[class*="ChatRoom"]',
+        '[class*="room-chat"]','[class*="RoomChat"]',
+        '[class*="live-chat"]','[class*="LiveChat"]',
+        '[class*="side-chat"]',
+        '[class*="message-list"]','[class*="MessageList"]',
+        '[class*="chat-container"]','[class*="ChatContainer"]',
+        '[class*="comment-list"]','[class*="CommentList"]',
+        '[class*="danmu-list"]','[class*="DanmuList"]',
+        '[class*="interact-container"]','[class*="InteractContainer"]',
+        '[class*="scaffold-right"]','[class*="ScaffoldRight"]',
+        '[class*="right-side"]','[class*="RightSide"]',
+        '[class*="side-panel"]','[class*="SidePanel"]',
+        '[class*="live-side"]','[class*="LiveSide"]'
+      ];
+      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__commentRoot = el; return el; } }
+      return null;
+    }
+
+    // 心跳检测：每5秒统计评论区容器状态
+    if (!window.__heartbeatTimer) {
+      window.__heartbeatTimer = setInterval(() => {
+        try {
+          const ct = findCommentRoot();
+          if (!ct) {
+            let ended = false;
+            try { ended = /直播已结束/.test((document.body && document.body.innerText) || ''); } catch (e2) {}
+            let diag = '';
+            try {
+              window.__hbMissCount = (window.__hbMissCount || 0) + 1;
+              if (window.__hbMissCount % 12 === 1) {
+                diag = ' [诊断] url=' + (location.pathname || '') + ' title=' + String(document.title || '').slice(0, 30);
+              }
+            } catch (e3) {}
+            console.log('[GiftHeartbeat] 评论区容器未找到' + (ended ? ' [直播已结束]' : ' [容器缺失]') + diag);
+            return;
+          }
+          // 统计容器内消息数
+          const els = ct.querySelectorAll('*');
+          const seen = new Set();
+          let total = 0;
+          for (let i = 0; i < els.length; i++) {
+            const t = (els[i].textContent || '').replace(/\\s+/g, ' ').trim();
+            if (!t || t.length > 80) continue;
+            if (seen.has(t)) continue;
+            seen.add(t);
+            total++;
+          }
+          const delta = total - (window.__hbLastTotal || 0);
+          window.__hbLastTotal = total;
+          console.log('[GiftHeartbeat] 评论区消息=' + total + ' 新增~' + delta);
+        } catch (e) { console.log('[GiftHeartbeat] 统计异常: ' + e.message); }
+      }, 5000);
+    }
+
+    return 'installed';
+  } catch (e) { return 'error:' + e.message; }
+})()`;
 
 
 class CommentRenderer {
@@ -369,6 +439,14 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 调试截图保存失败:', e.message);
     }
 
+    // 注入评论区心跳检测脚本：每5秒检测容器是否存在，用于触发自愈刷新
+    try {
+      const hbRet = await this.captureWindow.webContents.executeJavaScript(HEARTBEAT_SCRIPT);
+      logger.info(`[CommentRenderer] 心跳检测脚本注入结果: ${hbRet}`);
+    } catch (e) {
+      logger.warn('[CommentRenderer] 心跳检测脚本注入失败:', e.message);
+    }
+
     logger.info('[CommentRenderer] 初始化完成');
 
   }
@@ -428,6 +506,13 @@ class CommentRenderer {
       // 刷新后页面脚本与样式全部丢失，需恢复与 init 一致的状态：
       // 1) 重新注入评论区隐藏 CSS（否则视频播放器/导航重新渲染，布局漂移且浪费资源）
       await this._injectCommentOnlyCSS();
+      // 2) 重新注入心跳检测脚本
+      try {
+        const hbRet = await this.captureWindow.webContents.executeJavaScript(HEARTBEAT_SCRIPT);
+        logger.info(`[CommentRenderer] 自愈刷新后心跳检测脚本注入结果: ${hbRet}`);
+      } catch (e) {
+        logger.warn('[CommentRenderer] 自愈刷新后心跳检测脚本注入失败:', e.message);
+      }
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
       let detectedRect = await this._detectCommentAreaFromDOM();

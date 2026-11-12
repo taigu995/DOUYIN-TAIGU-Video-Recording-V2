@@ -102,3 +102,4 @@ pnpm run build:dir
 - stream-only 模式流提取超时防护（v2.12.14）：`_getStreamUrlWithoutRenderer` 加 60 秒总超时 race，避免临时窗口 loadURL/executeJavaScript 永久挂起；临时窗口注册到 `this._tempStreamWin`，`_cleanup` 统一销毁
 - 合并命令改用 `-fflags +genpts`（v2.12.15）：源视频在某个时间点画面卡住（但单文件播放正常）的问题是 `+discardcorrupt` 丢弃了损坏帧导致后续视频轨无帧输出；`+genpts` 自动修复时间戳异常而不丢弃帧，保证画面连续
 - 合并命令加 `-err_detect ignore_err`（v2.12.16）：源视频含损坏帧时 FFmpeg 解码失败后停止输出视频帧（画面卡住），`ignore_err` 让解码器忽略错误继续处理后续帧，保证画面连续
+- 删除礼物横幅功能（v2.12.17）：礼物横幅（GiftBanner）功能从未实际生效，删除以减少代码臃肿。删除内容包括：GIFT_BANNER_SCRIPT/GIFT_DETECT_SCRIPT 注入脚本、injectGiftBanner/injectExternalGift/_showExternalBanner 方法、_startGiftDetection/_stopGiftDetection 检测轮询、GiftStream WS 礼物流模块、giftHoldMs/giftCheckMs 配置项。保留评论区心跳检测（HEARTBEAT_SCRIPT）用于容器缺失自愈刷新

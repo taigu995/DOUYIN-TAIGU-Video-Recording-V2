@@ -2106,21 +2106,6 @@ class Recorder {
     };
   }
 
-  /**
-   * 外部礼物注入（WS礼物流保底链路）
-   * 由 stream-manager/GiftStream 收到 WS 礼物后调用。
-   * 完全 try/catch 包裹：任何异常都静默降级，绝不影响本录制进程。
-   * @param {object} gift {nickname, giftName, count, iconUrl}
-   */
-  injectExternalGift(gift) {
-    try {
-      if (this.commentRenderer && typeof this.commentRenderer.injectExternalGift === 'function') {
-        this.commentRenderer.injectExternalGift(gift);
-      }
-    } catch (e) {
-      // 保底：WS 礼物链路任何异常都不允许影响录制主流程
-    }
-  }
 }
 
 module.exports = { Recorder, getFFmpegPath };
