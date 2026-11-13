@@ -324,8 +324,10 @@ class CommentRenderer {
       }
       if (!refreshFinished) {
         // 20s 超时：页面导航仍 pending，必须主动终止——否则后续 executeJavaScript 会无限挂起（曾致整场 init 挂死、无任何录制产出）
-        logger.warn('[CommentRenderer] 强制刷新20秒内未完成加载，终止挂起导航后继续初始化');
+        logger.warn('[CommentRenderer] 强制刷新20秒内未完成加载，终止挂起导航后等待页面渲染...');
         try { this.captureWindow.webContents.stop(); } catch (e) {}
+        // 超时后页面可能还在渲染，额外等待 5 秒确保渲染完成（曾致整场弹幕区黑屏）
+        await new Promise(resolve => setTimeout(resolve, 5000));
       }
     } catch (e) {
       if (e && e.message === '评论窗口已在刷新期间被销毁') throw e;
