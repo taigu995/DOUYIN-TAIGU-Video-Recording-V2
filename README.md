@@ -1,14 +1,14 @@
 # 抖音直播录制工具V2
 
-> **当前版本：2.9.2**
+> **当前版本：2.12.21**
 
-基于 Electron 的抖音直播录制桌面工具，采用 **流媒体直录 + 离屏评论区渲染** 架构，实现高质量音视频录制并拼接右侧评论区弹幕、**礼物横幅提示**，支持 Windows 系统。
+基于 Electron 的抖音直播录制桌面工具，采用 **流媒体直录 + 离屏评论区渲染** 架构，实现高质量音视频录制并拼接右侧评论区弹幕，支持 Windows 系统。
 
 ## 功能特性
 
 - **高质量录制**：通过 FFmpeg stream copy 直接录制直播流，保留原始音视频质量，零损耗
 - **评论区拼接**：自动捕获直播间右侧评论区（弹幕），合成到最终视频右侧
-- **礼物横幅提示**：检测到观众送礼时，在评论区上方自动叠加「昵称 送出 礼物×数量」横幅（3 秒淡出）
+- **实时时间戳**：评论区顶部实时显示录制日期时间（YYYY-MM-DD HH:MM:SS），便于后期查看
 - **多账号支持**：登录多个抖音账号，可为每个直播间自由指定录制账号（多个直播间可共用同一账号，冲突时自动降级）
 - **账号冲突防呆**：同一账号被多个直播间同时使用时，后开播者若被抖音顶下线，自动回滚为「无账号+评论区」模式继续录制，保证评论区不中断
 - **默认主账号**：未指定具体账号时自动使用第一个登录的主账号 session 录制
@@ -39,7 +39,7 @@
 Phase 1 (录制中):
   直播流 URL → FFmpeg (stream copy, 分片MP4) → temp 流文件 (原始音视频)
   直播间页面 → Electron 离屏窗口 → 评论区帧序列 (JPEG)
-               └─ 礼物横幅：DOM/WS 检测 → fixed 覆盖层叠加到评论区帧
+               └─ 时间戳：fixed 覆盖层显示录制时间
 
 Phase 2 (录制结束后):
   temp 流文件 + comment_frames/ → FFmpeg 标准化 remux/overlay → final.mp4
@@ -53,7 +53,7 @@ Phase 2 (录制结束后):
 | 主进程 | `main.js` | Electron 主进程，IPC 桥接、任务栏/托盘角标 |
 | 预加载脚本 | `preload.js` | 安全暴露 API 给渲染进程 |
 | 录制引擎 | `src/lib/recorder.js` | FFmpeg 流录制 + 合并 + 账号冲突回滚 |
-| 评论区渲染器 | `src/lib/comment-renderer.js` | 离屏捕获评论区帧 + 礼物横幅检测渲染 |
+| 评论区渲染器 | `src/lib/comment-renderer.js` | 离屏捕获评论区帧 + 时间戳显示 |
 | 直播间管理 | `src/lib/stream-manager.js` | 生命周期管理、状态监控、账号/模式持久化 |
 | 配置管理 | `src/lib/config.js` | electron-store 持久化配置 |
 | 链接解析 | `src/lib/douyin-utils.js` | 抖音分享链接/短链接解析 |
@@ -208,10 +208,9 @@ pnpm run build:dir
 │       ├── config.js           # 配置管理
 │       ├── douyin-utils.js     # 抖音链接解析
 │       ├── recorder.js         # 录制引擎 (FFmpeg 流录制 + 合并)
-│       ├── comment-renderer.js # 评论区离屏渲染器 + 礼物横幅
+│       ├── comment-renderer.js # 评论区离屏渲染器 + 时间戳显示
 │       ├── stream-manager.js   # 直播间生命周期管理
 │       ├── account-manager.js  # 多账号登录与会话管理
-│       ├── gift-stream.js      # WS 礼物流 (独立模块，静默降级)
 │       ├── manual-merger.js    # 手动合并中间产物
 │       ├── logger.js           # 日志组件
 │       └── badge.js            # 任务栏/托盘角标 PNG 合成
@@ -230,10 +229,10 @@ pnpm run build:dir
 - 评论区帧率默认 15fps（评论区不需要高帧率，节省资源）
 - 同一账号分配给多个直播间时，后开播者可能被抖音顶下线，此时会自动回滚为「无账号+评论区」模式保证评论区不中断
 
-### 礼物横幅
-- 礼物横幅叠加在评论区右上角，显示「昵称 送出 礼物 × 数量」，3 秒后淡出
-- 礼物来源：优先采集直播间页面评论区消息，辅以独立 WS 礼物流（风控时静默降级，不影响弹幕区和源画面录制）
-- 礼物横幅仅在「有账号+评论区 / 无账号+评论区」等含评论区的模式下生效
+### 时间戳显示
+- 评论区顶部实时显示录制日期时间（格式：YYYY-MM-DD HH:MM:SS）
+- 每秒更新一次，便于后期查看录制时间
+- 半透明黑色背景，白色等宽字体，不影响弹幕内容
 
 ### 系统资源
 - 录制期间会占用一定的 CPU 和内存资源，建议关闭不必要的应用程序
@@ -248,6 +247,14 @@ pnpm run build:dir
 ### 其他
 - 仅支持 Windows 系统
 - 程序支持最小化到系统托盘
+
+## 下载
+
+### 最新版本：v2.12.21
+
+- **源码包**：[douyin-recorder-v2.12.21.tar.gz](https://code.coze.cn/api/sandbox/coze_coding/file/proxy?expire_time=-1&file_path=public%2Fdouyin-recorder-v2.12.21.tar.gz)
+
+> **注意**：源码包需要安装 Node.js 和 pnpm 依赖后运行。如需 Windows 安装包，请使用 `pnpm run build` 自行打包。
 
 ## 许可证
 
