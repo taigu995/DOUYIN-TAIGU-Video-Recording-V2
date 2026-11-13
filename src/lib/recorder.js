@@ -396,7 +396,7 @@ class Recorder {
       const dateStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
       const timeStrFull = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
       const timeStrShort = `${pad(now.getHours())}-${pad(now.getMinutes())}`;
-      const safeName = (this.streamerName || '未知主播').replace(/[<>:"/\\|?*]/g, '_');
+      const safeName = (this.streamerName || '未知主播').replace(/[<>:"/\\|?*]/g, '_').replace(/\.$/, '_');
 
       // 会话文件夹: 主播名称_年-月-日_时-分-秒（避免使用方括号，FFmpeg会将其解释为通配符）
       const sessionFolder = path.join(streamerFolder, `${safeName}_${dateStr}_${timeStrFull}`);
