@@ -92,25 +92,42 @@ const TIMESTAMP_SCRIPT = `(() => {
     if (window.__timestampInstalled) return 'already';
     window.__timestampInstalled = true;
 
+    // 查找评论区容器
+    const findCommentRoot = () => {
+      const sels = [
+        '[class*="webcast-chatroom"]',
+        '[class*="chatroom"]',
+        '[class*="comment"]'
+      ];
+      for (const s of sels) { const el = document.querySelector(s); if (el) return el; }
+      return null;
+    };
+
+    const root = findCommentRoot();
+    if (!root) return 'error:comment_root_not_found';
+
     // 创建时间显示元素
     const el = document.createElement('div');
     el.id = '__recorder_timestamp';
     el.style.cssText = \`
-      position: fixed;
+      position: sticky;
       top: 0;
       left: 0;
       right: 0;
       z-index: 999999;
-      background: rgba(0, 0, 0, 0.8);
+      background: rgba(0, 0, 0, 0.85);
       color: #fff;
-      font-size: 14px;
+      font-size: 13px;
       font-family: 'Courier New', monospace;
-      padding: 6px 12px;
+      padding: 4px 8px;
       text-align: center;
       pointer-events: none;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+      margin-bottom: 4px;
     \`;
-    document.body.appendChild(el);
+
+    // 插入到评论区容器顶部
+    root.insertBefore(el, root.firstChild);
 
     // 更新时间函数
     function updateTime() {
