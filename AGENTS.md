@@ -104,3 +104,4 @@ pnpm run build:dir
 - 合并命令加 `-err_detect ignore_err`（v2.12.16）：源视频含损坏帧时 FFmpeg 解码失败后停止输出视频帧（画面卡住），`ignore_err` 让解码器忽略错误继续处理后续帧，保证画面连续
 - 删除礼物横幅功能（v2.12.17）：礼物横幅（GiftBanner）功能从未实际生效，删除以减少代码臃肿。删除内容包括：GIFT_BANNER_SCRIPT/GIFT_DETECT_SCRIPT 注入脚本、injectGiftBanner/injectExternalGift/_showExternalBanner 方法、_startGiftDetection/_stopGiftDetection 检测轮询、GiftStream WS 礼物流模块、giftHoldMs/giftCheckMs 配置项。保留评论区心跳检测（HEARTBEAT_SCRIPT）用于容器缺失自愈刷新
 - 强制刷新超时后增加渲染等待（v2.12.18）：强制刷新 20s 超时后 `stopLoading()` 终止挂起导航，但页面可能还在渲染中，后续 `capturePage()` 捕获的是黑屏帧（曾致整场弹幕区全黑）。修复：超时后额外等待 5s 确保页面渲染完成再初始化
+- 评论区实时显示录制时间（v2.12.19）：在评论区顶部注入时间戳显示脚本，实时显示当前录制日期时间（格式：YYYY-MM-DD HH:MM:SS），每秒更新一次。时间戳显示在评论区最顶部，固定定位，半透明黑色背景，白色等宽字体，不影响弹幕内容。init 和自愈刷新后均会注入

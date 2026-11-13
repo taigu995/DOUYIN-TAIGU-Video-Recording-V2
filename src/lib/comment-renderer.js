@@ -86,6 +86,53 @@ const HEARTBEAT_SCRIPT = `(() => {
   } catch (e) { return 'error:' + e.message; }
 })()`;
 
+// 评论区时间戳显示脚本：在评论区顶部显示当前录制时间
+const TIMESTAMP_SCRIPT = `(() => {
+  try {
+    if (window.__timestampInstalled) return 'already';
+    window.__timestampInstalled = true;
+
+    // 创建时间显示元素
+    const el = document.createElement('div');
+    el.id = '__recorder_timestamp';
+    el.style.cssText = \`
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 999999;
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      font-size: 14px;
+      font-family: 'Courier New', monospace;
+      padding: 6px 12px;
+      text-align: center;
+      pointer-events: none;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    \`;
+    document.body.appendChild(el);
+
+    // 更新时间函数
+    function updateTime() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const M = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const h = String(now.getHours()).padStart(2, '0');
+      const m = String(now.getMinutes()).padStart(2, '0');
+      const s = String(now.getSeconds()).padStart(2, '0');
+      el.textContent = y + '-' + M + '-' + d + ' ' + h + ':' + m + ':' + s;
+    }
+
+    // 立即更新一次
+    updateTime();
+    // 每秒更新
+    window.__timestampTimer = setInterval(updateTime, 1000);
+
+    return 'installed';
+  } catch (e) { return 'error:' + e.message; }
+})();`;
+
 
 class CommentRenderer {
   constructor(options) {
@@ -449,6 +496,14 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 心跳检测脚本注入失败:', e.message);
     }
 
+    // 注入评论区时间戳显示脚本：在评论区顶部显示当前录制时间
+    try {
+      const tsRet = await this.captureWindow.webContents.executeJavaScript(TIMESTAMP_SCRIPT);
+      logger.info(`[CommentRenderer] 时间戳脚本注入结果: ${tsRet}`);
+    } catch (e) {
+      logger.warn('[CommentRenderer] 时间戳脚本注入失败:', e.message);
+    }
+
     logger.info('[CommentRenderer] 初始化完成');
 
   }
@@ -514,6 +569,13 @@ class CommentRenderer {
         logger.info(`[CommentRenderer] 自愈刷新后心跳检测脚本注入结果: ${hbRet}`);
       } catch (e) {
         logger.warn('[CommentRenderer] 自愈刷新后心跳检测脚本注入失败:', e.message);
+      }
+      // 3) 重新注入时间戳显示脚本
+      try {
+        const tsRet = await this.captureWindow.webContents.executeJavaScript(TIMESTAMP_SCRIPT);
+        logger.info(`[CommentRenderer] 自愈刷新后时间戳脚本注入结果: ${tsRet}`);
+      } catch (e) {
+        logger.warn('[CommentRenderer] 自愈刷新后时间戳脚本注入失败:', e.message);
       }
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
