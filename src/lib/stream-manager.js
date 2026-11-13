@@ -539,7 +539,7 @@ class StreamManager {
       }
       streamState._startRetryBlockedUntil = null;
       streamState._startFailStreak = 0;
-      if (streamState.info.lastError === '录制连续启动失败，已暂停自动重试5分钟') {
+      if (streamState.info.lastError === '录制连续启动失败，已暂停自动重试1分钟') {
         delete streamState.info.lastError;
       }
       logger.info(`[Monitor] ${info.streamerName} 启动失败熔断期结束，恢复自动录制尝试`);
@@ -1030,10 +1030,10 @@ class StreamManager {
           const hadFirstFrame = !!(data && data.hadFirstFrame);
           if (aliveMs !== null && aliveMs < 10000 && !hadFirstFrame) {
             streamState._startFailStreak = (streamState._startFailStreak || 0) + 1;
-            if (streamState._startFailStreak >= 3 && !streamState._startRetryBlockedUntil) {
-              streamState._startRetryBlockedUntil = Date.now() + 5 * 60 * 1000;
-              streamState.info.lastError = '录制连续启动失败，已暂停自动重试5分钟';
-              logger.error(`[Monitor] ${streamState.info.streamerName} 连续${streamState._startFailStreak}次启动即失败（FFmpeg秒退且无输出帧），暂停自动重录5分钟`);
+            if (streamState._startFailStreak >= 20 && !streamState._startRetryBlockedUntil) {
+              streamState._startRetryBlockedUntil = Date.now() + 1 * 60 * 1000;
+              streamState.info.lastError = '录制连续启动失败，已暂停自动重试1分钟';
+              logger.error(`[Monitor] ${streamState.info.streamerName} 连续${streamState._startFailStreak}次启动即失败（FFmpeg秒退且无输出帧），暂停自动重录1分钟`);
             } else {
               logger.warn(`[Monitor] ${streamState.info.streamerName} 启动即失败（存活${Math.round(aliveMs / 1000)}s、无第一帧），第${streamState._startFailStreak}次`);
             }
