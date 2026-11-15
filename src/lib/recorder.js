@@ -90,6 +90,7 @@ class Recorder {
     this._streamUrl = null;
     this._mergeResult = null;
     this._lastRecordingResult = null;
+    this._stallUrlRefresh = false; // 视频轨停滞后的 URL 刷新重启标志
 
     // 合并进度持久化
     this._mergeProgressFile = ''; // 合并进度文件路径
@@ -658,8 +659,10 @@ class Recorder {
             const reason = rewindKill
               ? `流时间轴回绕损坏（DTS 大幅回退 ×${this._dtsRewindCount}）`
               : `视频轨停滞（DTS 连续 ${this._dtsDupCount} 次无进展，画面已卡死但连接未断）`;
-            logger.warn(`[Recorder] ${reason}，继续录制将产出画面卡住且不可合并的损坏文件，强制重启录制: ${this.streamerName}`);
-            try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
+            logger.warn(`[Recorder] ${reason}，尝试重新获取直播流 URL: ${this.streamerName}`);
+
+            // 异步重新获取直播流 URL（视频轨停滞可能是 URL 过期导致）
+            this._tryRefreshStreamUrl(stallKill, rewindKill);
           }
           continue; // 不进入常规逐条日志输出
         }
@@ -694,6 +697,12 @@ class Recorder {
       logger.info(`[FFmpeg-Stream] 进程退出, code: ${code}`);
       this.ffmpegProcess = null;
       if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
+
+      // 如果是视频轨停滞后的 URL 刷新重启，不触发 stream-interrupted（已在 setTimeout 中重启）
+      if (this._stallUrlRefresh) {
+        logger.info('[Recorder] 视频轨停滞 URL 刷新重启，等待新 FFmpeg 进程启动...');
+        return;
+      }
 
       // 如果仍在录制中，流中断意味着录制结束
       if (this.recording) {
@@ -1414,6 +1423,59 @@ class Recorder {
     } catch (e) {
       logger.warn(`[Recorder] video提取异常: ${e.message}`);
       return null;
+    }
+  }
+
+  /**
+   * 视频轨停滞/时间轴回绕时，尝试重新获取直播流 URL 并重启 FFmpeg 进程
+   * @param {boolean} isStall - 是否视频轨停滞
+   * @param {boolean} isRewind - 是否时间轴回绕
+   */
+  async _tryRefreshStreamUrl(isStall, isRewind) {
+    let newStreamUrl = null;
+    try {
+      logger.info('[Recorder] 重新获取直播流 URL...');
+      // 优先使用评论区窗口提取（如果有），否则用无渲染模式
+      if (this.commentRenderer && this.commentRenderer.captureWindow) {
+        const streamInfo = await this._extractStreamUrl();
+        if (streamInfo && streamInfo.url) {
+          newStreamUrl = streamInfo.url;
+          logger.info(`[Recorder] 重新获取直播流 URL 成功 (评论区窗口): ${newStreamUrl.slice(0, 80)}...`);
+        }
+      } else {
+        const streamInfo = await this._getStreamUrlWithoutRenderer();
+        if (streamInfo && streamInfo.url) {
+          newStreamUrl = streamInfo.url;
+          logger.info(`[Recorder] 重新获取直播流 URL 成功 (无渲染模式): ${newStreamUrl.slice(0, 80)}...`);
+        }
+      }
+    } catch (e) {
+      logger.warn(`[Recorder] 重新获取直播流 URL 失败: ${e.message}`);
+    }
+
+    if (newStreamUrl) {
+      // 用新的 URL 重启 FFmpeg 进程（在同一个场次内，不触发 stream-interrupted）
+      logger.info(`[Recorder] 用新 URL 重启 FFmpeg 进程: ${this.streamerName}`);
+      // 标记为视频轨停滞重启（避免触发 stream-interrupted）
+      this._stallUrlRefresh = true;
+      try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
+      // 更新 URL 并重置统计
+      this._streamUrl = newStreamUrl;
+      this._dtsDupCount = 0;
+      this._dtsRewindCount = 0;
+      this._dtsWarnCount = 0;
+      // 延迟重启 FFmpeg 进程（等待旧进程完全退出）
+      setTimeout(() => {
+        if (this.recording && !this.ffmpegProcess) {
+          logger.info(`[Recorder] 重启 FFmpeg 进程（新 URL）: ${this.streamerName}`);
+          this._stallUrlRefresh = false;
+          this._startStreamRecording();
+        }
+      }, 1000);
+    } else {
+      // 重新获取 URL 失败，强制重启录制（触发 stream-interrupted）
+      logger.warn(`[Recorder] 重新获取直播流 URL 失败，强制重启录制: ${this.streamerName}`);
+      try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
     }
   }
 
