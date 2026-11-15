@@ -802,8 +802,10 @@ class Recorder {
     }
 
     if (streamFileExists && hasCommentFrames) {
-      // 有直播流 + 有评论区帧 → 合并
-      logger.info(`[Recorder] 开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
+      // 有直播流 + 有评论区帧 → 延迟 5 分钟后合并（防止直播流中断后重新获取流时造成卡顿）
+      logger.info(`[Recorder] 等待 5 分钟后开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
+      await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)); // 5 分钟
+      logger.info('[Recorder] 开始合并直播流和评论区...');
       this.onStatusChange('merging', {
         roomId: this.roomId,
         streamerName: this.streamerName,
