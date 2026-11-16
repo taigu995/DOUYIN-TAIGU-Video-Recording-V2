@@ -6,7 +6,56 @@
 
 ## 下载链接
 
+### 源代码（可自行打包）
+- [抖音直播录制工具V2 v2.12.26 源代码](https://demo.dev.coze.site/douyin-recorder-v2.12.26-source.tar.gz) (121 MB)
+
+### Windows 打包版（可能无法直接运行）
 - [抖音直播录制工具V2 v2.12.26 Windows 版](https://demo.dev.coze.site/douyin-recorder-v2.12.26-windows.tar.gz) (264 MB)
+
+## Windows 10 打包说明
+
+如果您下载的是源代码，可以按照以下步骤在 Windows 10 上打包成品软件：
+
+### 1. 环境准备
+
+1. 安装 Node.js (推荐 v18 或更高版本)
+   - 下载地址：https://nodejs.org/
+   - 安装时勾选 "Automatically install the necessary tools"
+
+2. 安装 pnpm
+   ```bash
+   npm install -g pnpm
+   ```
+
+### 2. 解压源代码
+
+```bash
+# 使用 tar 命令解压（Windows 10 内置）
+tar -xzf douyin-recorder-v2.12.26-source.tar.gz
+
+# 或使用解压工具（如 7-Zip、WinRAR）
+```
+
+### 3. 安装依赖
+
+```bash
+cd douyin-recorder-source
+pnpm install
+```
+
+### 4. 打包成品软件
+
+```bash
+# 打包为 Windows 安装包
+pnpm run build
+
+# 或者打包为目录（不生成安装包）
+pnpm run build:dir
+```
+
+打包完成后，成品软件位于 `dist/` 目录下：
+- `win-unpacked/` - 可直接运行的目录
+- `抖音直播录制工具V2 Setup 2.12.26.exe` - 安装包（如果生成了安装包）
 
 ## 功能特性
 
