@@ -18,7 +18,6 @@ const fs = require('fs');
 const { generateFileName } = require('./douyin-utils');
 const { getConfig } = require('./config');
 const { getLogger } = require('./logger');
-const { LeftPanelRenderer } = require('./left-panel-renderer');
 const { CommentRenderer, COMMENT_WIDTH, COMMENT_HEIGHT } = require('./comment-renderer');
 const { LeftPanelRenderer, LEFT_PANEL_WIDTH, LEFT_PANEL_HEIGHT } = require('./left-panel-renderer');
 

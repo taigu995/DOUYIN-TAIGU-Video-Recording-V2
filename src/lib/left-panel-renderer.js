@@ -402,6 +402,8 @@ class LeftPanelRenderer {
     logger.info(`[LeftPanelRenderer] 开始捕获左侧面板帧, 固定FPS: ${this.targetFps}, 输出目录: ${this.outputDir}`);
 
     const frameInterval = 1000 / this.targetFps;
+    // 检查间隔设为帧间隔的 1/3，确保能按目标帧率捕获
+    const checkInterval = Math.max(10, Math.floor(frameInterval / 3));
     let lastCaptureTime = Date.now();
 
     this._captureTimer = setInterval(async () => {
@@ -440,7 +442,7 @@ class LeftPanelRenderer {
       } catch (e) {
         logger.error('[LeftPanelRenderer] 捕获帧失败:', e.message);
       }
-    }, 100); // 检查间隔 100ms
+    }, checkInterval);
   }
 
   /**
