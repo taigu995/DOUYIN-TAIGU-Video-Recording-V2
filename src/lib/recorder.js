@@ -18,7 +18,9 @@ const fs = require('fs');
 const { generateFileName } = require('./douyin-utils');
 const { getConfig } = require('./config');
 const { getLogger } = require('./logger');
+const { LeftPanelRenderer } = require('./left-panel-renderer');
 const { CommentRenderer, COMMENT_WIDTH, COMMENT_HEIGHT } = require('./comment-renderer');
+const { LeftPanelRenderer, LEFT_PANEL_WIDTH, LEFT_PANEL_HEIGHT } = require('./left-panel-renderer');
 
 const logger = getLogger();
 
@@ -77,6 +79,7 @@ class Recorder {
     this._startingUp = false; // 启动中（init/取流/FFmpeg启动阶段），供 stopRecording 识别"启动挂起被取消"
     this.ffmpegProcess = null;
     this.commentRenderer = null;
+    this.leftPanelRenderer = null; // 左侧信息面板渲染器
     this.outputFile = '';
     this.startTime = null;
     this.hasAudio = false;
@@ -85,6 +88,7 @@ class Recorder {
     this._tempDir = '';
     this._tempStreamFile = '';
     this._commentFramesDir = '';
+    this._leftPanelFramesDir = ''; // 左侧面板帧目录
 
     // 状态
     this._streamUrl = null;
@@ -413,10 +417,12 @@ class Recorder {
       this._tempDir = path.join(sessionFolder, '.temp');
       this._tempStreamFile = path.join(this._tempDir, 'stream.mp4');
       this._commentFramesDir = path.join(this._tempDir, 'comments');
-      
+      this._leftPanelFramesDir = path.join(this._tempDir, 'left-panel');
+
       try {
         fs.mkdirSync(this._tempDir, { recursive: true });
         fs.mkdirSync(this._commentFramesDir, { recursive: true });
+        fs.mkdirSync(this._leftPanelFramesDir, { recursive: true });
         // 验证目录是否创建成功
         if (!fs.existsSync(this._tempDir)) {
           throw new Error(`临时目录创建失败: ${this._tempDir}`);
@@ -424,8 +430,12 @@ class Recorder {
         if (!fs.existsSync(this._commentFramesDir)) {
           throw new Error(`评论帧目录创建失败: ${this._commentFramesDir}`);
         }
+        if (!fs.existsSync(this._leftPanelFramesDir)) {
+          throw new Error(`左侧面板帧目录创建失败: ${this._leftPanelFramesDir}`);
+        }
         logger.info(`[Recorder] 临时目录已创建: ${this._tempDir}`);
         logger.info(`[Recorder] 评论帧目录已创建: ${this._commentFramesDir}`);
+        logger.info(`[Recorder] 左侧面板帧目录已创建: ${this._leftPanelFramesDir}`);
       } catch (err) {
         logger.error(`[Recorder] 创建临时目录失败: ${err.message}`);
         throw err;
@@ -436,6 +446,8 @@ class Recorder {
 
       // Step 1: 初始化评论区渲染器（根据录制模式决定是否初始化）
       const useCommentRenderer = this.recordMode !== 'stream-only';
+      // 左侧面板仅在 'stream+comment+effect' 模式下启用
+      const useLeftPanelRenderer = this.recordMode === 'stream+comment+effect';
 
       if (useCommentRenderer) {
         logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
@@ -458,6 +470,30 @@ class Recorder {
         await this.commentRenderer.init();
       } else {
         logger.info('[Recorder] 纯直播流录制模式，跳过评论区渲染器');
+      }
+
+      // Step 1.5: 初始化左侧面板渲染器（仅在竖屏直播时启用）
+      if (useLeftPanelRenderer) {
+        try {
+          logger.info(`[Recorder] 初始化左侧面板渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
+          this.leftPanelRenderer = new LeftPanelRenderer({
+            liveUrl: this.liveUrl,
+            roomId: this.roomId,
+            session: this.session,
+            outputDir: this._leftPanelFramesDir,
+            debugDir: path.dirname(this.outputFile),
+            fps: this.commentFps,
+            sessionName: this.sessionName,
+            noAccountMode: false // 特效区模式使用账号登录
+          });
+          await this.leftPanelRenderer.init();
+          logger.info('[Recorder] 左侧面板渲染器初始化成功');
+        } catch (leftErr) {
+          logger.warn(`[Recorder] 左侧面板渲染器初始化失败: ${leftErr.message}，将使用纯直播流+评论区模式`);
+          this.leftPanelRenderer = null;
+        }
+      } else {
+        logger.info('[Recorder] 纯直播流录制模式，跳过左侧面板渲染器');
       }
 
       // Step 2: 获取直播流URL
@@ -794,6 +830,12 @@ class Recorder {
       commentInfo = this.commentRenderer.stopCapture();
     }
 
+    // Step 2.5: 停止左侧面板捕获（如果有）
+    let leftPanelInfo = null;
+    if (this.leftPanelRenderer) {
+      leftPanelInfo = this.leftPanelRenderer.stopCapture();
+    }
+
     // Step 3: 合并直播流和评论区
     const streamFileExists = fs.existsSync(this._tempStreamFile);
 
@@ -809,6 +851,18 @@ class Recorder {
     const commentInfoFrameCount = (commentInfo && commentInfo.frameCount) || 0;
     const hasCommentFrames = commentInfoFrameCount > 0 || commentFrameFiles > 0;
 
+    // 判定是否有左侧面板帧
+    let leftPanelFrameFiles = 0;
+    try {
+      if (this._leftPanelFramesDir && fs.existsSync(this._leftPanelFramesDir)) {
+        leftPanelFrameFiles = fs.readdirSync(this._leftPanelFramesDir)
+          .filter((f) => /^frame_\d{6}\.jpg$/.test(f)).length;
+      }
+    } catch (e) { /* 忽略扫描错误 */ }
+
+    const leftPanelInfoFrameCount = (leftPanelInfo && leftPanelInfo.frameCount) || 0;
+    const hasLeftPanelFrames = leftPanelInfoFrameCount > 0 || leftPanelFrameFiles > 0;
+
     // 流中断（网络波动等）场景：直播间可能仍在直播。
     // 这里不再让上层干等合并完成（可能数分钟）才重启录制，而是：
     // 1) 提前销毁评论区渲染窗口（帧已保存到磁盘，合并不再需要窗口，避免与新录制的评论窗口冲突）
@@ -818,6 +872,10 @@ class Recorder {
       if (this.commentRenderer) {
         try { await this.commentRenderer.destroy(); } catch (e) { /* ignore */ }
         this.commentRenderer = null;
+      }
+      if (this.leftPanelRenderer) {
+        try { await this.leftPanelRenderer.destroy(); } catch (e) { /* ignore */ }
+        this.leftPanelRenderer = null;
       }
       logger.warn('[Recorder] 流中断：合并转后台执行，立即通知上层重启录制');
       this.onStatusChange('stream-interrupted', {
@@ -860,7 +918,16 @@ class Recorder {
           width: 0,
           height: 0
         };
-        await this._mergeStreamAndComments(mergeCommentInfo);
+        // 左侧面板信息（如果有）
+        const mergeLeftPanelInfo = leftPanelInfo || (hasLeftPanelFrames ? {
+          frameCount: leftPanelFrameFiles,
+          outputDir: this._leftPanelFramesDir,
+          fps: this.commentFps,
+          duration: 0,
+          width: 0,
+          height: 0
+        } : null);
+        await this._mergeStreamAndComments(mergeCommentInfo, undefined, undefined, undefined, mergeLeftPanelInfo);
         this._mergeResult = { success: true, outputFile: this.outputFile };
       } catch (mergeErr) {
         logger.error('[Recorder] 合并失败:', mergeErr.message);
@@ -1044,23 +1111,27 @@ class Recorder {
   }
 
   /**
-   * 合并直播流视频和评论区帧序列
+   * 合并直播流视频和评论区帧序列（支持左侧面板/特效区）
    *
    * 流程:
    *   1. 探测直播流原始分辨率
    *   2. 将评论区 JPEG 帧编码为视频 (comment_video.mp4)
-   *   3. 根据直播流方向（横屏/竖屏）计算布局，使用 overlay 拼接
-   *   4. 音频从直播流直接复制
+   *   3. 可选：将左侧面板 JPEG 帧编码为视频 (left_panel_video.mp4)
+   *   4. 根据直播流方向（横屏/竖屏）计算布局，使用 overlay 拼接
+   *   5. 音频从直播流直接复制
    * @param {object} commentInfo - 评论区信息
    * @param {string} [streamFileOverride] - 可选，直播流文件路径（用于手动合并）
    * @param {string} [commentFileOverride] - 可选，评论区视频文件路径（用于手动合并）
    * @param {string} [outputFileOverride] - 可选，输出文件路径（用于手动合并）
+   * @param {object} [leftPanelInfo] - 可选，左侧面板信息（特效区模式）
    */
-  async _mergeStreamAndComments(commentInfo, streamFileOverride, commentFileOverride, outputFileOverride) {
+  async _mergeStreamAndComments(commentInfo, streamFileOverride, commentFileOverride, outputFileOverride, leftPanelInfo) {
     const resolvedPath = getFFmpegPath();
     const streamFile = streamFileOverride || this._tempStreamFile;
     const commentVideoFile = commentFileOverride || path.join(this._tempDir, 'comment_video.mp4');
+    const leftPanelVideoFile = path.join(this._tempDir, 'left_panel_video.mp4');
     const outputFile = outputFileOverride || this.outputFile;
+    const hasLeftPanel = !!leftPanelInfo && leftPanelInfo.frameCount > 0;
     
     // 设置合并进度文件路径
     const progressDir = streamFileOverride ? path.dirname(streamFile) : this._tempDir;
@@ -1095,10 +1166,28 @@ class Recorder {
     const commentAspectH = commentInfo.height || COMMENT_HEIGHT;
     const commentScaleW = Math.ceil(commentAspectW * commentScaleH / commentAspectH / 2) * 2;
 
-    const totalWidth = streamScaleW + commentScaleW;
+    // 左侧面板尺寸计算（如果有）
+    let leftPanelScaleW = 0;
+    let leftPanelScaleH = 0;
+    if (hasLeftPanel) {
+      leftPanelScaleH = streamScaleH;
+      const leftPanelAspectW = leftPanelInfo.width || 400;
+      const leftPanelAspectH = leftPanelInfo.height || 1080;
+      leftPanelScaleW = Math.ceil(leftPanelAspectW * leftPanelScaleH / leftPanelAspectH / 2) * 2;
+      logger.info(`[Merge] 左侧面板尺寸: ${leftPanelAspectW}x${leftPanelAspectH} -> ${leftPanelScaleW}x${leftPanelScaleH}`);
+    }
+
+    const separatorW = 2;
+    const totalWidth = leftPanelScaleW > 0 
+      ? leftPanelScaleW + separatorW + streamScaleW + separatorW + commentScaleW
+      : streamScaleW + separatorW + commentScaleW;
     const outputHeight = streamScaleH;
 
-    logger.info(`[Merge] 布局: 直播 ${streamScaleW}x${streamScaleH} + 评论 ${commentScaleW}x${commentScaleH} = ${totalWidth}x${outputHeight}`);
+    if (hasLeftPanel) {
+      logger.info(`[Merge] 三区域布局: 左侧面板 ${leftPanelScaleW}x${leftPanelScaleH} + 直播 ${streamScaleW}x${streamScaleH} + 评论 ${commentScaleW}x${commentScaleH} = ${totalWidth}x${outputHeight}`);
+    } else {
+      logger.info(`[Merge] 布局: 直播 ${streamScaleW}x${streamScaleH} + 评论 ${commentScaleW}x${commentScaleH} = ${totalWidth}x${outputHeight}`);
+    }
 
     // Phase 1: 将评论区帧编码为视频
     logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps`);
@@ -1152,6 +1241,32 @@ class Recorder {
       throw new Error('评论区视频编码失败');
     }
 
+    // Phase 1.5: 编码左侧面板视频（如果有）
+    if (hasLeftPanel) {
+      logger.info(`[Merge] 编码左侧面板视频: ${leftPanelInfo.frameCount} 帧 @ ${leftPanelInfo.fps.toFixed(1)} fps`);
+      
+      const leftPanelEncodeCmd = [
+        '-f', 'image2',
+        '-framerate', String(leftPanelInfo.fps),
+        '-start_number', '0',
+        '-i', path.join(this._leftPanelFramesDir, 'frame_%06d.jpg'),
+        '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '15',
+        '-pix_fmt', 'yuv420p',
+        '-y',
+        leftPanelVideoFile
+      ];
+
+      await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板');
+      
+      if (!fs.existsSync(leftPanelVideoFile)) {
+        logger.warn('[Merge] 左侧面板视频编码失败，将使用双区域合并');
+        hasLeftPanel = false;
+      }
+    }
+
     // Phase 1 完成，更新进度
     this._saveMergeProgress({
       phase: 'Merge-Comment-Done',
@@ -1162,11 +1277,10 @@ class Recorder {
       progress: 100
     });
 
-    // Phase 2: 合并直播流 + 评论区视频
+    // Phase 2: 合并直播流 + 评论区视频（+ 左侧面板视频）
     // 使用 pad 显式扩展画布到 totalWidth，再 overlay 评论区
     // 兼容旧版 FFmpeg（overlay 不会自动扩展画布的问题）
-    const separatorW = 2;
-    const totalWithSep = streamScaleW + separatorW + commentScaleW;
+    const totalWithSep = totalWidth;
 
     // 使用「源视频真实时长」作为 Merge-Final 进度分母。
     // 旧版用墙钟时间(Date.now()-startTime)估算，受 FFmpeg 退出延迟影响常偏大，
@@ -1220,47 +1334,111 @@ class Recorder {
       // 源视频需要补偿：在源视频后面添加黑屏帧
       // 使用 tpad 滤镜在源视频末尾添加黑屏帧
       const paddingDurationSec = (durationDiffMs / 1000).toFixed(3);
-      mergeArgs = [
-        // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
-        // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
-        '-fflags', '+genpts',
-        '-err_detect', 'ignore_err',
-        '-i', streamFile,
-        '-i', commentVideoFile,
-        '-filter_complex',
-          `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
-          `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-          `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
-          `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-          `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
-        '-map', '[out]',
-        '-map', '0:a?',
-        '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
-        '-c:v', 'libx264',
-        '-preset', 'medium',
-        '-crf', '15',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-movflags', '+faststart',
-        '-y',
-        outputFile
-      ];
+      
+      if (hasLeftPanel) {
+        // 三区域合并：左侧面板 + 直播流 + 评论区
+        mergeArgs = [
+          '-fflags', '+genpts',
+          '-err_detect', 'ignore_err',
+          '-i', streamFile,
+          '-i', commentVideoFile,
+          '-i', leftPanelVideoFile,
+          '-filter_complex',
+            `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
+            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
+            `[leftpanel]pad=${leftPanelScaleW + separatorW}:${leftPanelScaleH}:0:0:black[lp_padded];` +
+            `[lp_padded]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${leftPanelScaleH}:color=black@0.5:t=fill[lp_sep];` +
+            `[lp_sep][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[lp_stream];` +
+            `[lp_stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+            `[stream_padded]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+            `[stream_sep][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+          '-map', '[out]',
+          '-map', '0:a?',
+          '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-y',
+          outputFile
+        ];
+      } else {
+        // 双区域合并：直播流 + 评论区
+        mergeArgs = [
+          '-fflags', '+genpts',
+          '-err_detect', 'ignore_err',
+          '-i', streamFile,
+          '-i', commentVideoFile,
+          '-filter_complex',
+            `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
+            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+            `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+            `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+          '-map', '[out]',
+          '-map', '0:a?',
+          '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-y',
+          outputFile
+        ];
+      }
     } else {
       // 源视频和评论区视频时长一致，直接合并
-      mergeArgs = [
-        // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
-        // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
-        '-fflags', '+genpts',
-        '-err_detect', 'ignore_err',
-        '-i', streamFile,
-        '-i', commentVideoFile,
-        '-filter_complex',
-          `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
-          `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-          `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
-          `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-          `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+      if (hasLeftPanel) {
+        // 三区域合并：左侧面板 + 直播流 + 评论区
+        mergeArgs = [
+          '-fflags', '+genpts',
+          '-err_detect', 'ignore_err',
+          '-i', streamFile,
+          '-i', commentVideoFile,
+          '-i', leftPanelVideoFile,
+          '-filter_complex',
+            `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
+            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
+            `[leftpanel]pad=${leftPanelScaleW + separatorW}:${leftPanelScaleH}:0:0:black[lp_padded];` +
+            `[lp_padded]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${leftPanelScaleH}:color=black@0.5:t=fill[lp_sep];` +
+            `[lp_sep][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[lp_stream];` +
+            `[lp_stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+            `[stream_padded]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+            `[stream_sep][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+          '-map', '[out]',
+          '-map', '0:a?',
+          '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-y',
+          outputFile
+        ];
+      } else {
+        // 双区域合并：直播流 + 评论区
+        mergeArgs = [
+          '-fflags', '+genpts',
+          '-err_detect', 'ignore_err',
+          '-i', streamFile,
+          '-i', commentVideoFile,
+          '-filter_complex',
+            `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
+            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+            `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+            `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
         '-map', '[out]',
         '-map', '0:a?',
         '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),

@@ -980,6 +980,7 @@ function createStreamCard(stream) {
             <option value="with-account"${stream.recordMode === 'with-account' ? ' selected' : ''}>有账号录制</option>
             <option value="stream-only"${stream.recordMode === 'stream-only' ? ' selected' : ''}>仅录制直播流</option>
             <option value="stream+comment"${stream.recordMode === 'stream+comment' ? ' selected' : ''}>有账号+评论区</option>
+            <option value="stream+comment+effect"${stream.recordMode === 'stream+comment+effect' ? ' selected' : ''}>有账号+评论区+特效区</option>
             <option value="stream+comment-no-login"${stream.recordMode === 'stream+comment-no-login' ? ' selected' : ''}>无账号+评论区</option>
           </select>
           <select class="stream-account" data-room-id="${stream.roomId}" title="选择录制账号">
@@ -1037,7 +1038,7 @@ function createStreamCard(stream) {
   const updateAccountVisibility = () => {
     if (!accountSelect) return;
     const mode = modeSelect ? modeSelect.value : stream.recordMode;
-    const showAccount = mode === 'with-account' || mode === 'stream+comment';
+    const showAccount = mode === 'with-account' || mode === 'stream+comment' || mode === 'stream+comment+effect';
     accountSelect.style.display = showAccount ? '' : 'none';
   };
 

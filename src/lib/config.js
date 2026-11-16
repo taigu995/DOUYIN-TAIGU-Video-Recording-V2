@@ -34,7 +34,7 @@ const defaults = {
  *   autoRecord: boolean,      // 自动录制
  *   accountId: string|null,   // 绑定的录制账号ID（null=无账号）
  *   commentFps: number|null,  // 评论区帧率（null=使用全局默认）
- *   recordMode: string        // 录制模式：'with-account' | 'no-account-stream-only' | 'no-account-stream+comment'
+ *   recordMode: string        // 录制模式：'with-account' | 'stream-only' | 'stream+comment' | 'stream+comment+effect' | 'stream+comment-no-login'
  * }
  */
 

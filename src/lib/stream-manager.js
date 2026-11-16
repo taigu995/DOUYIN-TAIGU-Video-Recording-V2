@@ -65,7 +65,7 @@ class StreamManager {
    * @param {string} inputText - 用户输入（房间号、链接或分享文本）
    * @param {string} [customName] - 自定义名称
    * @param {string} [streamerNameFromPreview] - 预览时获取的主播名称
-   * @param {string} [recordMode] - 录制模式 ('with-account' | 'stream-only' | 'stream+comment' | 'stream+comment-no-login')
+   * @param {string} [recordMode] - 录制模式 ('with-account' | 'stream-only' | 'stream+comment' | 'stream+comment+effect' | 'stream+comment-no-login')
    */
   async addStreamByInput(inputText, customName, streamerNameFromPreview, recordMode) {
     if (!inputText || typeof inputText !== 'string') {
@@ -146,7 +146,7 @@ class StreamManager {
       // 每直播间独立设置
       accountId: null,       // 录制的账号ID（null=无账号）
       commentFps: 15,        // 评论区帧率
-      recordMode: recordMode || 'with-account', // with-account | stream-only | stream+comment | stream+comment-no-login
+      recordMode: recordMode || 'with-account', // with-account | stream-only | stream+comment | stream+comment+effect | stream+comment-no-login
       autoRecord: true       // 单个直播间自动录制开关（默认开启）
     };
 
@@ -992,7 +992,7 @@ class StreamManager {
     const recordMode = streamState.info.recordMode || 'with-account';
     let sessionName = 'persist:douyin'; // 默认session
 
-    if (recordMode === 'with-account' || recordMode === 'stream+comment') {
+    if (recordMode === 'with-account' || recordMode === 'stream+comment' || recordMode === 'stream+comment+effect') {
       // 有账号 / 有账号+评论区模式：优先用指定账号，否则用默认（主）账号
       let accountId = streamState.info.accountId;
       let account = accountId ? this.accountManager.getAccount(accountId) : null;
@@ -1569,7 +1569,7 @@ class StreamManager {
   /**
    * 设置直播间录制模式
    * @param {string} roomId - 直播间ID
-   * @param {string} mode - 录制模式: 'with-account' | 'stream-only' | 'stream+comment-no-login'
+   * @param {string} mode - 录制模式: 'with-account' | 'stream-only' | 'stream+comment' | 'stream+comment+effect' | 'stream+comment-no-login'
    */
   setRoomRecordMode(roomId, mode) {
     const state = this.streams.get(roomId);
