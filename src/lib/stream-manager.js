@@ -605,10 +605,26 @@ class StreamManager {
         // API成功，使用API结果
         const isLive = apiResult.isLive;
 
-        // 更新主播名称（如果有新名称且旧名称是默认的）
-        if (apiResult.streamerName && (!info.streamerName || info.streamerName.startsWith('主播'))) {
-          info.streamerName = apiResult.streamerName;
-          updateStream(info.roomId, { streamerName: apiResult.streamerName });
+        // 更新主播名称（如果有新名称且旧名称是默认的，或者名称发生了变化）
+        if (apiResult.streamerName) {
+          const oldName = info.streamerName;
+          const newName = apiResult.streamerName;
+          
+          // 检查名称是否发生了变化（排除默认名称"主播xxx"的情况）
+          const isDefaultName = oldName && oldName.startsWith('主播');
+          const nameChanged = oldName !== newName && !isDefaultName;
+          
+          if (!oldName || isDefaultName) {
+            // 旧名称是默认的，直接更新
+            info.streamerName = newName;
+            updateStream(info.roomId, { streamerName: newName });
+            logger.info(`[Monitor] 更新默认主播名称: ${newName}`);
+          } else if (nameChanged) {
+            // 名称发生了变化，更新并记录
+            info.streamerName = newName;
+            updateStream(info.roomId, { streamerName: newName });
+            logger.info(`[Monitor] 直播间名称已变更: "${oldName}" -> "${newName}"`);
+          }
         }
 
         const wasLive = streamState.isLive;
@@ -739,7 +755,7 @@ class StreamManager {
       })();
     `);
 
-    // 尝试获取主播名称（如果还没有）
+    // 尝试获取主播名称（如果还没有，或者名称发生了变化）
     if (!streamState.info.streamerName || streamState.info.streamerName.startsWith('主播')) {
       try {
         if (!monitorWindow.isDestroyed()) {
@@ -766,8 +782,18 @@ class StreamManager {
             })();
           `);
           if (name) {
+            const oldName = streamState.info.streamerName;
+            const isDefaultName = oldName && oldName.startsWith('主播');
+            const nameChanged = oldName !== name && !isDefaultName;
+            
             streamState.info.streamerName = name;
             updateStream(info.roomId, { streamerName: name });
+            
+            if (!oldName || isDefaultName) {
+              logger.info(`[Monitor] 更新默认主播名称: ${name}`);
+            } else if (nameChanged) {
+              logger.info(`[Monitor] 直播间名称已变更: "${oldName}" -> "${name}"`);
+            }
           }
         }
       } catch (e) {

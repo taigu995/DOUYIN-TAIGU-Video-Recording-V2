@@ -294,8 +294,10 @@ class CommentRenderer {
     const maxRetries = 3;
     const loadTimeout = 30000;    // 单次 loadURL 超时 30s
     const probeTimeout = 4000;    // readyState 探测超时（防止导航 pending 时 executeJavaScript 永久挂起）
-    const totalDeadline = 150000; // 整体加载兜底超时，杜绝任何意外路径的永久挂起
+    const totalDeadline = 180000; // 整体加载兜底超时（从 150s 增加到 180s），杜绝任何意外路径的永久挂起
     const loadStartedAt = Date.now();
+
+    logger.info(`[CommentRenderer] 加载超时设置: 单次=${loadTimeout / 1000}s, 探测=${probeTimeout / 1000}s, 总超时=${totalDeadline / 1000}s, 最大重试=${maxRetries}`);
 
     const winAlive = () => !!(this.captureWindow && !this.captureWindow.isDestroyed());
     // 超时后必须主动终止导航：页面停留在 pending 时，后续 executeJavaScript 会无限挂起
@@ -341,6 +343,7 @@ class CommentRenderer {
         break;
       } catch (loadErr) {
         logger.warn(`[CommentRenderer] 页面加载失败 (尝试 ${attempt}/${maxRetries}): ${loadErr.message}`);
+        logger.warn(`[CommentRenderer] 加载失败详情: 错误类型=${loadErr.name || 'Unknown'}, 错误代码=${loadErr.code || 'N/A'}, 窗口存活=${winAlive()}`);
         if (!winAlive()) {
           logger.error('[CommentRenderer] 窗口已被销毁，无法继续加载');
           break;
@@ -404,12 +407,49 @@ class CommentRenderer {
 
     // 等待页面完全加载（额外等待确保动态内容渲染完成）
     logger.info('[CommentRenderer] 等待页面加载完成...');
-    await new Promise(resolve => setTimeout(resolve, 8000));
+    await new Promise(resolve => setTimeout(resolve, 10000)); // 从 8000ms 增加到 10000ms
 
     // 通过 DOM 探测评论区实际位置（不注入CSS，保持页面自然布局）
     let detectedRect = await this._detectCommentAreaFromDOM();
     if (detectedRect) {
       logger.info(`[CommentRenderer] DOM探测评论区: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
+      
+      // 验证评论区容器是否有内容（不是"直播已结束"状态）
+      try {
+        const hasContent = await this.captureWindow.webContents.executeJavaScript(`
+          (function() {
+            try {
+              const ct = document.querySelector('[class*="webcast-chatroom"]') || 
+                         document.querySelector('[data-e2e="live-chat"]') ||
+                         document.querySelector('[class*="chat-list"]');
+              if (!ct) return false;
+              
+              // 检查容器内是否有消息元素
+              const messages = ct.querySelectorAll('[class*="message"], [class*="chat-item"], [class*="danmu"]');
+              if (messages.length > 0) return true;
+              
+              // 检查容器内是否有文本内容
+              const text = (ct.innerText || '').trim();
+              if (text.length > 10) return true;
+              
+              return false;
+            } catch (e) {
+              return false;
+            }
+          })()
+        `);
+        
+        if (!hasContent) {
+          logger.warn('[CommentRenderer] 评论区容器无内容，可能仍在加载中，等待 5 秒后重新检测...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          detectedRect = await this._detectCommentAreaFromDOM();
+          if (detectedRect) {
+            logger.info(`[CommentRenderer] 重新检测后DOM探测评论区: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
+          }
+        }
+      } catch (e) {
+        logger.warn('[CommentRenderer] 评论区内容验证失败:', e && e.message);
+      }
     } else {
       // 开播瞬间页面可能仍是"直播已结束"快照（服务端/CDN缓存延迟），
       // 若继续按右侧估算裁剪，整场录制右侧会停留在"猜你喜欢"推荐页。
@@ -431,7 +471,7 @@ class CommentRenderer {
           });
           this.captureWindow.webContents.reload();
           await reloaded;
-          await new Promise((r) => setTimeout(r, 8000));
+          await new Promise((r) => setTimeout(r, 10000)); // 从 8000ms 增加到 10000ms
           if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
           detectedRect = await this._detectCommentAreaFromDOM();
         } catch (e) {

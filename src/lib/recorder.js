@@ -480,6 +480,42 @@ class Recorder {
       this._streamUrl = streamInfo.url;
       logger.info(`[Recorder] 获取到直播流: ${streamInfo.type}, 来源: ${streamInfo.source}`);
 
+      // 验证直播流 URL 是否有效（快速验证，避免启动后才发现 URL 过期）
+      const isValid = await this._validateStreamUrl(this._streamUrl);
+      if (!isValid) {
+        logger.warn(`[Recorder] 直播流 URL 验证失败，尝试重新获取...`);
+        // 尝试重新获取直播流 URL（最多重试 2 次）
+        let retryCount = 0;
+        let newStreamInfo = null;
+        while (retryCount < 2 && !newStreamInfo) {
+          retryCount++;
+          logger.info(`[Recorder] 第 ${retryCount} 次重新获取直播流 URL...`);
+          try {
+            if (this.commentRenderer) {
+              newStreamInfo = await this._getStreamUrl();
+            } else {
+              newStreamInfo = await this._getStreamUrlWithoutRenderer();
+            }
+            if (newStreamInfo && newStreamInfo.url) {
+              const newIsValid = await this._validateStreamUrl(newStreamInfo.url);
+              if (newIsValid) {
+                this._streamUrl = newStreamInfo.url;
+                logger.info(`[Recorder] 重新获取直播流成功: ${newStreamInfo.type}, 来源: ${newStreamInfo.source}`);
+                break;
+              } else {
+                logger.warn(`[Recorder] 第 ${retryCount} 次重新获取的直播流 URL 仍无效`);
+                newStreamInfo = null;
+              }
+            }
+          } catch (retryErr) {
+            logger.warn(`[Recorder] 第 ${retryCount} 次重新获取直播流失败: ${retryErr.message}`);
+          }
+        }
+        if (!newStreamInfo) {
+          throw new Error('直播流 URL 验证失败，且重新获取后仍无效，请检查网络连接或稍后重试');
+        }
+      }
+
       // Step 3: 启动 FFmpeg 录制直播流 (stream copy)
       logger.info('[Recorder] 启动 FFmpeg 流媒体直录...');
       this._startStreamRecording();
@@ -1146,6 +1182,23 @@ class Recorder {
     }
     const streamDurationMs = mergeFinalDurationMs;
 
+    // 检测源视频和评论区视频的时长差
+    // 如果源视频比评论区视频短，需要在源视频后面添加黑屏帧，使其时长与评论区视频一致
+    let commentVideoDurationMs = 0;
+    try {
+      commentVideoDurationMs = await Recorder._getMediaDuration(commentVideoFile);
+    } catch (e) {
+      logger.warn(`[Merge] 探测评论区视频时长失败: ${e.message}`);
+      commentVideoDurationMs = commentDurationMs;
+    }
+
+    const durationDiffMs = commentVideoDurationMs - streamDurationMs;
+    const needsPadding = durationDiffMs > 1000; // 时长差超过 1 秒才需要补偿
+
+    if (needsPadding) {
+      logger.info(`[Merge] 源视频时长 (${(streamDurationMs / 1000).toFixed(1)}s) 小于评论区视频时长 (${(commentVideoDurationMs / 1000).toFixed(1)}s)，需要补偿 ${(durationDiffMs / 1000).toFixed(1)}s`);
+    }
+
     // 保存最终合并阶段的进度数据
     this._mergeProgressData = {
       totalFrames: commentInfo.frameCount,
@@ -1161,32 +1214,69 @@ class Recorder {
       progress: 0
     });
 
-    await this._runFFmpeg(resolvedPath, [
-      // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
-      // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
-      '-fflags', '+genpts',
-      '-err_detect', 'ignore_err',
-      '-i', streamFile,
-      '-i', commentVideoFile,
-      '-filter_complex',
-        `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
-        `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-        `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
-        `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-        `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
-      '-map', '[out]',
-      '-map', '0:a?',
-      '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
-      '-c:v', 'libx264',
-      '-preset', 'medium',
-      '-crf', '15',
-      '-pix_fmt', 'yuv420p',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-movflags', '+faststart',
-      '-y',
-      outputFile
-    ], 'Merge-Final', streamDurationMs, '合并视频');
+    // 构建 FFmpeg 合并命令
+    let mergeArgs;
+    if (needsPadding) {
+      // 源视频需要补偿：在源视频后面添加黑屏帧
+      // 使用 tpad 滤镜在源视频末尾添加黑屏帧
+      const paddingDurationSec = (durationDiffMs / 1000).toFixed(3);
+      mergeArgs = [
+        // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
+        // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
+        '-fflags', '+genpts',
+        '-err_detect', 'ignore_err',
+        '-i', streamFile,
+        '-i', commentVideoFile,
+        '-filter_complex',
+          `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
+          `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+          `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+          `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+          `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+        '-map', '[out]',
+        '-map', '0:a?',
+        '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '15',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-movflags', '+faststart',
+        '-y',
+        outputFile
+      ];
+    } else {
+      // 源视频和评论区视频时长一致，直接合并
+      mergeArgs = [
+        // 源流可能含损坏段（CDN 时间戳回绕/丢包），genpts 自动修复时间戳异常
+        // err_detect ignore_err 忽略解码错误，避免损坏帧导致后续视频轨停止输出
+        '-fflags', '+genpts',
+        '-err_detect', 'ignore_err',
+        '-i', streamFile,
+        '-i', commentVideoFile,
+        '-filter_complex',
+          `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
+          `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+          `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
+          `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
+          `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+        '-map', '[out]',
+        '-map', '0:a?',
+        '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '15',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-movflags', '+faststart',
+        '-y',
+        outputFile
+      ];
+    }
+
+    await this._runFFmpeg(resolvedPath, mergeArgs, 'Merge-Final', streamDurationMs, '合并视频');
 
     if (!fs.existsSync(outputFile)) {
       throw new Error('最终视频合并失败');
@@ -1923,6 +2013,49 @@ class Recorder {
     } catch (e) {
       logger.warn('[Recorder] 获取 session cookies 失败:', e.message);
       return '';
+    }
+  }
+
+  /**
+   * 验证直播流 URL 是否有效（通过快速 HTTP 请求检查）
+   * @param {string} url - 直播流 URL
+   * @returns {Promise<boolean>} - URL 是否有效
+   */
+  async _validateStreamUrl(url) {
+    try {
+      logger.info(`[Recorder] 验证直播流 URL: ${url.substring(0, 100)}...`);
+      
+      // 使用 HEAD 请求快速验证 URL 是否有效
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 秒超时
+      
+      const response = await fetch(url, {
+        method: 'HEAD',
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Referer': `https://live.douyin.com/${this.roomId}`,
+        }
+      });
+      
+      clearTimeout(timeoutId);
+      
+      // 检查响应状态码
+      if (response.ok) {
+        logger.info(`[Recorder] 直播流 URL 验证成功: HTTP ${response.status}`);
+        return true;
+      } else {
+        logger.warn(`[Recorder] 直播流 URL 验证失败: HTTP ${response.status} ${response.statusText}`);
+        return false;
+      }
+    } catch (err) {
+      logger.warn(`[Recorder] 直播流 URL 验证异常: ${err.message}`);
+      // 如果是网络错误，可能是临时问题，仍然认为 URL 可能有效
+      if (err.name === 'AbortError') {
+        logger.warn(`[Recorder] 直播流 URL 验证超时，可能网络较慢，继续尝试录制`);
+        return true;
+      }
+      return false;
     }
   }
 
