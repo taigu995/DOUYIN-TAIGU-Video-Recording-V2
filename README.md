@@ -6,7 +6,10 @@
 
 ## 下载链接
 
-### 源代码（可自行打包）
+### 源代码（可自行打包，推荐）
+- [抖音直播录制工具V2 v2.12.26 源代码](https://demo.dev.coze.site/douyin-recorder-v2.12.26.tar.gz) (123 MB)
+
+### 源代码（不含一键打包脚本）
 - [抖音直播录制工具V2 v2.12.26 源代码](https://demo.dev.coze.site/douyin-recorder-v2.12.26-source.tar.gz) (121 MB)
 
 ### Windows 打包版（可能无法直接运行）
@@ -31,31 +34,42 @@
 
 ```bash
 # 使用 tar 命令解压（Windows 10 内置）
-tar -xzf douyin-recorder-v2.12.26-source.tar.gz
+tar -xzf douyin-recorder-v2.12.26.tar.gz
 
 # 或使用解压工具（如 7-Zip、WinRAR）
 ```
 
-### 3. 安装依赖
+### 3. 一键打包
+
+双击运行 `一键打包.bat` 文件，脚本会自动完成以下步骤：
+
+1. 检查 Node.js 环境
+2. 安装依赖
+3. 打包 Windows EXE
+
+或者手动执行：
 
 ```bash
-cd douyin-recorder-source
-pnpm install
-```
+# 安装依赖
+npm install
 
-### 4. 打包成品软件
-
-```bash
 # 打包为 Windows 安装包
-pnpm run build
-
-# 或者打包为目录（不生成安装包）
-pnpm run build:dir
+npx electron-builder --win --x64
 ```
 
 打包完成后，成品软件位于 `dist/` 目录下：
 - `win-unpacked/` - 可直接运行的目录
 - `抖音直播录制工具V2 Setup 2.12.26.exe` - 安装包（如果生成了安装包）
+
+### 4. 开发调试
+
+```bash
+# 启动开发模式
+pnpm run dev
+
+# 或者
+npm run dev
+```
 
 ## 功能特性
 
