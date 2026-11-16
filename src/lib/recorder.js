@@ -119,6 +119,8 @@ class Recorder {
         tempDir: this._tempDir,
         tempStreamFile: this._tempStreamFile,
         commentFramesDir: this._commentFramesDir,
+        leftPanelFramesDir: this._leftPanelFramesDir,
+        leftPanelInfo: this._leftPanelInfo,
         timestamp: Date.now()
       };
       fs.writeFileSync(this._mergeProgressFile, JSON.stringify(data, null, 2), 'utf-8');
@@ -201,6 +203,7 @@ class Recorder {
     tempRecorder._tempDir = progressData.tempDir;
     tempRecorder._tempStreamFile = progressData.tempStreamFile;
     tempRecorder._commentFramesDir = progressData.commentFramesDir;
+    tempRecorder._leftPanelFramesDir = progressData.leftPanelFramesDir;
     tempRecorder.outputFile = progressData.outputFile;
     tempRecorder._mergeProgressFile = path.join(progressData.tempDir, 'merge_progress.json');
     tempRecorder.startTime = new Date(progressData.timestamp - (progressData.currentTimeMs || 0));
@@ -225,7 +228,10 @@ class Recorder {
         height: COMMENT_HEIGHT
       };
 
-      await tempRecorder._mergeStreamAndComments(commentInfo);
+      // 恢复左侧面板信息（如果有）
+      const leftPanelInfo = progressData.leftPanelInfo || null;
+
+      await tempRecorder._mergeStreamAndComments(commentInfo, undefined, undefined, undefined, leftPanelInfo);
 
       logger.info(`[Merge-Resume] 合并恢复成功: ${progressData.outputFile}`);
       onComplete({ success: true, outputFile: progressData.outputFile, resumed: true });
@@ -833,6 +839,8 @@ class Recorder {
     let leftPanelInfo = null;
     if (this.leftPanelRenderer) {
       leftPanelInfo = this.leftPanelRenderer.stopCapture();
+      // 保存左侧面板信息，用于崩溃恢复
+      this._leftPanelInfo = leftPanelInfo;
     }
 
     // Step 3: 合并直播流和评论区
@@ -850,12 +858,12 @@ class Recorder {
     const commentInfoFrameCount = (commentInfo && commentInfo.frameCount) || 0;
     const hasCommentFrames = commentInfoFrameCount > 0 || commentFrameFiles > 0;
 
-    // 判定是否有左侧面板帧
+    // 判定是否有左侧面板帧（注意：左侧面板帧文件名前缀为 left_frame_）
     let leftPanelFrameFiles = 0;
     try {
       if (this._leftPanelFramesDir && fs.existsSync(this._leftPanelFramesDir)) {
         leftPanelFrameFiles = fs.readdirSync(this._leftPanelFramesDir)
-          .filter((f) => /^frame_\d{6}\.jpg$/.test(f)).length;
+          .filter((f) => /^left_frame_\d{6}\.jpg$/.test(f)).length;
       }
     } catch (e) { /* 忽略扫描错误 */ }
 
@@ -1248,7 +1256,7 @@ class Recorder {
         '-f', 'image2',
         '-framerate', String(leftPanelInfo.fps),
         '-start_number', '0',
-        '-i', path.join(this._leftPanelFramesDir, 'frame_%06d.jpg'),
+        '-i', path.join(this._leftPanelFramesDir, 'left_frame_%06d.jpg'),
         '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
         '-c:v', 'libx264',
         '-preset', 'medium',
@@ -1451,6 +1459,7 @@ class Recorder {
         '-y',
         outputFile
       ];
+      }
     }
 
     await this._runFFmpeg(resolvedPath, mergeArgs, 'Merge-Final', streamDurationMs, '合并视频');
