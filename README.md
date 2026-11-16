@@ -6,7 +6,7 @@
 
 ## 下载链接
 
-- [抖音直播录制工具V2 v2.12.26 Windows 版](https://demo.dev.coze.site/抖音直播录制工具V2_v2.12.26_Windows.tar.gz) (264 MB)
+- [抖音直播录制工具V2 v2.12.26 Windows 版](https://demo.dev.coze.site/douyin-recorder-v2.12.26-windows.tar.gz) (264 MB)
 
 ## 功能特性
 
