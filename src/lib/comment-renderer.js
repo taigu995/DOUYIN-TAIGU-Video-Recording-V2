@@ -538,7 +538,11 @@ class CommentRenderer {
       } catch (e) {
         logger.warn('[CommentRenderer] 左侧特效区DOM探测异常:', e && e.message);
       }
-      if (leftDetected && leftDetected.width > 80 && leftDetected.height > 100) {
+      if (leftDetected && leftDetected.strategy === 'video-fullscreen-no-leftpanel') {
+        // 直播画面占满左侧（vLeft<100）：该直播间左侧无独立特效区，禁用特效区捕获（回退双区域录制）
+        this._leftPanelRect = null;
+        logger.warn('[CommentRenderer] 检测到直播画面占满左侧，该直播间无独立特效区，已禁用特效区捕获');
+      } else if (leftDetected && leftDetected.width > 80 && leftDetected.height > 100) {
         this._leftPanelRect = {
           x: leftDetected.x,
           y: 0,
@@ -929,6 +933,39 @@ class CommentRenderer {
           const pageH = document.documentElement.clientHeight || window.innerHeight;
           const pageCenterX = pageW / 2;
 
+          // 穿透 Shadow DOM，递归收集所有 video/canvas 元素
+          // （抖音直播播放器用 Shadow DOM 封装，普通 querySelector 查不到内部 video）
+          function collectMedia(root, acc) {
+            if (!root || !root.querySelectorAll) return;
+            try {
+              const media = root.querySelectorAll('video, canvas');
+              for (let i = 0; i < media.length; i++) acc.push(media[i]);
+              const all = root.querySelectorAll('*');
+              for (let i = 0; i < all.length; i++) {
+                if (all[i].shadowRoot) collectMedia(all[i].shadowRoot, acc);
+              }
+            } catch(e) {}
+          }
+
+          // 穿透 Shadow DOM，判断元素内部是否包含 video/canvas
+          function containsMediaDeep(el) {
+            try {
+              if (el.querySelector('video, canvas')) return true;
+              const all = el.querySelectorAll('*');
+              for (let i = 0; i < all.length; i++) {
+                const sr = all[i].shadowRoot;
+                if (sr) {
+                  if (sr.querySelector('video, canvas')) return true;
+                  const deep = sr.querySelectorAll('*');
+                  for (let j = 0; j < deep.length; j++) {
+                    if (deep[j].shadowRoot && deep[j].shadowRoot.querySelector('video, canvas')) return true;
+                  }
+                }
+              }
+            } catch(e) {}
+            return false;
+          }
+
           // 参考：右侧评论区宽度（限制特效区宽度上限，避免把中间直播画面包进来）
           let commentRefW = 0;
           try {
@@ -939,30 +976,33 @@ class CommentRenderer {
           // 特效区宽度上限：不超过评论区宽度的1.4倍，且不超过页面34%
           const maxLeftW = Math.min(Math.round(commentRefW * 1.4), Math.round(pageW * 0.34));
 
-          // 策略1: 直播主画面（页面中面积最大的 video/canvas）的左边界 = 特效区右边界
+          // 策略1: 直播主画面（穿透 Shadow DOM 找到面积最大的 video/canvas）的左边界 = 特效区右边界
           // 竖屏直播画面在中间，其左边界即左侧公屏弹幕区的右边界，最精确
+          const mediaEls = [];
+          collectMedia(document, mediaEls);
           let mainMedia = null, maxArea = 0;
-          try {
-            const mediaEls = document.querySelectorAll('video, canvas');
-            for (const el of mediaEls) {
-              const r = el.getBoundingClientRect();
-              if (r.width < 120 || r.height < pageH * 0.3) continue;
-              const area = r.width * r.height;
-              if (area > maxArea) { maxArea = area; mainMedia = r; }
-            }
-          } catch(e) {}
-          if (mainMedia && mainMedia.left > 150 && mainMedia.left < pageCenterX) {
-            const w = Math.round(mainMedia.left);
-            if (w > 100 && w <= maxLeftW) {
-              return { x: 0, width: w, strategy: 'video-left-bound' };
-            }
-            // 视频左边界超出上限，按上限收敛（防止误包直播画面）
-            if (w > maxLeftW) {
+          for (const el of mediaEls) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 100 || r.height < pageH * 0.2) continue;
+            const area = r.width * r.height;
+            if (area > maxArea) { maxArea = area; mainMedia = r; }
+          }
+          if (mainMedia) {
+            const vLeft = Math.round(mainMedia.left);
+            // 视频左边界在页面中部偏左：左侧存在独立特效区，取 [0, vLeft]
+            if (vLeft >= 100 && vLeft < pageCenterX) {
+              if (vLeft <= maxLeftW) return { x: 0, width: vLeft, strategy: 'video-left-bound' };
+              // 视频左边界超出上限，按上限收敛（防止误包直播画面）
               return { x: 0, width: maxLeftW, strategy: 'video-left-bound-clamped' };
+            }
+            // 视频几乎占满左侧（vLeft < 100）：该直播间左侧无独立特效区（视频即背景）
+            // 返回 width=0，让上层走对称估算回退，避免误选整屏视频容器
+            if (vLeft < 100) {
+              return { x: 0, width: 0, strategy: 'video-fullscreen-no-leftpanel' };
             }
           }
 
-          // 策略2: 沿评论区左侧兄弟链取最左侧非视频节点（宽度限制在上限内）
+          // 策略2: 沿评论区左侧兄弟链取最左侧非视频节点（穿透排除视频容器）
           const roomSelectors = [
             '[class*="webcast-chatroom"]',
             '[id*="chatroom"]',
@@ -984,15 +1024,14 @@ class CommentRenderer {
             let node = commentRoot.previousElementSibling;
             while (node) {
               const rect = node.getBoundingClientRect();
-              const hasVideoOrCanvas = !!(node.querySelector && (node.querySelector('video, canvas')));
-              if (rect.width > 80 && rect.width <= maxLeftW && !hasVideoOrCanvas && rect.right <= pageCenterX + 30) {
+              if (rect.width > 80 && rect.width <= maxLeftW && !containsMediaDeep(node) && rect.right <= pageCenterX + 30) {
                 return { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'prev-of-comment' };
               }
               node = node.previousElementSibling;
             }
           }
 
-          // 策略3: 页面左侧面积最大的可见 div（宽度限制在上限内，排除 video/canvas/导航）
+          // 策略3: 页面左侧文字密集的可见 div（弹幕区特征：文字多、相对紧凑，穿透排除视频容器）
           let best = null;
           let bestScore = 0;
           const allDivs = document.querySelectorAll('div');
@@ -1001,14 +1040,16 @@ class CommentRenderer {
             if (rect.left >= pageCenterX) continue;
             if (rect.right <= 0) continue;
             if (rect.width < 120 || rect.width > maxLeftW || rect.height < 150) continue;
-            if (div.querySelector('video') || div.querySelector('canvas')) continue;
+            if (containsMediaDeep(div)) continue;
             if (div.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"]')) continue;
             const style = window.getComputedStyle(div);
             if (style.display === 'none' || style.visibility === 'hidden') continue;
+            const text = (div.innerText || '').trim();
+            if (text.length < 15) continue; // 弹幕区必须有足够文字，排除纯视频背景容器
             const area = rect.width * rect.height;
-            // 文本量较大的区域更可能是聊天/信息区
-            const text = (div.innerText || '').length;
-            const score = area + text * 30;
+            const density = text.length / area;
+            // 以文字量为主、密度为辅（避免大面积视频容器胜出）
+            const score = text.length * 10 + density * 200000;
             if (score > bestScore) {
               bestScore = score;
               best = { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'largest-left-div' };

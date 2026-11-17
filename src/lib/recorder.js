@@ -321,7 +321,7 @@ class Recorder {
    * 合并直播流和评论区视频文件（用于手动合并）
    */
   async _mergeStreamAndCommentFiles(streamFile, commentVideoFile, outputFile, streamDurationMs) {
-    const ffmpegPath = this._getFFmpegPath();
+    const ffmpegPath = getFFmpegPath();
     const resolvedPath = ffmpegPath.resolvedPath || ffmpegPath;
 
     // 使用与 _mergeStreamAndComments 相同的滤镜
@@ -356,7 +356,7 @@ class Recorder {
    */
   static async _getMediaDuration(filePath) {
     return new Promise((resolve, reject) => {
-      const ffmpegPath = Recorder._getFFmpegPath();
+      const ffmpegPath = getFFmpegPath();
       const resolvedPath = ffmpegPath.resolvedPath || ffmpegPath;
       const proc = spawn(resolvedPath, ['-i', filePath, '-f', 'null', '-']);
 
@@ -1352,12 +1352,11 @@ class Recorder {
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
             `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
-            `[leftpanel]pad=${leftPanelScaleW + separatorW}:${leftPanelScaleH}:0:0:black[lp_padded];` +
-            `[lp_padded]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${leftPanelScaleH}:color=black@0.5:t=fill[lp_sep];` +
-            `[lp_sep][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[lp_stream];` +
-            `[lp_stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
-            `[stream_padded]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-            `[stream_sep][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+            `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
+            `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
+            `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
+            `[c2]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c3];` +
+            `[c3][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
           '-map', '[out]',
           '-map', '0:a?',
           '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
@@ -1412,12 +1411,11 @@ class Recorder {
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
             `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
-            `[leftpanel]pad=${leftPanelScaleW + separatorW}:${leftPanelScaleH}:0:0:black[lp_padded];` +
-            `[lp_padded]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${leftPanelScaleH}:color=black@0.5:t=fill[lp_sep];` +
-            `[lp_sep][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[lp_stream];` +
-            `[lp_stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
-            `[stream_padded]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
-            `[stream_sep][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
+            `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
+            `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
+            `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
+            `[c2]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c3];` +
+            `[c3][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
           '-map', '[out]',
           '-map', '0:a?',
           '-threads', Math.max(2, (require('os').cpus().length || 4) - 2),
@@ -2323,6 +2321,18 @@ class Recorder {
         logger.info(`[Recorder] 已保存评论区视频: ${commentVideoDst}`);
       } catch (e) {
         logger.warn(`[Recorder] 保存评论区视频失败: ${e.message}`);
+      }
+    }
+
+    // 保存 left_panel_video.mp4（特效区视频，三区域模式下生成）
+    const leftPanelVideoSrc = path.join(this._tempDir, 'left_panel_video.mp4');
+    const leftPanelVideoDst = path.join(outputDir, `${baseName}_effect.mp4`);
+    if (fs.existsSync(leftPanelVideoSrc)) {
+      try {
+        fs.copyFileSync(leftPanelVideoSrc, leftPanelVideoDst);
+        logger.info(`[Recorder] 已保存特效区视频: ${leftPanelVideoDst}`);
+      } catch (e) {
+        logger.warn(`[Recorder] 保存特效区视频失败: ${e.message}`);
       }
     }
   }
