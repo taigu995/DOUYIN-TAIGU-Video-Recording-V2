@@ -418,7 +418,7 @@ const RANK_PANEL_SCRIPT = `(() => {
     function expandOnce() {
       if (clicking) return 'clicking';
       const now = Date.now();
-      if (now - lastClickAt < 1800) return 'cooldown'; // 探测用短冷却(1.8s)，便于连续尝试多个候选 y 定位视觉按钮
+      if (now - lastClickAt < 2600) return 'cooldown'; // 探测冷却(2.6s)：过短会在弹窗动画期间二次点击造成toggle（点开又被关）
       const trigger = findTrigger();
       if (!trigger) {
         // 诊断：首次失败时输出全面诊断（穿透结构+候选元素），便于区分"穿透失效/触发器在iframe/非团播直播间"
@@ -450,22 +450,38 @@ const RANK_PANEL_SCRIPT = `(() => {
           rectTrusted = !!hitKey;
         } catch (ve) { console.log('[RankPanel] 点击点验证异常 ' + ve.message); }
         if (!rectTrusted) {
-          // 锚点竖直探测：以"本场成员"可信锚点（普通 DIV，位于团员榜单正上方约30px）为基准，纵向依次下探
+          // 锚点网格探测：以"本场成员"可信锚点（普通 DIV，位于团员榜单正上方约30px）为基准，
+          // 横向多列×纵向多行依次探测。原因：不同直播间 Lynx canvas 绘制的视觉按钮位置有差异
+          // （实测 Fire苏江095 单列x=23即命中，江苏人民艺术剧院同坐标7点全失败），单列扫描覆盖不足
           if (!anchorProbe) {
-            anchorProbe = { x: cx, baseY: 80, attempt: 0 };
+            anchorProbe = { xs: [cx], baseY: 80, attempt: 0 };
             const anchorEl = findTrustedAnchor();
             if (anchorEl) {
               const ar = anchorEl.getBoundingClientRect();
               anchorProbe.baseY = Math.round(ar.bottom) + 15;
+              // x 列：触发器逻辑中心x（可信，Fire实测有效）+ 锚点中心x + 左右偏移，去重后约3~4列
+              const cand = [cx, Math.round(ar.left + ar.width / 2), cx + 25, cx - 13, Math.round(ar.right) + 8];
+              const seen = {};
+              anchorProbe.xs = [];
+              for (const xv of cand) { const k = Math.round(xv / 4); if (!seen[k] && xv >= 3) { seen[k] = 1; anchorProbe.xs.push(xv); } }
             } else {
-              console.log('[RankPanel] 未找到本场成员锚点，用默认 baseY=80');
+              console.log('[RankPanel] 未找到本场成员锚点，用默认 baseY=80, 单列探测');
             }
           }
-          cx = anchorProbe.x;
-          cy = anchorProbe.baseY + anchorProbe.attempt * 13;
-          console.log('[RankPanel] Lynx探测点击候选 (' + cx + ',' + cy + ') attempt=' + anchorProbe.attempt + ' baseY=' + anchorProbe.baseY);
+          const xsLen = anchorProbe.xs.length;
+          const xi = anchorProbe.attempt % xsLen;
+          const yi = Math.floor(anchorProbe.attempt / xsLen);
+          cx = Math.max(3, anchorProbe.xs[xi]);
+          cy = anchorProbe.baseY + yi * 13;
+          console.log('[RankPanel] Lynx探测点击候选 (' + cx + ',' + cy + ') attempt=' + anchorProbe.attempt + ' (列' + xi + '/' + xsLen + ',行' + yi + ') baseY=' + anchorProbe.baseY);
+          // 探测点诊断：记录该点命中的最内层元素，便于实测区分"落在视频区/被遮挡/命中按钮容器"
+          try {
+            const probeEl = deepElementFromPoint(cx, cy);
+            const probeText = norm((probeEl && (probeEl.innerText || probeEl.textContent)) || '');
+            console.log('[RankPanel] 探测点诊断 elementFromPoint(' + cx + ',' + cy + ')=' + (probeEl ? probeEl.tagName : 'null') + ' text=' + probeText.slice(0, 12) + ' cls=' + (probeEl ? clsOf(probeEl) : ''));
+          } catch (pe) {}
           anchorProbe.attempt++;
-          if (anchorProbe.attempt >= 7) { console.log('[RankPanel] 锚点探测达到上限(' + anchorProbe.attempt + ')，重置'); anchorProbe = null; }
+          if (anchorProbe.attempt >= 18) { console.log('[RankPanel] 锚点探测达到上限(' + anchorProbe.attempt + ')，重置'); anchorProbe = null; }
         } else {
           anchorProbe = null;
         }
@@ -480,7 +496,8 @@ const RANK_PANEL_SCRIPT = `(() => {
       // 记录待点击坐标，由主进程用 webContents.sendInputEvent 发送真实鼠标事件（isTrusted=true，绕过页面合成点击被忽略的问题）
       window.__rankClickPos = { x: cx, y: cy, ts: now };
       // 真实点击由主进程异步触发，延迟判定面板是否展开并缓存 rect
-      setTimeout(() => { try { updatePanelInfo(); } catch (e) {} }, 1500);
+      // 2.2s 给弹窗打开动画留足时间，避免动画期间误判未展开而二次点击造成toggle
+      setTimeout(() => { try { updatePanelInfo(); } catch (e) {} }, 2200);
       return 'need_click';
     }
 
@@ -519,6 +536,13 @@ class CommentRenderer {
     // 团播榜单模式（stream+comment+effect+rank）：在特效区基础上展开"团员榜单"并扩宽评论区捕获区域，
     // 使紧邻评论区左侧的榜单弹窗与评论区一并被录制
     this.enableRankPanel = !!options.enableRankPanel;
+    // 团播榜单扩宽状态：_rankWidened=已扩宽（setup或录制期间动态扩宽成功后置位，避免重复扩宽）
+    // _rankWatchTimer=录制期间榜单展开监听（榜单在捕获开始后才被脚本点开时动态扩宽+补齐旧帧）
+    // _pendingFrameTasks=进行中的旧帧补齐/裁剪任务（stopCapture 需等待其完成，保证合并时帧尺寸一致）
+    this._rankWidened = false;
+    this._rankWatchTimer = null;
+    this._rankWidening = false;
+    this._pendingFrameTasks = [];
     // 无账号模式标识：无账号+评论区时不需要账号冲突检测/回滚
     this.noLoginMode = !!options.noLoginMode;
     // 账号冲突回调：检测到评论区提示"已在其它设备登录"（被同账号顶下线）时触发，供外部回滚录制模式
@@ -1075,6 +1099,7 @@ class CommentRenderer {
 
       // 团播榜单模式：刷新后页面脚本丢失且评论区 rect 被重置，需重新注入展开脚本并重新扩宽
       if (this.enableRankPanel && this.capturing && !this.captureWindow.isDestroyed()) {
+        this._rankWidened = false; // 评论区rect已重置为未扩宽，允许setup/录制期间watcher重新扩宽（突变帧由stopCapture归一化兜底）
         await this._setupRankPanelMode();
       }
     } catch (e) {
@@ -1688,8 +1713,139 @@ class CommentRenderer {
       width: newWidth,
       height: this._commentRect.height
     };
+    this._rankWidened = true;
     logger.info(`[CommentRenderer] 团播榜单扩宽评论区: x ${oldX} -> ${newX}, width ${oldW} -> ${newWidth} (面板x=${rankInfo.x}, w=${rankInfo.width}, lynx=${!!rankInfo.lynx})`);
     return true;
+  }
+
+  /**
+   * 录制期间持续监听团播榜单展开状态（v2.13.24）
+   * 背景：_setupRankPanelMode 只在录制初始化阶段等待12s，若榜单在捕获开始后才被页面脚本点开
+   * （实测江苏人民艺术剧院直播间锚点探测整场未命中，偶尔捕获期间才点开），扩宽逻辑不会执行，
+   * 导致整场评论区帧保持未扩宽宽度、榜单丢失，且榜单弹窗挤压布局使左特效区缩小。
+   * 本监听每4s轮询 __rankPanelInfo，发现展开且未扩宽时动态扩宽并用 sharp 补齐已捕获旧帧。
+   */
+  _startRankWatch() {
+    this._stopRankWatch();
+    this._rankWatchTimer = setInterval(async () => {
+      try {
+        if (!this.capturing || !this.captureWindow || this.captureWindow.isDestroyed()) return;
+        if (this._rankWidened || this._rankWidening) return;
+        const info = await this._getRankPanelInfo();
+        if (info && info.expanded && info.width > 40 && info.height >= 120) {
+          await this._dynamicWidenDuringCapture(info);
+        }
+      } catch (e) { /* 忽略监听异常，避免影响录制主流程 */ }
+    }, 4000);
+  }
+
+  _stopRankWatch() {
+    if (this._rankWatchTimer) { clearInterval(this._rankWatchTimer); this._rankWatchTimer = null; }
+  }
+
+  // 捕获期间榜单展开：扩宽评论区捕获区域（后续帧立即用新区域），并后台补齐已捕获旧帧，保证帧序列宽度一致
+  async _dynamicWidenDuringCapture(rankInfo) {
+    this._rankWidening = true;
+    try {
+      const oldRect = this._commentRect ? { ...this._commentRect } : null;
+      if (!oldRect) return;
+      const widened = this._applyRankPanelWiden(rankInfo);
+      if (!widened) return;
+      const deltaW = this._commentRect.width - oldRect.width;
+      const lastIdx = this.frameStartIndex + this.frameCount - 1;
+      logger.info(`[CommentRenderer] 录制期间检测到榜单展开，评论区动态扩宽: width ${oldRect.width} -> ${this._commentRect.width}，后台补齐已捕获 ${lastIdx - this.frameStartIndex + 1} 帧旧帧(左扩${deltaW}px)...`);
+      // 旧帧向左扩展 deltaW（评论区扩宽方向为向左），背景深色与评论区底色一致；任务登记到 _pendingFrameTasks，stopCapture 等待完成
+      const padTask = this._padFramesLeft(this.outputDir, 'frame_', this.frameStartIndex, lastIdx, deltaW)
+        .then((r) => logger.info(`[CommentRenderer] 评论区旧帧补齐完成: ${r.ok}帧成功, ${r.skip}帧跳过, ${r.fail}帧失败, 补齐宽度=${deltaW}`))
+        .catch((e) => logger.warn('[CommentRenderer] 评论区旧帧补齐异常:', e && e.message));
+      this._pendingFrameTasks.push(padTask);
+      // 榜单弹窗展开会挤压页面布局（左侧特效区变窄），重新检测并统一左侧帧尺寸
+      await this._resyncLeftPanelAfterRankOpen();
+    } finally {
+      this._rankWidening = false;
+    }
+  }
+
+  // 用 sharp 把指定范围帧向左扩展 deltaW（深色背景），用于录制期间动态扩宽后补齐已捕获旧帧
+  async _padFramesLeft(dir, prefix, fromIdx, toIdx, deltaW) {
+    const result = { ok: 0, skip: 0, fail: 0 };
+    if (!dir || deltaW <= 0) return result;
+    let sharp;
+    try { sharp = require('sharp'); } catch (e) {
+      logger.warn('[CommentRenderer] sharp 不可用，跳过旧帧补齐（合并可能因帧宽度不一致失败）:', e && e.message);
+      result.fail = -1;
+      return result;
+    }
+    for (let i = fromIdx; i <= toIdx; i++) {
+      const p = path.join(dir, `${prefix}${String(i).padStart(6, '0')}.jpg`);
+      if (!fs.existsSync(p)) { result.skip++; continue; }
+      try {
+        const buf = await sharp(p).extend({ left: deltaW, background: '#101018' }).jpeg({ quality: 92 }).toBuffer();
+        fs.writeFileSync(p, buf);
+        result.ok++;
+      } catch (e) { result.fail++; }
+    }
+    return result;
+  }
+
+  // 用 sharp 把指定范围帧从左侧裁剪为 newW（裁掉右侧多余画面），用于左特效区变窄后统一已捕获旧帧尺寸
+  async _cropFramesRight(dir, prefix, fromIdx, toIdx, newW) {
+    const result = { ok: 0, skip: 0, fail: 0 };
+    if (!dir || newW <= 0) return result;
+    let sharp;
+    try { sharp = require('sharp'); } catch (e) {
+      logger.warn('[CommentRenderer] sharp 不可用，跳过左特效区旧帧裁剪:', e && e.message);
+      result.fail = -1;
+      return result;
+    }
+    for (let i = fromIdx; i <= toIdx; i++) {
+      const p = path.join(dir, `${prefix}${String(i).padStart(6, '0')}.jpg`);
+      if (!fs.existsSync(p)) { result.skip++; continue; }
+      try {
+        const meta = await sharp(p).metadata();
+        const w = Math.min(newW, meta.width || newW);
+        if (w >= (meta.width || 0)) { result.skip++; continue; } // 已不宽于目标，无需裁剪
+        const buf = await sharp(p).extract({ left: 0, top: 0, width: w, height: meta.height }).jpeg({ quality: 92 }).toBuffer();
+        fs.writeFileSync(p, buf);
+        result.ok++;
+      } catch (e) { result.fail++; }
+    }
+    return result;
+  }
+
+  /**
+   * 榜单展开后左特效区重同步：榜单弹窗挤压页面布局导致左侧特效区变窄（实测460->280），
+   * 重新检测特效区实际宽度；若变窄则把已捕获旧帧从左侧裁剪（裁掉右侧混入的视频画面），保证左侧帧序列宽度一致
+   */
+  async _resyncLeftPanelAfterRankOpen() {
+    if (!this.enableLeftPanel || !this._leftPanelRect || !this.leftPanelOutputDir) return;
+    try {
+      const detected = await this._detectLeftPanelAreaFromDOM();
+      if (!detected || detected.width <= 40) {
+        logger.warn('[CommentRenderer] 榜单展开后左特效区重检测未命中，保持原区域');
+        return;
+      }
+      const oldW = this._leftPanelRect.width;
+      const newW = Math.round(detected.width);
+      if (Math.abs(newW - oldW) < 8) {
+        logger.info(`[CommentRenderer] 榜单展开后左特效区宽度变化微小(${oldW}->${newW})，保持原区域`);
+        return;
+      }
+      const pageH = this._leftPanelRect.height;
+      const lastIdx = this._leftPanelFrameCount - 1;
+      this._leftPanelRect = { x: 0, y: 0, width: newW, height: pageH };
+      if (newW < oldW) {
+        logger.info(`[CommentRenderer] 榜单展开后左特效区变窄: width ${oldW} -> ${newW}，后台裁剪已捕获 ${lastIdx + 1} 帧旧帧(去右侧混入画面)...`);
+        const cropTask = this._cropFramesRight(this.leftPanelOutputDir, 'left_frame_', 0, lastIdx, newW)
+          .then((r) => logger.info(`[CommentRenderer] 左特效区旧帧裁剪完成: ${r.ok}帧成功, ${r.skip}帧跳过, ${r.fail}帧失败`))
+          .catch((e) => logger.warn('[CommentRenderer] 左特效区旧帧裁剪异常:', e && e.message));
+        this._pendingFrameTasks.push(cropTask);
+      } else {
+        logger.info(`[CommentRenderer] 榜单展开后左特效区变宽: width ${oldW} -> ${newW}（少见），旧帧右侧待录制结束统一补齐`);
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] 左特效区重同步异常:', e && e.message);
+    }
   }
 
   // 保存团播榜单调试截图：①榜单展开后的整体界面 ②榜单+评论区（扩宽后）单独裁切
@@ -1744,6 +1900,10 @@ class CommentRenderer {
     this._lastReloadAt = 0;
     this._reloading = false;
     this._reloadCapWarned = false;
+
+    // 团播榜单扩宽状态：每个录制会话重置（setup阶段已扩宽则保持true，否则录制期间watcher可动态扩宽）
+    this._rankWidening = false;
+    this._pendingFrameTasks = [];
 
     logger.info(`[CommentRenderer] 开始捕获评论区帧, 固定FPS: ${this.targetFps}（全程固定，不因礼物提帧）, 输出目录: ${this.outputDir}`);
     logger.info(`[CommentRenderer] 裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
@@ -1879,6 +2039,11 @@ class CommentRenderer {
       this._startAccountConflictDetection();
     }
 
+    // 团播榜单模式：启动录制期间榜单展开监听（榜单若在捕获开始后才被页面脚本点开，动态扩宽并补齐旧帧）
+    if (this.enableRankPanel && !this._rankWidened) {
+      this._startRankWatch();
+    }
+
     // 启动捕获循环
     this._captureTimer = setTimeout(captureFrame, this._baseInterval);
   }
@@ -1887,13 +2052,21 @@ class CommentRenderer {
    * 停止捕获
    * @returns {{ frameCount: number, outputDir: string, fps: number, duration: number }}
    */
-  stopCapture() {
+  async stopCapture() {
     this.capturing = false;
     this._stopRankClickPump(); // 停止团播榜单真实点击泵
+    this._stopRankWatch();     // 停止录制期间榜单展开监听
 
     if (this._captureTimer) {
       clearTimeout(this._captureTimer);
       this._captureTimer = null;
+    }
+
+    // 等待录制期间动态扩宽触发的旧帧补齐/裁剪任务完成，避免合并时帧尺寸不一致（v2.13.24）
+    if (this._pendingFrameTasks && this._pendingFrameTasks.length) {
+      logger.info(`[CommentRenderer] 等待 ${this._pendingFrameTasks.length} 个旧帧处理任务完成...`);
+      try { await Promise.all(this._pendingFrameTasks); } catch (e) { /* 任务内部已记录日志 */ }
+      this._pendingFrameTasks = [];
     }
 
 
@@ -1948,6 +2121,16 @@ class CommentRenderer {
       logger.info(`[CommentRenderer] 停止捕获, 左侧特效区帧数: ${leftPanelInfo.frameCount}, 目录: ${leftPanelInfo.outputDir}`);
     }
 
+    // 帧尺寸归一化兜底（v2.13.24）：自愈刷新重探测/录制期间动态扩宽等场景可能造成帧序列宽度突变，
+    // FFmpeg image2 序列要求所有帧尺寸一致，故以最大宽度为准补齐窄帧。
+    // 评论区扩宽方向为向左（x左移），窄帧左侧补齐；左特效区贴页面左缘，窄帧右侧补齐。
+    if (this.outputDir && this.frameCount > 0) {
+      await this._normalizeFramesWidth(this.outputDir, 'frame_', 'left', this.frameStartIndex, this.frameStartIndex + this.frameCount - 1);
+    }
+    if (leftPanelInfo && this.leftPanelOutputDir && this._leftPanelFrameCount > 0) {
+      await this._normalizeFramesWidth(this.leftPanelOutputDir, 'left_frame_', 'right', 0, this._leftPanelFrameCount - 1);
+    }
+
     return {
       frameCount: absoluteCount,
       outputDir: this.outputDir,
@@ -1958,6 +2141,51 @@ class CommentRenderer {
       height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT,
       leftPanelInfo: leftPanelInfo
     };
+  }
+
+  /**
+   * 帧尺寸归一化（v2.13.24）：扫描指定范围帧，宽度不一致时以最大宽度为准，窄帧用深色背景补齐。
+   * align='left' 表示内容右对齐（评论区：扩宽是向左扩展，旧窄帧在左侧补）；align='right' 表示内容左对齐（左特效区）。
+   * 先采样（首/中/尾帧）检查，全一致则跳过全量扫描，避免几千帧的无谓开销。
+   */
+  async _normalizeFramesWidth(dir, prefix, align, fromIdx, toIdx) {
+    if (!dir || !fs.existsSync(dir) || toIdx < fromIdx) return;
+    let sharp;
+    try { sharp = require('sharp'); } catch (e) { return; } // sharp 不可用时跳过（动态扩宽路径已单独告警）
+    const fileAt = (i) => path.join(dir, `${prefix}${String(i).padStart(6, '0')}.jpg`);
+    const widthOf = async (i) => {
+      try { const m = await sharp(fileAt(i)).metadata(); return m.width || 0; } catch (e) { return 0; }
+    };
+    // 采样检查：首/尾/中间帧宽度一致则认为全序列一致（突变只会发生在扩宽/刷新事件点，采样足以发现）
+    const sampleIdx = [fromIdx, toIdx, Math.floor((fromIdx + toIdx) / 2)];
+    const sampleW = [];
+    for (const i of sampleIdx) { if (fs.existsSync(fileAt(i))) sampleW.push(await widthOf(i)); }
+    if (sampleW.length >= 2 && sampleW.every((w) => w === sampleW[0])) return;
+    // 全量扫描找最大宽度
+    let maxW = 0;
+    const widths = new Map();
+    for (let i = fromIdx; i <= toIdx; i++) {
+      const p = fileAt(i);
+      if (!fs.existsSync(p)) continue;
+      const w = await widthOf(i);
+      widths.set(i, w);
+      if (w > maxW) maxW = w;
+    }
+    if (maxW <= 0) return;
+    let padded = 0;
+    for (const [i, w] of widths) {
+      if (w <= 0 || w >= maxW) continue;
+      const p = fileAt(i);
+      try {
+        const extendOpt = align === 'left' ? { left: maxW - w, background: '#101018' } : { right: maxW - w, background: '#101018' };
+        const buf = await sharp(p).extend(extendOpt).jpeg({ quality: 92 }).toBuffer();
+        fs.writeFileSync(p, buf);
+        padded++;
+      } catch (e) { /* 单帧失败不阻塞 */ }
+    }
+    if (padded > 0) {
+      logger.info(`[CommentRenderer] 帧尺寸归一化(${prefix}): 检测到宽度不一致，以最大宽度${maxW}为准补齐 ${padded} 帧 (align=${align})`);
+    }
   }
 
 
@@ -2024,7 +2252,7 @@ class CommentRenderer {
    * 清理所有资源
    */
   async destroy() {
-    this.stopCapture();
+    await this.stopCapture();
     this._stopAccountConflictDetection();
 
     if (this.captureWindow && !this.captureWindow.isDestroyed()) {

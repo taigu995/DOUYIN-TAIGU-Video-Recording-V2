@@ -823,10 +823,10 @@ class Recorder {
     // Step 1: 停止 FFmpeg 流录制
     await this._stopFFmpeg();
 
-    // Step 2: 停止评论区捕获
+    // Step 2: 停止评论区捕获（v2.13.24起为async：需等待动态扩宽的旧帧补齐任务完成，保证合并时帧尺寸一致）
     let commentInfo = null;
     if (this.commentRenderer) {
-      commentInfo = this.commentRenderer.stopCapture();
+      commentInfo = await this.commentRenderer.stopCapture();
     }
 
     // Step 2.5: 停止左侧面板捕获（复用评论区同一窗口产生，随 commentInfo.leftPanelInfo 返回）
@@ -2369,7 +2369,7 @@ class Recorder {
     // 1. 停止当前渲染器，拿到已捕获的累计帧数（用于续帧编号，避免覆盖）
     let absoluteCount = 0;
     try {
-      const info = this.commentRenderer.stopCapture();
+      const info = await this.commentRenderer.stopCapture();
       absoluteCount = info.frameCount || 0;
       logger.info(`[Recorder] 已记录冲突前评论区帧数: ${absoluteCount}`);
     } catch (e) {
