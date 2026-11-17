@@ -220,7 +220,9 @@ const RANK_PANEL_SCRIPT = `(() => {
     // 完整鼠标事件序列点击（模拟真实用户操作，提高抖音组件响应率）
     function realClick(el) {
       let r; try { r = el.getBoundingClientRect(); } catch (e) { r = { left: 0, top: 0, width: 1, height: 1 }; }
-      const opts = { bubbles: true, cancelable: true, view: window, clientX: r.left + (r.width || 1) / 2, clientY: r.top + (r.height || 1) / 2, button: 0 };
+      // 事件 view 使用元素所在的 window（触发器可能在 iframe 内，iframe 内元素需用其所属 window）
+      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+      const opts = { bubbles: true, cancelable: true, view: view, clientX: r.left + (r.width || 1) / 2, clientY: r.top + (r.height || 1) / 2, button: 0 };
       const seq = ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
       for (const type of seq) {
         try { el.dispatchEvent(type.indexOf('pointer') === 0 ? new PointerEvent(type, opts) : new MouseEvent(type, opts)); } catch (e) {}
@@ -237,20 +239,24 @@ const RANK_PANEL_SCRIPT = `(() => {
       } catch (e) { return false; }
     }
 
-    // 穿透查找"已展开"的榜单面板：含"团员榜单"文本、高度明显增大或含多个团员头像的最内层可见容器
+    // 穿透查找"已展开"的榜单面板：含榜单关键词、可见、高度明显增大或含多个团员头像的最内层可见容器
+    // 注意：面板同样可能是 X-VIEW 自定义元素，不限 tagName；加宽度约束排除整页大容器
     function findPanel() {
       const els = getAllElements();
       const matched = [];
       for (const c of els) {
-        if (!/^(DIV|UL|OL|SECTION|ASIDE|MAIN|LI)$/.test(c.tagName)) continue;
+        if (!c || !c.getBoundingClientRect || !c.tagName) continue;
+        if (c.tagName === 'BODY' || c.tagName === 'HTML') continue;
         const t = norm(c.innerText || c.textContent);
         if (!t || t.indexOf(KEY) < 0) continue;
         if (!visible(c)) continue;
         const r = c.getBoundingClientRect();
         if (r.width <= 0 || r.height < 120) continue; // 折叠态仅一两行(高<120)
-        const imgs = c.querySelectorAll('img');
+        if (r.width > 1000) continue; // 排除整页宽的大容器
+        let imgCount = 0;
+        try { imgCount = c.querySelectorAll('img').length; } catch (e) {}
         // 展开特征：出现多个团员头像，或容器显著变高
-        if (imgs.length >= 2 || r.height >= 200) matched.push({ el: c, rect: r });
+        if (imgCount >= 2 || r.height >= 200) matched.push({ el: c, rect: r });
       }
       if (!matched.length) return null;
       // 取最内层（不包含其它匹配容器），避免误取包裹整区的大容器
@@ -258,25 +264,35 @@ const RANK_PANEL_SCRIPT = `(() => {
       return inner[0] || matched[matched.length - 1];
     }
 
-    // 穿透定位"团员榜单"触发器（最内层含榜单关键词的元素，支持多关键词）
+    // 穿透定位"团员榜单"触发器（最内层含榜单关键词的元素）
+    // 注意：抖音触发器是自定义元素 <X-VIEW>（cls=rank-header / rank-header-title），
+    // 不能用 tagName 白名单过滤，改用"文本短 + 最内层 + 可见 + 尺寸合理"，多候选取面积最小者
     function findTrigger() {
       const els = getAllElements();
+      const candidates = [];
       for (const el of els) {
-        if (!/^(DIV|SPAN|P|A|BUTTON|LI|I|EM|STRONG|HEADER)$/.test(el.tagName)) continue;
+        if (!el || !el.getBoundingClientRect || !el.tagName) continue;
+        if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
         const t = norm(el.innerText || el.textContent);
-        if (!t || t.length > 12) continue; // 触发器文本短，过长的是面板/容器
+        if (!t || t.length > 12) continue; // 触发器文本短，过长的是面板/大容器
         let hit = null;
         for (const k of KEYS) { if (t.indexOf(k) >= 0) { hit = k; break; } }
         if (!hit) continue;
+        // 最内层：任一子元素含关键词则跳过（避免选到包裹容器）
         let childHas = false;
         for (const c of el.children) {
           const ct = norm(c.innerText || c.textContent);
           for (const k of KEYS) { if (ct.indexOf(k) >= 0) { childHas = true; break; } }
           if (childHas) break;
         }
-        if (!childHas && visible(el)) return el;
+        if (childHas || !visible(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 120) continue; // 触发器是小按钮，排除整页大容器
+        candidates.push({ el: el, area: r.width * r.height });
       }
-      return null;
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => a.area - b.area); // 面积最小者最精确
+      return candidates[0].el;
     }
 
     // 更新面板信息到 window.__rankPanelInfo（供主进程探测计算扩宽量）
