@@ -264,9 +264,10 @@ const RANK_PANEL_SCRIPT = `(() => {
       return inner[0] || matched[matched.length - 1];
     }
 
-    // 穿透定位"团员榜单"触发器（最内层含榜单关键词的元素）
-    // 注意：抖音触发器是自定义元素 <X-VIEW>（cls=rank-header / rank-header-title），
-    // 不能用 tagName 白名单过滤，改用"文本短 + 最内层 + 可见 + 尺寸合理"，多候选取面积最小者
+    // 穿透定位"团员榜单"触发器（含榜单关键词的可见元素，取面积最小者=最内层）
+    // 注意：抖音触发器是自定义元素 <X-VIEW>（cls=rank-header / rank-header-title），不能用 tagName 白名单；
+    // 不查 childHas——X-VIEW 子元素 textContent 可能异常冗长（含关键词但长度>12），会误排最内层触发器；
+    // 改用面积排序天然选中最内层（子元素面积必然小于父容器）
     function findTrigger() {
       const els = getAllElements();
       const candidates = [];
@@ -278,20 +279,34 @@ const RANK_PANEL_SCRIPT = `(() => {
         let hit = null;
         for (const k of KEYS) { if (t.indexOf(k) >= 0) { hit = k; break; } }
         if (!hit) continue;
-        // 最内层：任一子元素含关键词则跳过（避免选到包裹容器）
-        let childHas = false;
-        for (const c of el.children) {
-          const ct = norm(c.innerText || c.textContent);
-          for (const k of KEYS) { if (ct.indexOf(k) >= 0) { childHas = true; break; } }
-          if (childHas) break;
-        }
-        if (childHas || !visible(el)) continue;
+        if (!visible(el)) continue;
         const r = el.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 120) continue; // 触发器是小按钮，排除整页大容器
         candidates.push({ el: el, area: r.width * r.height });
       }
-      if (!candidates.length) return null;
-      candidates.sort((a, b) => a.area - b.area); // 面积最小者最精确
+      if (!candidates.length) {
+        // 诊断：输出每个含关键词元素被排除的原因（定位是文本过长/不可见/尺寸异常）
+        let scanned = 0;
+        for (const el of els) {
+          if (!el || !el.tagName) continue;
+          const t = norm(el.innerText || el.textContent);
+          let hit = null;
+          for (const k of KEYS) { if (t && t.indexOf(k) >= 0) { hit = k; break; } }
+          if (!hit) continue;
+          scanned++;
+          if (scanned <= 6) {
+            const r = (el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 });
+            let why = 'OK';
+            if (!t) why = 'empty-text';
+            else if (t.length > 12) why = 'text-too-long(' + t.length + ')';
+            else if (!visible(el)) why = 'invisible';
+            else if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 120) why = 'size-out(' + Math.round(r.width) + 'x' + Math.round(r.height) + ')';
+            console.log('[RankPanel] 排除分析 ' + el.tagName + ' | text=' + t.slice(0, 8) + ' | ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' | 原因=' + why);
+          }
+        }
+        return null;
+      }
+      candidates.sort((a, b) => a.area - b.area); // 面积最小者最精确（最内层）
       return candidates[0].el;
     }
 
