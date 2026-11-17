@@ -7,7 +7,7 @@
 ## 下载链接
 
 ### 源代码（可自行打包，推荐）
-- [抖音直播录制工具V2 v2.13.4 源代码](https://demo.dev.coze.site/douyin-recorder-v2.13.4.tar.gz) (127 MB)
+- [抖音直播录制工具V2 v2.13.5 源代码（含一键打包脚本）](https://demo.dev.coze.site/douyin-recorder-v2.13.5.tar.gz) (96 MB)
 
 ### 源代码（不含一键打包脚本）
 - [抖音直播录制工具V2 v2.13.2 源代码](https://demo.dev.coze.site/douyin-recorder-v2.13.2-source.tar.gz) (122 MB)

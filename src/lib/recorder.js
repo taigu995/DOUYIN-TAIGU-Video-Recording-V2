@@ -490,16 +490,8 @@ class Recorder {
       if (useLeftPanelRenderer) {
         try {
           logger.info(`[Recorder] 初始化左侧面板渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
-          this.leftPanelRenderer = new LeftPanelRenderer({
-            liveUrl: this.liveUrl,
-            roomId: this.roomId,
-            session: this.session,
-            outputDir: this._leftPanelFramesDir,
-            debugDir: path.dirname(this.outputFile),
-            fps: this.commentFps,
-            sessionName: this.sessionName,
-            noAccountMode: false // 特效区模式使用账号登录
-          });
+          const LeftPanelRendererV2 = require('./left-panel-renderer-v2');
+          this.leftPanelRenderer = new LeftPanelRendererV2(this.liveUrl, this.commentFps);
           await this.leftPanelRenderer.init();
           logger.info('[Recorder] 左侧面板渲染器初始化成功');
         } catch (leftErr) {
