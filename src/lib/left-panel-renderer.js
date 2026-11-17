@@ -24,7 +24,20 @@ const HEARTBEAT_SCRIPT = `(() => {
     // 左侧面板容器定位（选择器必须与主进程 _detectLeftPanelAreaFromDOM 保持同步）
     function findLeftPanelRoot() {
       if (window.__leftPanelRoot && window.__leftPanelRoot.isConnected) return window.__leftPanelRoot;
+      
+      // 方法1：通过评论区容器的前一个兄弟元素找到左侧面板
+      const chatroom = document.querySelector('[class*="webcast-chatroom"]');
+      if (chatroom && chatroom.previousElementSibling) {
+        const leftPanel = chatroom.previousElementSibling;
+        if (leftPanel && leftPanel.offsetWidth > 80 && leftPanel.offsetHeight > 100) {
+          window.__leftPanelRoot = leftPanel;
+          return leftPanel;
+        }
+      }
+      
+      // 方法2：通过页面左侧区域查找
       const sels = [
+        '[class*="webcast-chatroom"] ~ *', // 评论区的兄弟元素
         '[class*="webcast-left"]',
         '[class*="left-panel"]',
         '[class*="LeftPanel"]',
@@ -41,7 +54,7 @@ const HEARTBEAT_SCRIPT = `(() => {
         '[class*="left-side"]',
         '[class*="LeftSide"]'
       ];
-      for (const s of sels) { const el = document.querySelector(s); if (el) { window.__leftPanelRoot = el; return el; } }
+      for (const s of sels) { const el = document.querySelector(s); if (el && el.offsetWidth > 80 && el.offsetHeight > 100) { window.__leftPanelRoot = el; return el; } }
       return null;
     }
 
@@ -288,7 +301,24 @@ class LeftPanelRenderer {
       const result = await Promise.race([
         this.captureWindow.webContents.executeJavaScript(`
           (function() {
+            // 方法1：通过评论区容器的前一个兄弟元素找到左侧面板
+            const chatroom = document.querySelector('[class*="webcast-chatroom"]');
+            if (chatroom && chatroom.previousElementSibling) {
+              const leftPanel = chatroom.previousElementSibling;
+              if (leftPanel && leftPanel.offsetWidth > 80 && leftPanel.offsetHeight > 100) {
+                const rect = leftPanel.getBoundingClientRect();
+                return {
+                  x: Math.round(rect.left),
+                  y: Math.round(rect.top),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height)
+                };
+              }
+            }
+            
+            // 方法2：通过页面左侧区域查找
             const sels = [
+              '[class*="webcast-chatroom"] ~ *', // 评论区的兄弟元素
               '[class*="webcast-left"]',
               '[class*="left-panel"]',
               '[class*="LeftPanel"]',
@@ -308,16 +338,14 @@ class LeftPanelRenderer {
 
             for (const sel of sels) {
               const el = document.querySelector(sel);
-              if (el) {
+              if (el && el.offsetWidth > 80 && el.offsetHeight > 100) {
                 const rect = el.getBoundingClientRect();
-                if (rect.width > 80 && rect.height > 100) {
-                  return {
-                    x: Math.round(rect.left),
-                    y: Math.round(rect.top),
-                    width: Math.round(rect.width),
-                    height: Math.round(rect.height)
-                  };
-                }
+                return {
+                  x: Math.round(rect.left),
+                  y: Math.round(rect.top),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height)
+                };
               }
             }
             return null;
