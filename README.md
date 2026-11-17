@@ -1,13 +1,13 @@
 # 抖音直播录制工具V2
 
-> **当前版本：2.13.4**
+> **当前版本：2.13.6**
 
 基于 Electron 的抖音直播录制桌面工具，采用 **流媒体直录 + 离屏评论区渲染** 架构，实现高质量音视频录制并拼接右侧评论区弹幕，支持 Windows 系统。
 
 ## 下载链接
 
 ### 源代码（可自行打包，推荐）
-- [抖音直播录制工具V2 v2.13.5 源代码（含一键打包脚本）](https://demo.dev.coze.site/douyin-recorder-v2.13.5.tar.gz) (96 MB)
+- [抖音直播录制工具V2 v2.13.6 源代码（含一键打包脚本）](https://demo.dev.coze.site/douyin-recorder-v2.13.6.tar.gz) (97 MB)
 
 ### 源代码（不含一键打包脚本）
 - [抖音直播录制工具V2 v2.13.2 源代码](https://demo.dev.coze.site/douyin-recorder-v2.13.2-source.tar.gz) (122 MB)

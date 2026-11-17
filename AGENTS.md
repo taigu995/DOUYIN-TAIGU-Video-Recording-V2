@@ -124,3 +124,5 @@ pnpm run build:dir
 - 手动停止录制时立即合并视频（v2.13.2）：当手动点击"停止录制"按钮时，立即开始合并视频，不再等待 5 分钟。修复：在 recorder.js 中添加 `_isManualStop` 标志，手动停止时跳过 5 分钟合并延迟
 - 修复左侧面板捕获黑屏问题（v2.13.3）：左侧面板渲染器使用与评论区相同的捕获方法，通过评论区容器的前一个兄弟元素找到左侧面板，并添加更多选择器支持。修复：①修改 `_detectLeftPanelAreaFromDOM` 方法，优先通过评论区容器的前一个兄弟元素找到左侧面板；②修改心跳检测脚本，使用相同的左侧面板容器查找逻辑
 - 修复左侧面板捕获黑屏问题（v2.13.4）：左侧面板渲染器的DOM探测失败，使用了估算区域导致捕获到黑屏。修复：修改 `_detectLeftPanelAreaFromDOM` 方法，使用与评论区渲染器相同的捕获方法，通过评论区容器找到左侧面板
+- 重构左侧面板渲染器（v2.13.5）：创建 LeftPanelRendererV2，完全复用评论区渲染器的捕获逻辑，在同一个离屏窗口中同时捕获评论区和左侧面板。修复：①使用与评论区渲染器相同的窗口创建和页面加载逻辑；②DOM探测时优先通过评论区容器的前一个兄弟元素找左侧面板；③添加更多左侧面板选择器支持（LeftPanel、LeftSide、RoomInfo、UserInfo等）；④CSS注入时隐藏视频播放器和评论区，显示左侧面板
+- 修复左侧面板渲染器 logger 导入错误（v2.13.6）：left-panel-renderer-v2.js 中 logger 导入方式不正确导致初始化失败。修复：将 `const logger = require('./logger')` 改为 `const { getLogger } = require('./logger'); const logger = getLogger()`，与其他文件保持一致

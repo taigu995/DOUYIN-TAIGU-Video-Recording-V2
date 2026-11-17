@@ -8,8 +8,10 @@
 const { BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const logger = require('./logger');
+const { getLogger } = require('./logger');
 const config = require('./config');
+
+const logger = getLogger();
 
 // 左侧面板 CSS 注入脚本：隐藏评论区，显示左侧面板
 const LEFT_PANEL_SCRIPT = `
