@@ -176,6 +176,32 @@ const RANK_PANEL_SCRIPT = `(() => {
       try { const c = el.className; return (c && c.baseVal !== undefined ? c.baseVal : c || '').toString().slice(0, 40); } catch (e) { return ''; }
     }
 
+    // iframe 坐标系换算（v2.13.25 关键修复）：collectAll 穿透同源 iframe 收集的元素，其 getBoundingClientRect
+    // 返回 iframe 内文档坐标，而 elementFromPoint/sendInputEvent 使用主视口坐标——两坐标系错位会导致探测点击全落空
+    // （实测江苏人艺直播间左侧"本场成员/团员榜单"整个由 Lynx hybrid iframe 承载，elementFromPoint 全命中 IFRAME）。
+    // 沿 ownerDocument.defaultView.frameElement 链逐层累加 iframe 偏移，统一换算为主视口坐标。
+    function toViewportRect(el) {
+      let r;
+      try { r = el.getBoundingClientRect(); } catch (e) { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
+      let x = r.left, y = r.top;
+      try {
+        let doc = el.ownerDocument;
+        let guard = 0;
+        while (doc && doc !== document && guard < 5) {
+          const fe = doc.defaultView && doc.defaultView.frameElement;
+          if (!fe) break;
+          const fr = fe.getBoundingClientRect();
+          x += fr.left; y += fr.top;
+          doc = fe.ownerDocument;
+          guard++;
+        }
+      } catch (e) {}
+      return { left: x, top: y, right: x + r.width, bottom: y + r.height, width: r.width, height: r.height };
+    }
+    function inIframe(el) {
+      try { return el.ownerDocument !== document; } catch (e) { return false; }
+    }
+
     // 穿透 Shadow DOM + 同源 iframe，递归收集 root 下所有元素（含 shadow 内部）
     function collectAll(root, acc, depth) {
       depth = depth || 0;
@@ -278,11 +304,12 @@ const RANK_PANEL_SCRIPT = `(() => {
         if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 200) continue; // 触发器是小按钮/小行，排除整页大容器
         candidates.push({ el: el, area: r.width * r.height, key: hit, text: t, rect: r, cls: clsOf(el) });
       }
-      // 诊断：总是打印候选（区分 Lynx 逻辑节点与视觉按钮，定位真正可点击的元素）
+      // 诊断：总是打印候选（区分 Lynx 逻辑节点与视觉按钮，定位真正可点击的元素）；vp=主视口换算坐标（v2.13.25）
       console.log('[RankPanel] 触发器候选数=' + candidates.length);
       for (let ci = 0; ci < Math.min(candidates.length, 8); ci++) {
         const c = candidates[ci];
-        console.log('[RankPanel] 候选[' + ci + '] ' + c.el.tagName + ' key=' + c.key + ' text=' + c.text.slice(0, 14) + ' rect=' + Math.round(c.rect.left) + ',' + Math.round(c.rect.top) + ',' + Math.round(c.rect.width) + 'x' + Math.round(c.rect.height) + ' cls=' + c.cls);
+        const vp = toViewportRect(c.el);
+        console.log('[RankPanel] 候选[' + ci + '] ' + c.el.tagName + ' key=' + c.key + ' text=' + c.text.slice(0, 14) + ' rect=' + Math.round(c.rect.left) + ',' + Math.round(c.rect.top) + ',' + Math.round(c.rect.width) + 'x' + Math.round(c.rect.height) + ' vp=' + Math.round(vp.left) + ',' + Math.round(vp.top) + ' iframe=' + inIframe(c.el) + ' cls=' + c.cls);
       }
       if (!candidates.length) {
         // 诊断：输出每个含关键词元素被排除的原因（定位是文本过长/不可见/尺寸异常）
@@ -323,7 +350,7 @@ const RANK_PANEL_SCRIPT = `(() => {
       const p = findPanel();
       if (p) {
         panelRef = p.el;
-        const r = p.el.getBoundingClientRect();
+        const r = toViewportRect(p.el); // 主视口坐标：面板可能在 iframe 内（江苏人艺），扩宽判断需视口坐标（v2.13.25）
         const tag = (p.el.tagName || '').toUpperCase();
         // Lynx 自定义元素(X-*)的 getBoundingClientRect 返回逻辑坐标——x/y 不可信(实测弹窗视觉x≈1135但rect.x=0)，width/height 可信
         window.__rankPanelInfo = {
@@ -357,17 +384,33 @@ const RANK_PANEL_SCRIPT = `(() => {
       return !!updatePanelInfo();
     }
 
-    // 穿透 shadow DOM 的 elementFromPoint：Lynx 组件常嵌套 shadowRoot，需深入到最内层元素
+    // 穿透 shadow DOM + iframe 的 elementFromPoint：Lynx 组件常嵌套 shadowRoot，部分组件（江苏人艺榜单）在同源 iframe 内，
+    // 需逐层深入最内层元素；iframe 层坐标需换算（主视口坐标 - iframe 偏移 = iframe 内文档坐标）
     function deepElementFromPoint(x, y) {
       let el = null;
       try { el = document.elementFromPoint(x, y); } catch (e) { return null; }
       let guard = 0;
-      while (el && el.shadowRoot && guard < 12) {
-        let inner = null;
-        try { inner = el.shadowRoot.elementFromPoint(x, y); } catch (e) { break; }
-        if (!inner || inner === el) break;
-        el = inner;
-        guard++;
+      while (el && guard < 12) {
+        if (el.tagName === 'IFRAME') {
+          let inner = null;
+          try {
+            const fr = el.getBoundingClientRect();
+            if (el.contentDocument) inner = el.contentDocument.elementFromPoint(x - fr.left, y - fr.top);
+          } catch (e) { break; }
+          if (!inner || inner === el) break;
+          el = inner;
+          guard++;
+          continue;
+        }
+        if (el.shadowRoot) {
+          let inner = null;
+          try { inner = el.shadowRoot.elementFromPoint(x, y); } catch (e) { break; }
+          if (!inner || inner === el) break;
+          el = inner;
+          guard++;
+          continue;
+        }
+        break;
       }
       return el;
     }
@@ -405,14 +448,14 @@ const RANK_PANEL_SCRIPT = `(() => {
         if (!t || t.length > 30) continue;
         if (t.indexOf('本场成员') < 0) continue;
         if (!visible(el)) continue;
-        const r = el.getBoundingClientRect();
+        const r = toViewportRect(el); // 主视口坐标（iframe 内锚点自动换算，v2.13.25）
         if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 200) continue;
         if (r.top < 30) continue; // 排除页面顶部疑似 Lynx 干扰的逻辑节点，视觉锚点应在内容区
         const area = r.width * r.height;
         if (!best || area < best.area) best = { el: el, area: area, rect: r };
       }
-      console.log('[RankPanel] 锚点探测 findTrustedAnchor=' + (best ? best.el.tagName + ' rect=' + Math.round(best.rect.left) + ',' + Math.round(best.rect.top) + ',' + Math.round(best.rect.width) + 'x' + Math.round(best.rect.height) + ' cls=' + clsOf(best.el) : 'null'));
-      return best ? best.el : null;
+      console.log('[RankPanel] 锚点探测 findTrustedAnchor=' + (best ? best.el.tagName + ' rect=' + Math.round(best.rect.left) + ',' + Math.round(best.rect.top) + ',' + Math.round(best.rect.width) + 'x' + Math.round(best.rect.height) + ' iframe=' + inIframe(best.el) + ' cls=' + clsOf(best.el) : 'null'));
+      return best;
     }
 
     function expandOnce() {
@@ -429,7 +472,7 @@ const RANK_PANEL_SCRIPT = `(() => {
         console.log('[RankPanel] 未找到触发器：穿透元素总数=' + all.length + ' shadowRoot=' + shadowCount + ' iframe=' + iframeCount + ' 含榜单文本元素=' + keyHit);
         return 'trigger_not_found';
       }
-      const tr = trigger.getBoundingClientRect();
+      const tr = toViewportRect(trigger); // 主视口坐标（iframe 内触发器自动换算，v2.13.25）
       let cx = Math.round(tr.left + tr.width / 2);
       let cy = Math.round(tr.top + tr.height / 2);
       const triggerText = norm(trigger.innerText || trigger.textContent).slice(0, 14);
@@ -455,9 +498,9 @@ const RANK_PANEL_SCRIPT = `(() => {
           // （实测 Fire苏江095 单列x=23即命中，江苏人民艺术剧院同坐标7点全失败），单列扫描覆盖不足
           if (!anchorProbe) {
             anchorProbe = { xs: [cx], baseY: 80, attempt: 0 };
-            const anchorEl = findTrustedAnchor();
-            if (anchorEl) {
-              const ar = anchorEl.getBoundingClientRect();
+            const anchor = findTrustedAnchor();
+            if (anchor) {
+              const ar = anchor.rect; // 已是主视口坐标（v2.13.25）
               anchorProbe.baseY = Math.round(ar.bottom) + 15;
               // x 列：触发器逻辑中心x（可信，Fire实测有效）+ 锚点中心x + 左右偏移，去重后约3~4列
               const cand = [cx, Math.round(ar.left + ar.width / 2), cx + 25, cx - 13, Math.round(ar.right) + 8];
@@ -1316,8 +1359,9 @@ class CommentRenderer {
           const pageH = document.documentElement.clientHeight || window.innerHeight;
           const pageCenterX = pageW / 2;
 
-          // 穿透 Shadow DOM，递归收集所有 video/canvas 元素
-          // （抖音直播播放器用 Shadow DOM 封装，普通 querySelector 查不到内部 video）
+          // 穿透 Shadow DOM + 同源 iframe，递归收集所有 video/canvas 元素
+          // （抖音直播播放器用 Shadow DOM 封装，普通 querySelector 查不到内部 video；
+          //   部分直播间如江苏人艺的页面区块由 Lynx hybrid iframe 承载，iframe 内媒体也需收集，v2.13.25）
           function collectMedia(root, acc) {
             if (!root || !root.querySelectorAll) return;
             try {
@@ -1326,16 +1370,43 @@ class CommentRenderer {
               const all = root.querySelectorAll('*');
               for (let i = 0; i < all.length; i++) {
                 if (all[i].shadowRoot) collectMedia(all[i].shadowRoot, acc);
+                if (all[i].tagName === 'IFRAME') {
+                  try { if (all[i].contentDocument) collectMedia(all[i].contentDocument, acc); } catch(e) {}
+                }
               }
             } catch(e) {}
           }
 
-          // 穿透 Shadow DOM，判断元素内部是否包含 video/canvas
+          // iframe 坐标系换算：iframe 内元素的 getBoundingClientRect 是 iframe 内文档坐标，需沿 frameElement 链累加偏移
+          function toVpRect(el) {
+            let r;
+            try { r = el.getBoundingClientRect(); } catch(e) { return { left: 0, top: 0, width: 0, height: 0 }; }
+            let x = r.left, y = r.top;
+            try {
+              let doc = el.ownerDocument, guard = 0;
+              while (doc && doc !== document && guard < 5) {
+                const fe = doc.defaultView && doc.defaultView.frameElement;
+                if (!fe) break;
+                const fr = fe.getBoundingClientRect();
+                x += fr.left; y += fr.top;
+                doc = fe.ownerDocument; guard++;
+              }
+            } catch(e) {}
+            return { left: x, top: y, width: r.width, height: r.height };
+          }
+
+          // 穿透 Shadow DOM + iframe，判断元素内部是否包含 video/canvas
           function containsMediaDeep(el) {
             try {
               if (el.querySelector('video, canvas')) return true;
               const all = el.querySelectorAll('*');
               for (let i = 0; i < all.length; i++) {
+                if (all[i].tagName === 'IFRAME') {
+                  try {
+                    const idoc = all[i].contentDocument;
+                    if (idoc && idoc.querySelector('video, canvas')) return true;
+                  } catch(e) {}
+                }
                 const sr = all[i].shadowRoot;
                 if (sr) {
                   if (sr.querySelector('video, canvas')) return true;
@@ -1365,7 +1436,7 @@ class CommentRenderer {
           collectMedia(document, mediaEls);
           let mainMedia = null, maxArea = 0;
           for (const el of mediaEls) {
-            const r = el.getBoundingClientRect();
+            const r = toVpRect(el); // 主视口坐标（iframe 内媒体自动换算，v2.13.25）
             if (r.width < 100 || r.height < pageH * 0.2) continue;
             const area = r.width * r.height;
             if (area > maxArea) { maxArea = area; mainMedia = r; }
