@@ -169,6 +169,7 @@ const RANK_PANEL_SCRIPT = `(() => {
     let lastClickAt = 0;      // 上次点击时间（冷却）
     let diagDone = false;     // 首次诊断是否已执行
     let shadowCount = 0, iframeCount = 0; // 穿透统计（诊断用）
+    let anchorProbe = null;   // Lynx 逻辑坐标不可信时的锚点竖直探测状态 {x, baseY, attempt}
 
     const norm = (s) => (s || '').replace(/\\s+/g, '');
     function clsOf(el) {
@@ -388,10 +389,33 @@ const RANK_PANEL_SCRIPT = `(() => {
       return null;
     }
 
+    // 找可信锚点：左侧特效区"本场成员"条目的最内层可见元素（普通 DOM DIV，getBoundingClientRect 为真实视觉坐标），
+    // 用于在 Lynx X-VIEW 逻辑坐标不可信时，结合竖直探测定位位于其正下方的"团员榜单"视觉按钮
+    function findTrustedAnchor() {
+      const els = getAllElements();
+      let best = null;
+      for (const el of els) {
+        if (!el || !el.getBoundingClientRect || !el.tagName) continue;
+        if (/^X-[A-Z]/.test(el.tagName)) continue; // 排除 Lynx 元素（rect 可能是逻辑坐标）
+        if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
+        const t = norm(el.innerText || el.textContent);
+        if (!t || t.length > 30) continue;
+        if (t.indexOf('本场成员') < 0) continue;
+        if (!visible(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 200) continue;
+        if (r.top < 30) continue; // 排除页面顶部疑似 Lynx 干扰的逻辑节点，视觉锚点应在内容区
+        const area = r.width * r.height;
+        if (!best || area < best.area) best = { el: el, area: area, rect: r };
+      }
+      console.log('[RankPanel] 锚点探测 findTrustedAnchor=' + (best ? best.el.tagName + ' rect=' + Math.round(best.rect.left) + ',' + Math.round(best.rect.top) + ',' + Math.round(best.rect.width) + 'x' + Math.round(best.rect.height) + ' cls=' + clsOf(best.el) : 'null'));
+      return best ? best.el : null;
+    }
+
     function expandOnce() {
       if (clicking) return 'clicking';
       const now = Date.now();
-      if (now - lastClickAt < 8000) return 'cooldown'; // 8s 冷却，防止 toggle 高频展开/收起
+      if (now - lastClickAt < 1800) return 'cooldown'; // 探测用短冷却(1.8s)，便于连续尝试多个候选 y 定位视觉按钮
       const trigger = findTrigger();
       if (!trigger) {
         // 诊断：首次失败时输出全面诊断（穿透结构+候选元素），便于区分"穿透失效/触发器在iframe/非团播直播间"
@@ -408,26 +432,45 @@ const RANK_PANEL_SCRIPT = `(() => {
       const triggerText = norm(trigger.innerText || trigger.textContent).slice(0, 14);
       let triggerKey = null;
       for (const k of KEYS) { if (triggerText.indexOf(k) >= 0) { triggerKey = k; break; } }
-      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' key=' + (triggerKey || '?') + ' cls=' + clsOf(trigger) + ' text=' + triggerText + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，初始中心 (' + cx + ',' + cy + ')');
-      // 验证 rect 可信度：elementFromPoint 该点元素是否含关键词（Lynx X-VIEW 的 getBoundingClientRect 可能是逻辑坐标而非视觉位置）
+      const isLynx = /^X-[A-Z]/.test(trigger.tagName);
+      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' key=' + (triggerKey || '?') + ' isLynx=' + isLynx + ' cls=' + clsOf(trigger) + ' text=' + triggerText + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，初始中心 (' + cx + ',' + cy + ')');
       let rectTrusted = false;
-      try {
-        const hitEl = deepElementFromPoint(cx, cy);
-        const hitText = norm((hitEl && (hitEl.innerText || hitEl.textContent)) || '');
-        let hitKey = null;
-        for (const k of KEYS) { if (hitText.indexOf(k) >= 0) { hitKey = k; break; } }
-        console.log('[RankPanel] 点击点验证 elementFromPoint(' + cx + ',' + cy + ')=' + (hitEl ? hitEl.tagName : 'null') + ' key=' + (hitKey || 'none') + ' text=' + hitText.slice(0, 12) + ' cls=' + (hitEl ? clsOf(hitEl) : ''));
-        rectTrusted = !!hitKey;
-      } catch (ve) { console.log('[RankPanel] 点击点验证异常 ' + ve.message); }
-      // rect 不可信（Lynx 逻辑坐标）→ 用 elementFromPoint 垂直扫描定位视觉按钮真实坐标
-      if (!rectTrusted && triggerKey) {
-        const scan = scanVisualPos(triggerKey, cx);
-        if (scan) {
-          console.log('[RankPanel] 扫描定位视觉按钮成功 (' + scan.x + ',' + scan.y + ') ' + scan.tag + ' text=' + scan.text + ' cls=' + scan.cls);
-          cx = scan.x; cy = scan.y;
+      if (isLynx) {
+        // Lynx 元素：getBoundingClientRect 可能是布局树逻辑坐标（视觉按钮另在 canvas 绘制，elementFromPoint 也命中不到）。
+        // 先用 elementFromPoint 验证；若不可信，改用可信锚点"本场成员"+竖直探测（Lynx 的 x/width 可信仅 y 不可信）
+        try {
+          const hitEl = deepElementFromPoint(cx, cy);
+          const hitText = norm((hitEl && (hitEl.innerText || hitEl.textContent)) || '');
+          let hitKey = null;
+          for (const k of KEYS) { if (hitText.indexOf(k) >= 0) { hitKey = k; break; } }
+          console.log('[RankPanel] 点击点验证 elementFromPoint(' + cx + ',' + cy + ')=' + (hitEl ? hitEl.tagName : 'null') + ' key=' + (hitKey || 'none') + ' text=' + hitText.slice(0, 12) + ' cls=' + (hitEl ? clsOf(hitEl) : ''));
+          rectTrusted = !!hitKey;
+        } catch (ve) { console.log('[RankPanel] 点击点验证异常 ' + ve.message); }
+        if (!rectTrusted) {
+          // 锚点竖直探测：以"本场成员"可信锚点（普通 DIV，位于团员榜单正上方约30px）为基准，纵向依次下探
+          if (!anchorProbe) {
+            anchorProbe = { x: cx, baseY: 80, attempt: 0 };
+            const anchorEl = findTrustedAnchor();
+            if (anchorEl) {
+              const ar = anchorEl.getBoundingClientRect();
+              anchorProbe.baseY = Math.round(ar.bottom) + 15;
+            } else {
+              console.log('[RankPanel] 未找到本场成员锚点，用默认 baseY=80');
+            }
+          }
+          cx = anchorProbe.x;
+          cy = anchorProbe.baseY + anchorProbe.attempt * 13;
+          console.log('[RankPanel] Lynx探测点击候选 (' + cx + ',' + cy + ') attempt=' + anchorProbe.attempt + ' baseY=' + anchorProbe.baseY);
+          anchorProbe.attempt++;
+          if (anchorProbe.attempt >= 7) { console.log('[RankPanel] 锚点探测达到上限(' + anchorProbe.attempt + ')，重置'); anchorProbe = null; }
         } else {
-          console.log('[RankPanel] 扫描定位视觉按钮失败，仍用原坐标 (' + cx + ',' + cy + ')');
+          anchorProbe = null;
         }
+      } else {
+        // 普通 DOM：rect 可信，直接用中心，并重置锚点探测
+        anchorProbe = null;
+        rectTrusted = true;
+        console.log('[RankPanel] 点击点(普通DOM rect可信) (' + cx + ',' + cy + ')');
       }
       console.log('[RankPanel] 记录待真实点击坐标 (' + cx + ',' + cy + ')');
       lastClickAt = now;
