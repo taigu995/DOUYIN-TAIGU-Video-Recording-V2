@@ -134,7 +134,9 @@ class LeftPanelRenderer {
       [class*="gift-rank"],
       [class*="GiftRank"],
       [class*="audience-list"],
-      [class*="AudienceList"] {
+      [class*="AudienceList"],
+      [class*="user-list"],
+      [class*="UserList"] {
         display: block !important;
         position: fixed !important;
         left: 0 !important;
@@ -144,6 +146,11 @@ class LeftPanelRenderer {
         z-index: 9999 !important;
         background: #1a1a1a !important;
         overflow-y: auto !important;
+      }
+
+      /* 确保页面背景为深色 */
+      body {
+        background: #1a1a1a !important;
       }
     `;
 

@@ -97,6 +97,7 @@ class Recorder {
 
     // 合并进度持久化
     this._mergeProgressFile = ''; // 合并进度文件路径
+    this._isManualStop = false; // 手动停止标志，用于跳过5分钟合并延迟
     this._lastProgressSave = 0; // 上次保存进度的时间戳
 
     this.onStatusChange = options.onStatusChange || (() => {});
@@ -472,7 +473,15 @@ class Recorder {
             });
           }
         });
-        await this.commentRenderer.init();
+        try {
+          await this.commentRenderer.init();
+          logger.info('[Recorder] 评论区渲染器初始化成功');
+        } catch (commentErr) {
+          logger.error(`[Recorder] 评论区渲染器初始化失败: ${commentErr.message}`);
+          this.commentRenderer = null;
+          // 如果评论区渲染器初始化失败，回退到纯直播流模式
+          logger.warn('[Recorder] 回退到纯直播流录制模式');
+        }
       } else {
         logger.info('[Recorder] 纯直播流录制模式，跳过评论区渲染器');
       }
@@ -503,7 +512,7 @@ class Recorder {
 
       // Step 2: 获取直播流URL
       let streamInfo;
-      if (useCommentRenderer && this.commentRenderer.captureWindow) {
+      if (useCommentRenderer && this.commentRenderer && this.commentRenderer.captureWindow) {
         // 有评论区窗口时，从页面上下文中提取直播流URL
         this.captureWindow = this.commentRenderer.captureWindow;
         logger.info('[Recorder] 正在获取直播流URL...');
@@ -814,10 +823,11 @@ class Recorder {
     if (!this.recording) return;
 
     this.recording = false;
+    this._isManualStop = true; // 标记为手动停止，跳过5分钟合并延迟
     if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
     // 主动停止（用户手动停止/检测到下播），走完整合并流程后再通知上层
     if (!this._stopReason) this._stopReason = 'manual';
-    logger.info(`[Recorder] 停止录制: ${this.streamerName}`);
+    logger.info(`[Recorder] 停止录制: ${this.streamerName} (手动停止)`);
 
     await this._finishRecording();
   }
@@ -903,9 +913,13 @@ class Recorder {
     }
 
     if (streamFileExists && hasCommentFrames) {
-      // 有直播流 + 有评论区帧 → 延迟 5 分钟后合并（防止直播流中断后重新获取流时造成卡顿）
-      logger.info(`[Recorder] 等待 5 分钟后开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
-      await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)); // 5 分钟
+      // 有直播流 + 有评论区帧 → 根据停止原因决定是否延迟合并
+      if (this._isManualStop) {
+        logger.info(`[Recorder] 手动停止，立即开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
+      } else {
+        logger.info(`[Recorder] 等待 5 分钟后开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
+        await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)); // 5 分钟
+      }
       logger.info('[Recorder] 开始合并直播流和评论区...');
       this.onStatusChange('merging', {
         roomId: this.roomId,
