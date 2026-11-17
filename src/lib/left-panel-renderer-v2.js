@@ -9,7 +9,7 @@ const { BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { getLogger } = require('./logger');
-const config = require('./config');
+const { getConfig } = require('./config');
 
 const logger = getLogger();
 
@@ -158,8 +158,9 @@ class LeftPanelRendererV2 {
     logger.info(`[LeftPanelRendererV2] 初始化: ${this.roomUrl}`);
 
     // 创建帧保存目录
-    this.frameDir = path.join(config.get('outputPath'), '.temp', 'left_panel');
-    this.debugDir = path.join(config.get('outputPath'), '.temp', 'debug');
+    const cfg = getConfig();
+    this.frameDir = path.join(cfg.outputFolder, '.temp', 'left_panel');
+    this.debugDir = path.join(cfg.outputFolder, '.temp', 'debug');
     fs.mkdirSync(this.frameDir, { recursive: true });
     fs.mkdirSync(this.debugDir, { recursive: true });
 

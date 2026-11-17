@@ -126,3 +126,5 @@ pnpm run build:dir
 - 修复左侧面板捕获黑屏问题（v2.13.4）：左侧面板渲染器的DOM探测失败，使用了估算区域导致捕获到黑屏。修复：修改 `_detectLeftPanelAreaFromDOM` 方法，使用与评论区渲染器相同的捕获方法，通过评论区容器找到左侧面板
 - 重构左侧面板渲染器（v2.13.5）：创建 LeftPanelRendererV2，完全复用评论区渲染器的捕获逻辑，在同一个离屏窗口中同时捕获评论区和左侧面板。修复：①使用与评论区渲染器相同的窗口创建和页面加载逻辑；②DOM探测时优先通过评论区容器的前一个兄弟元素找左侧面板；③添加更多左侧面板选择器支持（LeftPanel、LeftSide、RoomInfo、UserInfo等）；④CSS注入时隐藏视频播放器和评论区，显示左侧面板
 - 修复左侧面板渲染器 logger 导入错误（v2.13.6）：left-panel-renderer-v2.js 中 logger 导入方式不正确导致初始化失败。修复：将 `const logger = require('./logger')` 改为 `const { getLogger } = require('./logger'); const logger = getLogger()`，与其他文件保持一致
+- 修复左侧面板渲染器 config 导入错误（v2.13.7）：left-panel-renderer-v2.js 中 config 导入方式不正确导致初始化失败。修复：将 `config.get('outputPath')` 改为 `getConfig('outputPath')`，正确使用 config 模块导出的函数
+- 修复左侧面板渲染器 getConfig 使用错误（v2.13.8）：left-panel-renderer-v2.js 中 getConfig() 使用方式不正确导致初始化失败。修复：将 `getConfig('outputPath')` 改为 `getConfig().outputFolder`，正确获取配置对象属性
