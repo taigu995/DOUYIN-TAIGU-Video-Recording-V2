@@ -324,15 +324,18 @@ const RANK_PANEL_SCRIPT = `(() => {
       if (p) {
         panelRef = p.el;
         const r = p.el.getBoundingClientRect();
+        const tag = (p.el.tagName || '').toUpperCase();
+        // Lynx 自定义元素(X-*)的 getBoundingClientRect 返回逻辑坐标——x/y 不可信(实测弹窗视觉x≈1135但rect.x=0)，width/height 可信
         window.__rankPanelInfo = {
           expanded: true,
           x: Math.round(r.left), y: Math.round(r.top),
           width: Math.round(r.width), height: Math.round(r.height),
-          right: Math.round(r.right), ts: Date.now()
+          right: Math.round(r.right), tag: tag,
+          lynx: tag.indexOf('X-') === 0, ts: Date.now()
         };
         if (!window.__rankPanelLoggedOpen) {
           window.__rankPanelLoggedOpen = true;
-          console.log('[RankPanel] 榜单面板已展开: x=' + Math.round(r.left) + ', w=' + Math.round(r.width) + ', h=' + Math.round(r.height) + ', right=' + Math.round(r.right));
+          console.log('[RankPanel] 榜单面板已展开: tag=' + tag + ', x=' + Math.round(r.left) + ', w=' + Math.round(r.width) + ', h=' + Math.round(r.height) + ', right=' + Math.round(r.right));
         }
       } else {
         window.__rankPanelInfo = { expanded: false, ts: Date.now() };
@@ -1654,11 +1657,19 @@ class CommentRenderer {
   _applyRankPanelWiden(rankInfo) {
     if (!this._commentRect || !rankInfo) return false;
     const commentRight = this._commentRect.x + this._commentRect.width;
-    // 面板右缘明显小于评论区左缘的 80% -> 面板在页面左侧，由左特效区捕获，无需扩宽右侧（避免错把左侧榜单当弹窗扩宽）
-    const panelRight = rankInfo.x + rankInfo.width;
-    if (panelRight < this._commentRect.x * 0.8) return false;
     const MARGIN = 6; // 余量，包含面板左边缘阴影/边框
-    let newX = Math.min(this._commentRect.x, Math.round(rankInfo.x) - MARGIN);
+    let newX;
+    if (rankInfo.lynx) {
+      // Lynx 面板：getBoundingClientRect 的 x/right 是布局树逻辑坐标（不可信，实测弹窗视觉x≈1135但rect.x=0），width 可信。
+      // 团播榜单弹窗版式固定为"紧邻评论区左侧的居中弹窗"（弹窗右缘≈评论区左缘），故按 面板左缘=评论区左缘-面板宽 扩宽。
+      newX = this._commentRect.x - Math.round(rankInfo.width) - MARGIN;
+      logger.info(`[CommentRenderer] 团播榜单为Lynx面板(tag=${rankInfo.tag || 'X-?'})，rect.x=${rankInfo.x}为逻辑坐标不可信，按弹窗锚定评论区左缘扩宽: 面板宽=${rankInfo.width}`);
+    } else {
+      // 普通DOM面板：rect 可信。面板右缘明显小于评论区左缘的 80% -> 面板在页面左侧，由左特效区捕获，无需扩宽右侧（避免错把左侧榜单当弹窗扩宽）
+      const panelRight = rankInfo.x + rankInfo.width;
+      if (panelRight < this._commentRect.x * 0.8) return false;
+      newX = Math.min(this._commentRect.x, Math.round(rankInfo.x) - MARGIN);
+    }
     newX = Math.max(0, newX);
     let newWidth = commentRight - newX;
     // 防呆：扩宽后总宽不超过原评论宽度的 2.2 倍（避免误探测导致过度扩宽盖住中间画面）
@@ -1677,7 +1688,7 @@ class CommentRenderer {
       width: newWidth,
       height: this._commentRect.height
     };
-    logger.info(`[CommentRenderer] 团播榜单扩宽评论区: x ${oldX} -> ${newX}, width ${oldW} -> ${newWidth} (面板x=${rankInfo.x}, w=${rankInfo.width})`);
+    logger.info(`[CommentRenderer] 团播榜单扩宽评论区: x ${oldX} -> ${newX}, width ${oldW} -> ${newWidth} (面板x=${rankInfo.x}, w=${rankInfo.width}, lynx=${!!rankInfo.lynx})`);
     return true;
   }
 
