@@ -1139,7 +1139,9 @@ class Recorder {
     const commentVideoFile = commentFileOverride || path.join(this._tempDir, 'comment_video.mp4');
     const leftPanelVideoFile = path.join(this._tempDir, 'left_panel_video.mp4');
     const outputFile = outputFileOverride || this.outputFile;
-    const hasLeftPanel = !!leftPanelInfo && leftPanelInfo.frameCount > 0;
+    // 注意：必须用 let 而非 const——左侧特效区视频编码失败时（1274行）会降级置 false 走双区域合并，
+    // 若用 const 重新赋值会抛 TypeError，导致本应降级的合并直接崩溃、丢失评论区与特效区
+    let hasLeftPanel = !!leftPanelInfo && leftPanelInfo.frameCount > 0;
     
     // 设置合并进度文件路径
     const progressDir = streamFileOverride ? path.dirname(streamFile) : this._tempDir;
@@ -2360,6 +2362,10 @@ class Recorder {
 
     logger.warn('[Recorder] 账号冲突，评论区回滚为无账号模式并续帧重启...');
 
+    // 回滚前保存特效区/榜单启用状态，重建无账号渲染器时保持，避免特效区/榜单录制中断（v2.13.14 修复丢失问题）
+    const wasLeftPanelEnabled = !!(this.commentRenderer && this.commentRenderer.enableLeftPanel);
+    const wasRankPanelEnabled = !!(this.commentRenderer && this.commentRenderer.enableRankPanel);
+
     // 1. 停止当前渲染器，拿到已捕获的累计帧数（用于续帧编号，避免覆盖）
     let absoluteCount = 0;
     try {
@@ -2394,6 +2400,9 @@ class Recorder {
         debugDir: path.dirname(this.outputFile),
         fps: this.commentFps,
         sessionName: this.sessionName,
+        enableLeftPanel: wasLeftPanelEnabled,
+        leftPanelOutputDir: wasLeftPanelEnabled ? this._leftPanelFramesDir : null,
+        enableRankPanel: wasRankPanelEnabled,
         noLoginMode: true,
         frameStartIndex: absoluteCount
       });

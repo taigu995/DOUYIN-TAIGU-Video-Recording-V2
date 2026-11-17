@@ -244,8 +244,16 @@ const RANK_PANEL_SCRIPT = `(() => {
           width: Math.round(r.width), height: Math.round(r.height),
           right: Math.round(r.right), ts: Date.now()
         };
+        if (!window.__rankPanelLoggedOpen) {
+          window.__rankPanelLoggedOpen = true;
+          console.log('[RankPanel] 榜单面板已展开: x=' + Math.round(r.left) + ', w=' + Math.round(r.width) + ', h=' + Math.round(r.height) + ', right=' + Math.round(r.right));
+        }
       } else {
         window.__rankPanelInfo = { expanded: false, ts: Date.now() };
+        if (window.__rankPanelLoggedOpen) {
+          window.__rankPanelLoggedOpen = false;
+          console.log('[RankPanel] 榜单面板已收起或未检测到');
+        }
       }
       return p;
     }
@@ -265,7 +273,17 @@ const RANK_PANEL_SCRIPT = `(() => {
       const now = Date.now();
       if (now - lastClickAt < 8000) return 'cooldown'; // 8s 冷却，防止 toggle 高频展开/收起
       const trigger = findTrigger();
-      if (!trigger) return 'trigger_not_found';
+      if (!trigger) {
+        // 诊断：打印穿透收集的元素总数与含"团员榜单"文本的元素数，便于区分"穿透失效"还是"非团播直播间"
+        let total = 0, keyHit = 0;
+        try {
+          const all = getAllElements(); total = all.length;
+          for (const el of all) { if (norm(el.innerText || el.textContent).indexOf(KEY) >= 0) keyHit++; }
+        } catch (e) {}
+        console.log('[RankPanel] 未找到"团员榜单"触发器：穿透元素总数=' + total + '，含榜单文本元素=' + keyHit);
+        return 'trigger_not_found';
+      }
+      try { const tr = trigger.getBoundingClientRect(); console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' @ x=' + Math.round(tr.left) + ',y=' + Math.round(tr.top) + '，执行展开'); } catch (e) {}
       lastClickAt = now;
       clicking = true;
       const beforeHref = location.href;
@@ -397,6 +415,7 @@ class CommentRenderer {
           msg.includes('[CommentProbe]') ||
           msg.includes('[BannerInfo]') ||
           msg.includes('[GiftHeartbeat]') ||
+          msg.includes('[RankPanel]') ||
           msg.includes('gift') ||
           msg.includes('Gift')
         ) {
