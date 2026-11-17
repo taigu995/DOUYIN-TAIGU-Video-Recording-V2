@@ -165,6 +165,13 @@ class CommentRenderer {
 
     // 续帧起始编号：录制中检测到账号冲突回滚重建渲染器时，从已有帧数继续编号，避免覆盖已录帧
     this.frameStartIndex = options.frameStartIndex || 0;
+    // 左侧特效区捕获模式（stream+comment+effect）：复用本离屏窗口，在 capturePage() 时同时裁剪
+    // 评论区（右侧）和左侧特效区（公屏聊天/礼物栏），帧分别写入两个目录，避免再开一个独立窗口去渲染页面
+    this.enableLeftPanel = !!options.enableLeftPanel;
+    this.leftPanelOutputDir = options.leftPanelOutputDir || null;
+    this._leftPanelRect = null;         // 左侧特效区裁剪区域
+    this._leftPanelFrameCount = 0;      // 左侧特效区累计帧数
+    this._leftPanelFps = this.targetFps; // 左侧特效区帧率（与评论区一致）
     // 无账号模式标识：无账号+评论区时不需要账号冲突检测/回滚
     this.noLoginMode = !!options.noLoginMode;
     // 账号冲突回调：检测到评论区提示"已在其它设备登录"（被同账号顶下线）时触发，供外部回滚录制模式
@@ -520,6 +527,37 @@ class CommentRenderer {
     }
     logger.info(`[CommentRenderer] 评论区裁剪区域: x=${this._commentRect.x}, y=${this._commentRect.y}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
 
+    // 左侧特效区模式：在同一个离屏窗口中探测左侧特效区（公屏聊天/礼物栏）区域
+    if (this.enableLeftPanel && this.leftPanelOutputDir) {
+      if (!fs.existsSync(this.leftPanelOutputDir)) {
+        fs.mkdirSync(this.leftPanelOutputDir, { recursive: true });
+      }
+      let leftDetected = null;
+      try {
+        leftDetected = await this._detectLeftPanelAreaFromDOM();
+      } catch (e) {
+        logger.warn('[CommentRenderer] 左侧特效区DOM探测异常:', e && e.message);
+      }
+      if (leftDetected && leftDetected.width > 80 && leftDetected.height > 100) {
+        this._leftPanelRect = {
+          x: leftDetected.x,
+          y: 0,
+          width: leftDetected.width,
+          height: capturedSize.height
+        };
+        logger.info(`[CommentRenderer] 左侧特效区DOM探测成功: x=${leftDetected.x}, w=${leftDetected.width}, h=${this._leftPanelRect.height}`);
+      } else {
+        // 回退：布局与评论区左右对称，左侧特效区取页面最左侧与评论区同宽区域
+        this._leftPanelRect = {
+          x: 0,
+          y: 0,
+          width: Math.min(this._commentRect.width, Math.round(capturedSize.width * 0.4)),
+          height: capturedSize.height
+        };
+        logger.info(`[CommentRenderer] 左侧特效区DOM探测未命中，使用对称估算: x=0, w=${this._leftPanelRect.width}, h=${this._leftPanelRect.height}`);
+      }
+    }
+
     // 保存调试截图
     try {
       const fs = require('fs');
@@ -540,6 +578,21 @@ class CommentRenderer {
         const commentPath = path.join(this.debugDir, 'debug_comment_area.png');
         fs.writeFileSync(commentPath, commentCrop.toPNG());
         logger.info(`[CommentRenderer] 评论区截图已保存: ${commentPath}`);
+      }
+
+      // 左侧特效区调试截图
+      if (this.enableLeftPanel && this._leftPanelRect) {
+        const lp = this._leftPanelRect;
+        const safeLpW = Math.min(lp.width, capturedSize.width - lp.x);
+        const safeLpH = Math.min(lp.height, capturedSize.height - lp.y);
+        if (safeLpW > 0 && safeLpH > 0) {
+          const lpCrop = await this.captureWindow.webContents.capturePage({
+            x: lp.x, y: lp.y, width: safeLpW, height: safeLpH
+          });
+          const lpPath = path.join(this.debugDir, 'debug_left_panel_area.png');
+          fs.writeFileSync(lpPath, lpCrop.toPNG());
+          logger.info(`[CommentRenderer] 左侧特效区截图已保存: ${lpPath}`);
+        }
       }
     } catch (e) {
       logger.warn('[CommentRenderer] 调试截图保存失败:', e.message);
@@ -864,6 +917,96 @@ class CommentRenderer {
   }
 
   /**
+   * 探测左侧特效区（公屏聊天）位置
+   * 抖音竖屏直播页面为左-中-右三栏：左侧=公屏聊天/礼物栏，中间=视频，右侧=评论区
+   */
+  async _detectLeftPanelAreaFromDOM() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
+    try {
+      const jsPromise = this.captureWindow.webContents.executeJavaScript(`
+        (function() {
+          const pageW = document.documentElement.clientWidth || window.innerWidth;
+          const pageH = document.documentElement.clientHeight || window.innerHeight;
+          const pageCenterX = pageW / 2;
+
+          // 左侧面板可能关联的选择器（评论区容器本身，用于找其左侧兄弟）
+          const roomSelectors = [
+            '[class*="webcast-chatroom"]',
+            '[id*="chatroom"]',
+            '[class*="chat-room"]',
+            '[class*="ChatRoom"]'
+          ];
+
+          // 先找评论区容器，再取其在页面最左侧的兄弟节点（通常即公屏聊天区）
+          let commentRoot = null;
+          for (const sel of roomSelectors) {
+            try {
+              const els = document.querySelectorAll(sel);
+              for (const el of els) {
+                const rect = el.getBoundingClientRect();
+                if (rect.left > pageCenterX) { commentRoot = el; break; }
+              }
+            } catch(e) {}
+            if (commentRoot) break;
+          }
+
+          // 沿评论区一路往前找左侧兄弟节点链，取最左侧的非视频、宽度>80 的节点
+          if (commentRoot) {
+            let node = commentRoot.previousElementSibling;
+            while (node) {
+              const rect = node.getBoundingClientRect();
+              const hasVideoOrCanvas = !!(node.querySelector && (node.querySelector('video, canvas')));
+              if (rect.width > 80 && !hasVideoOrCanvas && rect.right <= pageCenterX + 30) {
+                return { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'prev-of-comment' };
+              }
+              node = node.previousElementSibling;
+            }
+          }
+
+          // 策略2：页面左侧面积最大的可见 div（排除 video/canvas/导航栏/中间视频）
+          let best = null;
+          let bestScore = 0;
+          const allDivs = document.querySelectorAll('div');
+          for (const div of allDivs) {
+            const rect = div.getBoundingClientRect();
+            if (rect.left >= pageCenterX) continue;
+            if (rect.right <= 0) continue;
+            if (rect.width < 120 || rect.height < 150) continue;
+            if (div.querySelector('video') || div.querySelector('canvas')) continue;
+            if (div.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"]')) continue;
+            const style = window.getComputedStyle(div);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            const area = rect.width * rect.height;
+            if (area > pageW * pageH * 0.85) continue;
+            // 文本量较大的区域更可能是聊天/信息区
+            const text = (div.innerText || '').length;
+            const score = area + text * 30;
+            if (score > bestScore) {
+              bestScore = score;
+              best = { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'largest-left-div' };
+            }
+          }
+          return best;
+        })();
+      `);
+      jsPromise.catch(() => {});
+      const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('__PROBE_TIMEOUT__'), 8000));
+      const raced = await Promise.race([jsPromise, timeoutPromise]);
+      if (raced === '__PROBE_TIMEOUT__') {
+        logger.warn('[CommentRenderer] 左侧特效区DOM探测超时(8s)');
+        return null;
+      }
+      if (raced && raced.width > 80) {
+        logger.info(`[CommentRenderer] 左侧特效区DOM探测策略: ${raced.strategy || 'unknown'}`);
+        return { x: raced.x, y: 0, width: raced.width, height: 1040 };
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] 左侧特效区DOM探测失败:', e && e.message);
+    }
+    return null;
+  }
+
+  /**
    * 通过 DOM 探测评论区容器的实际位置（不依赖 CSS 注入）
    * 策略：查找页面右侧的聊天/评论容器元素
    */
@@ -1097,6 +1240,30 @@ class CommentRenderer {
         
         fs.writeFileSync(framePath, jpegData);
 
+        // 左侧特效区模式：对同一帧页面图像裁剪左侧特效区并保存
+        if (this.enableLeftPanel && this._leftPanelRect && this.leftPanelOutputDir) {
+          try {
+            const lp = this._leftPanelRect;
+            const lpCropW = Math.min(lp.width, imgSize.width - lp.x);
+            const lpCropH = Math.min(lp.height, imgSize.height - lp.y);
+            let lpImage = image;
+            if (lpCropW > 10 && lpCropH > 10 && lp.x < imgSize.width) {
+              lpImage = image.crop({ x: lp.x, y: lp.y, width: lpCropW, height: lpCropH });
+            }
+            const lpFrame = String(this._leftPanelFrameCount).padStart(6, '0');
+            const lpPath = path.join(this.leftPanelOutputDir, `left_frame_${lpFrame}.jpg`);
+            if (!fs.existsSync(this.leftPanelOutputDir)) {
+              fs.mkdirSync(this.leftPanelOutputDir, { recursive: true });
+            }
+            fs.writeFileSync(lpPath, lpImage.toJPEG(CAPTURE_QUALITY));
+            this._leftPanelFrameCount++;
+          } catch (lpErr) {
+            if (!lpErr.message.includes('destroyed')) {
+              logger.warn('[CommentRenderer] 捕获左侧特效区帧出错:', lpErr.message);
+            }
+          }
+        }
+
         this.frameCount++;
 
         // 每 100 帧输出一次进度
@@ -1182,6 +1349,20 @@ class CommentRenderer {
       `时长: ${(duration / 1000).toFixed(1)}s, 实际FPS: ${actualFps.toFixed(1)}`
     );
 
+    // 左侧特效区信息（供合并端使用）
+    let leftPanelInfo = null;
+    if (this.enableLeftPanel && this._leftPanelFrameCount > 0 && this.leftPanelOutputDir) {
+      leftPanelInfo = {
+        frameCount: this._leftPanelFrameCount,
+        outputDir: this.leftPanelOutputDir,
+        fps: this.targetFps,
+        duration: duration,
+        width: this._leftPanelRect ? this._leftPanelRect.width : (this._commentRect ? this._commentRect.width : 400),
+        height: this._leftPanelRect ? this._leftPanelRect.height : (this._commentRect ? this._commentRect.height : 720)
+      };
+      logger.info(`[CommentRenderer] 停止捕获, 左侧特效区帧数: ${leftPanelInfo.frameCount}, 目录: ${leftPanelInfo.outputDir}`);
+    }
+
     return {
       frameCount: absoluteCount,
       outputDir: this.outputDir,
@@ -1189,7 +1370,8 @@ class CommentRenderer {
       duration: duration,
       timestamps: this._timestamps || [],
       width: this._commentRect ? this._commentRect.width : COMMENT_WIDTH,
-      height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT
+      height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT,
+      leftPanelInfo: leftPanelInfo
     };
   }
 

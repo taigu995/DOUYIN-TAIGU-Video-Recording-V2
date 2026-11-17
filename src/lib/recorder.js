@@ -452,11 +452,11 @@ class Recorder {
 
       // Step 1: 初始化评论区渲染器（根据录制模式决定是否初始化）
       const useCommentRenderer = this.recordMode !== 'stream-only';
-      // 左侧面板仅在 'stream+comment+effect' 模式下启用
-      const useLeftPanelRenderer = this.recordMode === 'stream+comment+effect';
+      // 左侧特效区仅在 'stream+comment+effect' 模式下启用（复用评论区同一个离屏窗口同时裁剪）
 
       if (useCommentRenderer) {
-        logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
+        const useLeftPanel = this.recordMode === 'stream+comment+effect';
+        logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps}, 左特效区: ${useLeftPanel})`);
         this.commentRenderer = new CommentRenderer({
           liveUrl: this.liveUrl,
           roomId: this.roomId,
@@ -465,6 +465,8 @@ class Recorder {
           debugDir: path.dirname(this.outputFile),
           fps: this.commentFps,
           sessionName: this.sessionName,
+          enableLeftPanel: useLeftPanel,
+          leftPanelOutputDir: useLeftPanel ? this._leftPanelFramesDir : null,
           noLoginMode: this.recordMode === 'stream+comment-no-login',
           onAccountConflict: () => {
             // 防呆：检测到评论区账号被同账号其它直播间顶下线时，自动回滚为无账号模式续帧录制
@@ -486,22 +488,8 @@ class Recorder {
         logger.info('[Recorder] 纯直播流录制模式，跳过评论区渲染器');
       }
 
-      // Step 1.5: 初始化左侧面板渲染器（仅在竖屏直播时启用）
-      if (useLeftPanelRenderer) {
-        try {
-          logger.info(`[Recorder] 初始化左侧面板渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
-          const LeftPanelRendererV2 = require('./left-panel-renderer-v2');
-          // 传递录制文件夹作为调试目录
-          this.leftPanelRenderer = new LeftPanelRendererV2(this.liveUrl, this.commentFps, path.dirname(this.outputFile));
-          await this.leftPanelRenderer.init();
-          logger.info('[Recorder] 左侧面板渲染器初始化成功');
-        } catch (leftErr) {
-          logger.warn(`[Recorder] 左侧面板渲染器初始化失败: ${leftErr.message}，将使用纯直播流+评论区模式`);
-          this.leftPanelRenderer = null;
-        }
-      } else {
-        logger.info('[Recorder] 纯直播流录制模式，跳过左侧面板渲染器');
-      }
+      // 说明：左侧特效区已在评论区渲染器中复用同一个离屏窗口同时裁剪捕获，
+      // 无需再创建独立的左侧面板渲染器窗口（避免独立窗口 DOM 探测不到左特效区导致黑屏）
 
       // Step 2: 获取直播流URL
       let streamInfo;
@@ -838,11 +826,14 @@ class Recorder {
       commentInfo = this.commentRenderer.stopCapture();
     }
 
-    // Step 2.5: 停止左侧面板捕获（如果有）
+    // Step 2.5: 停止左侧面板捕获（复用评论区同一窗口产生，随 commentInfo.leftPanelInfo 返回）
     let leftPanelInfo = null;
+    if (commentInfo && commentInfo.leftPanelInfo) {
+      leftPanelInfo = commentInfo.leftPanelInfo;
+      this._leftPanelInfo = leftPanelInfo;
+    }
     if (this.leftPanelRenderer) {
       leftPanelInfo = this.leftPanelRenderer.stopCapture();
-      // 保存左侧面板信息，用于崩溃恢复
       this._leftPanelInfo = leftPanelInfo;
     }
 
