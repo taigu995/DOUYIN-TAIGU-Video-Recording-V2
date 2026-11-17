@@ -150,14 +150,15 @@ const TIMESTAMP_SCRIPT = `(() => {
   } catch (e) { return 'error:' + e.message; }
 })();`;
 
-// 团播直播间"团员榜单"自动展开脚本：
-// 团播直播间左侧特效区左上角有折叠的"团员榜单 >"，录制时需要自动展开以捕获完整榜单。
-// 策略：文本定位"团员榜单"触发元素 → hover+click 展开（带防跳转回退）→ 定时检测榜单面板是否保持展开，
-//       收起则重新展开；点击冷却 8s 防止 toggle 高频展开收起。
-const MEMBER_RANK_EXPAND_SCRIPT = `(() => {
+// 团播"团员榜单"穿透展开脚本（Shadow DOM 穿透版）：
+// 抖音团播组件用 Shadow DOM 封装，普通 querySelector 查不到"团员榜单"触发器（v2.13.13 曾 trigger_not_found），
+// 因此递归穿透 shadowRoot 收集全部元素后再做文本定位。
+// 功能：穿透定位"团员榜单"触发器并点击展开 → 穿透查找展开后的榜单面板并把其 rect 维护到 window.__rankPanelInfo
+//       （供主进程探测计算评论区扩宽量）→ 定时保持展开（收起自动重新展开，8s 点击冷却防 toggle 抖动）。
+const RANK_PANEL_SCRIPT = `(() => {
   try {
-    if (window.__memberRankExpanderInstalled) return 'already';
-    window.__memberRankExpanderInstalled = true;
+    if (window.__rankPanelScriptInstalled) return 'already';
+    window.__rankPanelScriptInstalled = true;
 
     const KEY = '团员榜单';
     let panelRef = null;      // 展开后榜单面板的引用（用于判定是否仍展开）
@@ -166,55 +167,97 @@ const MEMBER_RANK_EXPAND_SCRIPT = `(() => {
 
     const norm = (s) => (s || '').replace(/\\s+/g, '');
 
-    // 查找"已展开"的榜单面板：最内层的、含"团员榜单"文本且高度明显增大或含多个团员头像的可见容器
+    // 穿透 Shadow DOM，递归收集 root 下所有元素（含 shadow 内部）
+    function collectAll(root, acc) {
+      if (!root || !root.querySelectorAll) return;
+      let all;
+      try { all = root.querySelectorAll('*'); } catch (e) { return; }
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        acc.push(el);
+        if (el.shadowRoot) collectAll(el.shadowRoot, acc);
+      }
+    }
+    function getAllElements() {
+      const acc = [];
+      collectAll(document, acc);
+      return acc;
+    }
+
+    function visible(el) {
+      try {
+        const st = window.getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      } catch (e) { return false; }
+    }
+
+    // 穿透查找"已展开"的榜单面板：含"团员榜单"文本、高度明显增大或含多个团员头像的最内层可见容器
     function findPanel() {
-      const cands = Array.from(document.querySelectorAll('div, ul, ol, section, aside'));
+      const els = getAllElements();
       const matched = [];
-      for (const c of cands) {
+      for (const c of els) {
+        if (!/^(DIV|UL|OL|SECTION|ASIDE|MAIN|LI)$/.test(c.tagName)) continue;
         const t = norm(c.innerText || c.textContent);
         if (!t || t.indexOf(KEY) < 0) continue;
-        const style = window.getComputedStyle(c);
-        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        if (!visible(c)) continue;
         const r = c.getBoundingClientRect();
         if (r.width <= 0 || r.height < 120) continue; // 折叠态仅一两行(高<120)
         const imgs = c.querySelectorAll('img');
         // 展开特征：出现多个团员头像，或容器显著变高
-        if (imgs.length >= 2 || r.height >= 200) matched.push(c);
+        if (imgs.length >= 2 || r.height >= 200) matched.push({ el: c, rect: r });
       }
       if (!matched.length) return null;
       // 取最内层（不包含其它匹配容器），避免误取包裹整区的大容器
-      const inner = matched.filter((c) => !matched.some((o) => o !== c && c.contains(o)));
+      const inner = matched.filter((m) => !matched.some((o) => o !== m && m.el.contains(o.el)));
       return inner[0] || matched[matched.length - 1];
+    }
+
+    // 穿透定位"团员榜单"触发器（最内层含该文本的元素）
+    function findTrigger() {
+      const els = getAllElements();
+      for (const el of els) {
+        if (!/^(DIV|SPAN|P|A|BUTTON|LI)$/.test(el.tagName)) continue;
+        const t = norm(el.innerText || el.textContent);
+        if (!t) continue;
+        if (t === KEY || (t.indexOf(KEY) === 0 && t.length <= 8)) {
+          let childHas = false;
+          for (const c of el.children) {
+            if (norm(c.innerText || c.textContent).indexOf(KEY) >= 0) { childHas = true; break; }
+          }
+          if (!childHas && visible(el)) return el;
+        }
+      }
+      return null;
+    }
+
+    // 更新面板信息到 window.__rankPanelInfo（供主进程探测计算扩宽量）
+    function updatePanelInfo() {
+      const p = findPanel();
+      if (p) {
+        panelRef = p.el;
+        const r = p.el.getBoundingClientRect();
+        window.__rankPanelInfo = {
+          expanded: true,
+          x: Math.round(r.left), y: Math.round(r.top),
+          width: Math.round(r.width), height: Math.round(r.height),
+          right: Math.round(r.right), ts: Date.now()
+        };
+      } else {
+        window.__rankPanelInfo = { expanded: false, ts: Date.now() };
+      }
+      return p;
     }
 
     function isExpanded() {
       if (panelRef && panelRef.isConnected) {
         try {
-          const style = window.getComputedStyle(panelRef);
           const r = panelRef.getBoundingClientRect();
-          if (r.height >= 120 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+          if (r.height >= 120 && visible(panelRef)) return true;
         } catch (e) {}
       }
-      const p = findPanel();
-      if (p) { panelRef = p; return true; }
-      return false;
-    }
-
-    // 定位"团员榜单"触发元素（最内层含该文本的元素）
-    function findTrigger() {
-      const all = document.querySelectorAll('div, span, p, a, button, li');
-      for (const el of all) {
-        const t = norm(el.innerText || el.textContent);
-        if (!t) continue;
-        if (t === KEY || (t.indexOf(KEY) === 0 && t.length <= 7)) {
-          let childHas = false;
-          for (const c of el.children) {
-            if (norm(c.innerText || c.textContent).indexOf(KEY) >= 0) { childHas = true; break; }
-          }
-          if (!childHas) return el;
-        }
-      }
-      return null;
+      return !!updatePanelInfo();
     }
 
     function expandOnce() {
@@ -236,11 +279,8 @@ const MEMBER_RANK_EXPAND_SCRIPT = `(() => {
         try { trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
         // 防跳转：点击若引发页面导航则立即回退
         setTimeout(() => { try { if (location.href !== beforeHref) history.back(); } catch (e) {} }, 600);
-        // 点击后延迟判定面板是否展开，缓存引用
-        setTimeout(() => {
-          try { const p = findPanel(); if (p) panelRef = p; } catch (e) {}
-          clicking = false;
-        }, 1200);
+        // 点击后延迟判定面板是否展开并更新 rect，缓存引用
+        setTimeout(() => { try { updatePanelInfo(); } catch (e) {} clicking = false; }, 1200);
         return 'clicked';
       } catch (e) {
         clicking = false;
@@ -248,11 +288,11 @@ const MEMBER_RANK_EXPAND_SCRIPT = `(() => {
       }
     }
 
-    // 立即展开一次，随后每 4s 检测一次：已展开则不动，收起则重新展开
+    // 立即展开一次，随后每 2s 更新面板信息 + 保持展开（收起则重新展开）
     const first = expandOnce();
-    window.__memberRankTimer = setInterval(() => {
-      try { if (!isExpanded()) expandOnce(); } catch (e) {}
-    }, 4000);
+    window.__rankPanelTimer = setInterval(() => {
+      try { if (!isExpanded()) expandOnce(); else updatePanelInfo(); } catch (e) {}
+    }, 2000);
 
     return 'installed:' + first;
   } catch (e) { return 'error:' + e.message; }
@@ -280,6 +320,9 @@ class CommentRenderer {
     this._leftPanelRect = null;         // 左侧特效区裁剪区域
     this._leftPanelFrameCount = 0;      // 左侧特效区累计帧数
     this._leftPanelFps = this.targetFps; // 左侧特效区帧率（与评论区一致）
+    // 团播榜单模式（stream+comment+effect+rank）：在特效区基础上展开"团员榜单"并扩宽评论区捕获区域，
+    // 使紧邻评论区左侧的榜单弹窗与评论区一并被录制
+    this.enableRankPanel = !!options.enableRankPanel;
     // 无账号模式标识：无账号+评论区时不需要账号冲突检测/回滚
     this.noLoginMode = !!options.noLoginMode;
     // 账号冲突回调：检测到评论区提示"已在其它设备登录"（被同账号顶下线）时触发，供外部回滚录制模式
@@ -726,14 +769,10 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 时间戳脚本注入失败:', e.message);
     }
 
-    // 注入团播"团员榜单"自动展开脚本（仅特效区模式）：展开左侧特效区左上角的团员榜单
-    if (this.enableLeftPanel) {
-      try {
-        const mrRet = await this.captureWindow.webContents.executeJavaScript(MEMBER_RANK_EXPAND_SCRIPT);
-        logger.info(`[CommentRenderer] 团员榜单展开脚本注入结果: ${mrRet}`);
-      } catch (e) {
-        logger.warn('[CommentRenderer] 团员榜单展开脚本注入失败:', e.message);
-      }
+    // 团播榜单模式：注入穿透展开脚本、等待榜单展开、扩宽评论区捕获区域，并保存调试截图
+    // （榜单弹窗紧邻评论区左侧，扩宽评论区把榜单+评论区一并录制；非团播/展开失败自动降级不扩宽）
+    if (this.enableRankPanel) {
+      await this._setupRankPanelMode();
     }
 
     logger.info('[CommentRenderer] 初始化完成');
@@ -809,16 +848,6 @@ class CommentRenderer {
       } catch (e) {
         logger.warn('[CommentRenderer] 自愈刷新后时间戳脚本注入失败:', e.message);
       }
-      // 4) 重新注入团播"团员榜单"自动展开脚本（仅特效区模式，刷新后页面脚本丢失需重注入）
-      if (this.enableLeftPanel) {
-        try {
-          const mrRet = await this.captureWindow.webContents.executeJavaScript(MEMBER_RANK_EXPAND_SCRIPT);
-          logger.info(`[CommentRenderer] 自愈刷新后团员榜单展开脚本注入结果: ${mrRet}`);
-        } catch (e) {
-          logger.warn('[CommentRenderer] 自愈刷新后团员榜单展开脚本注入失败:', e.message);
-        }
-      }
-
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
       let detectedRect = await this._detectCommentAreaFromDOM();
       if ((!detectedRect || detectedRect.width <= 80 || detectedRect.height <= 100)
@@ -845,6 +874,11 @@ class CommentRenderer {
         logger.info(`[CommentRenderer] 刷新后重新探测评论区: x=${this._commentRect.x}, w=${this._commentRect.width}, h=${this._commentRect.height}`);
       } else {
         logger.warn('[CommentRenderer] 刷新后评论区探测仍失败，保持原裁剪区域，等待下一轮心跳判定');
+      }
+
+      // 团播榜单模式：刷新后页面脚本丢失且评论区 rect 被重置，需重新注入展开脚本并重新扩宽
+      if (this.enableRankPanel && this.capturing && !this.captureWindow.isDestroyed()) {
+        await this._setupRankPanelMode();
       }
     } catch (e) {
       logger.warn('[CommentRenderer] 页面自愈刷新失败:', e && e.message);
@@ -1330,6 +1364,125 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] DOM探测失败:', e.message);
     }
     return null;
+  }
+
+  /**
+   * 团播榜单模式编排：注入穿透展开脚本 → 等待榜单展开 → 扩宽评论区 → 保存调试截图
+   * 非团播直播间或展开失败时自动降级为普通特效区模式（评论区不扩宽），不影响录制主流程
+   */
+  async _setupRankPanelMode() {
+    if (!this.enableRankPanel) return;
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+    try {
+      logger.info('[CommentRenderer] 团播榜单模式：注入穿透展开脚本并等待榜单展开...');
+      await this._injectRankPanelScript();
+      // 等待榜单展开（最多12s），非团播/展开失败则保持原评论区（降级普通特效区模式）
+      const rankInfo = await this._waitRankPanelExpanded(12000);
+      if (rankInfo) {
+        const widened = this._applyRankPanelWiden(rankInfo);
+        logger.info(`[CommentRenderer] 团播榜单已展开 (x=${rankInfo.x}, w=${rankInfo.width}, h=${rankInfo.height})，评论区扩宽: ${widened ? '是' : '否(面板未超出评论区左缘)'}`);
+      } else {
+        logger.warn('[CommentRenderer] 未检测到展开的团播榜单（非团播直播间或展开失败），按普通特效区模式录制，评论区不扩宽');
+      }
+      // 无论是否扩宽成功，均保存调试截图（整体界面 + 当前评论区裁切），便于后续调整
+      await this._saveRankDebugScreenshots();
+    } catch (e) {
+      logger.warn('[CommentRenderer] 团播榜单模式初始化异常:', e && e.message);
+    }
+  }
+
+  // 注入团播榜单穿透展开脚本
+  async _injectRankPanelScript() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return false;
+    try {
+      const ret = await this.captureWindow.webContents.executeJavaScript(RANK_PANEL_SCRIPT);
+      logger.info(`[CommentRenderer] 团员榜单穿透展开脚本注入结果: ${ret}`);
+      return true;
+    } catch (e) {
+      logger.warn('[CommentRenderer] 团员榜单穿透展开脚本注入失败:', e && e.message);
+      return false;
+    }
+  }
+
+  // 读取页面维护的榜单面板信息（__rankPanelInfo，由 RANK_PANEL_SCRIPT 每2s更新）
+  async _getRankPanelInfo() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
+    try {
+      const info = await this.captureWindow.webContents.executeJavaScript(
+        '((window.__rankPanelInfo && window.__rankPanelInfo.expanded) ? window.__rankPanelInfo : null)'
+      );
+      return info || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 轮询等待榜单展开，返回面板 rect 信息；超时返回 null
+  async _waitRankPanelExpanded(timeoutMs = 12000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!this.captureWindow || this.captureWindow.isDestroyed()) return null;
+      const info = await this._getRankPanelInfo();
+      if (info && info.expanded && info.width > 40 && info.height >= 120) return info;
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    return null;
+  }
+
+  // 根据榜单面板 rect 扩宽评论区捕获区域（x 左移、width 增大，右边缘保持不变）
+  _applyRankPanelWiden(rankInfo) {
+    if (!this._commentRect || !rankInfo) return false;
+    const commentRight = this._commentRect.x + this._commentRect.width;
+    const MARGIN = 6; // 余量，包含面板左边缘阴影/边框
+    let newX = Math.min(this._commentRect.x, Math.round(rankInfo.x) - MARGIN);
+    newX = Math.max(0, newX);
+    let newWidth = commentRight - newX;
+    // 防呆：扩宽后总宽不超过原评论宽度的 2.2 倍（避免误探测导致过度扩宽盖住中间画面）
+    const maxW = Math.round(this._commentRect.width * 2.2);
+    if (newWidth > maxW) {
+      newWidth = maxW;
+      newX = commentRight - newWidth;
+    }
+    // 面板右边缘在评论区左缘之右（未真正向左扩展），无需扩宽
+    if (newWidth <= this._commentRect.width) return false;
+    const oldX = this._commentRect.x;
+    const oldW = this._commentRect.width;
+    this._commentRect = {
+      x: newX,
+      y: this._commentRect.y,
+      width: newWidth,
+      height: this._commentRect.height
+    };
+    logger.info(`[CommentRenderer] 团播榜单扩宽评论区: x ${oldX} -> ${newX}, width ${oldW} -> ${newWidth} (面板x=${rankInfo.x}, w=${rankInfo.width})`);
+    return true;
+  }
+
+  // 保存团播榜单调试截图：①榜单展开后的整体界面 ②榜单+评论区（扩宽后）单独裁切
+  async _saveRankDebugScreenshots() {
+    if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+    try {
+      fs.mkdirSync(this.debugDir, { recursive: true });
+      // 1) 团播榜单展开后的整体界面截图
+      const fullImage = await this.captureWindow.webContents.capturePage();
+      const fullPath = path.join(this.debugDir, 'debug_rank_full_page.png');
+      fs.writeFileSync(fullPath, fullImage.toPNG());
+      logger.info(`[CommentRenderer] 团播榜单整体界面截图: ${fullPath}`);
+      // 2) 团播榜单+评论区（扩宽后）单独裁切截图
+      if (this._commentRect) {
+        const size = fullImage.getSize();
+        const r = this._commentRect;
+        const safeW = Math.min(r.width, size.width - r.x);
+        const safeH = Math.min(r.height, size.height - r.y);
+        if (safeW > 0 && safeH > 0) {
+          const crop = fullImage.crop({ x: r.x, y: r.y, width: safeW, height: safeH });
+          const cropPath = path.join(this.debugDir, 'debug_rank_comment_area.png');
+          fs.writeFileSync(cropPath, crop.toPNG());
+          logger.info(`[CommentRenderer] 团播榜单+评论区裁切截图: ${cropPath} (x=${r.x}, w=${safeW}, h=${safeH})`);
+        }
+      }
+    } catch (e) {
+      logger.warn('[CommentRenderer] 团播榜单调试截图保存失败:', e && e.message);
+    }
   }
 
   /**

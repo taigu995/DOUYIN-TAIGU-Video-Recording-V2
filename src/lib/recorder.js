@@ -455,8 +455,10 @@ class Recorder {
       // 左侧特效区仅在 'stream+comment+effect' 模式下启用（复用评论区同一个离屏窗口同时裁剪）
 
       if (useCommentRenderer) {
-        const useLeftPanel = this.recordMode === 'stream+comment+effect';
-        logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps}, 左特效区: ${useLeftPanel})`);
+        // 特效区在 'stream+comment+effect' 及 '+rank' 模式下启用；团播榜单仅在 '+rank' 模式启用
+        const useLeftPanel = this.recordMode === 'stream+comment+effect' || this.recordMode === 'stream+comment+effect+rank';
+        const useRankPanel = this.recordMode === 'stream+comment+effect+rank';
+        logger.info(`[Recorder] 初始化评论区渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps}, 左特效区: ${useLeftPanel}, 团播榜单: ${useRankPanel})`);
         this.commentRenderer = new CommentRenderer({
           liveUrl: this.liveUrl,
           roomId: this.roomId,
@@ -467,6 +469,7 @@ class Recorder {
           sessionName: this.sessionName,
           enableLeftPanel: useLeftPanel,
           leftPanelOutputDir: useLeftPanel ? this._leftPanelFramesDir : null,
+          enableRankPanel: useRankPanel,
           noLoginMode: this.recordMode === 'stream+comment-no-login',
           onAccountConflict: () => {
             // 防呆：检测到评论区账号被同账号其它直播间顶下线时，自动回滚为无账号模式续帧录制

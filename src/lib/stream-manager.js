@@ -992,7 +992,7 @@ class StreamManager {
     const recordMode = streamState.info.recordMode || 'with-account';
     let sessionName = 'persist:douyin'; // 默认session
 
-    if (recordMode === 'with-account' || recordMode === 'stream+comment' || recordMode === 'stream+comment+effect') {
+    if (recordMode === 'with-account' || recordMode === 'stream+comment' || recordMode === 'stream+comment+effect' || recordMode === 'stream+comment+effect+rank') {
       // 有账号 / 有账号+评论区模式：优先用指定账号，否则用默认（主）账号
       let accountId = streamState.info.accountId;
       let account = accountId ? this.accountManager.getAccount(accountId) : null;

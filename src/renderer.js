@@ -981,6 +981,7 @@ function createStreamCard(stream) {
             <option value="stream-only"${stream.recordMode === 'stream-only' ? ' selected' : ''}>仅录制直播流</option>
             <option value="stream+comment"${stream.recordMode === 'stream+comment' ? ' selected' : ''}>有账号+评论区</option>
             <option value="stream+comment+effect"${stream.recordMode === 'stream+comment+effect' ? ' selected' : ''}>有账号+评论区+特效区</option>
+            <option value="stream+comment+effect+rank"${stream.recordMode === 'stream+comment+effect+rank' ? ' selected' : ''}>有账号+评论区+特效区+团播榜单</option>
             <option value="stream+comment-no-login"${stream.recordMode === 'stream+comment-no-login' ? ' selected' : ''}>无账号+评论区</option>
           </select>
           <select class="stream-account" data-room-id="${stream.roomId}" title="选择录制账号">
