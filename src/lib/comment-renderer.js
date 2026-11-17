@@ -217,19 +217,6 @@ const RANK_PANEL_SCRIPT = `(() => {
       } catch (e) { console.log('[RankPanel] 诊断异常 ' + e.message); }
     }
 
-    // 完整鼠标事件序列点击（模拟真实用户操作，提高抖音组件响应率）
-    function realClick(el) {
-      let r; try { r = el.getBoundingClientRect(); } catch (e) { r = { left: 0, top: 0, width: 1, height: 1 }; }
-      // 事件 view 使用元素所在的 window（触发器可能在 iframe 内，iframe 内元素需用其所属 window）
-      const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
-      const opts = { bubbles: true, cancelable: true, view: view, clientX: r.left + (r.width || 1) / 2, clientY: r.top + (r.height || 1) / 2, button: 0 };
-      const seq = ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-      for (const type of seq) {
-        try { el.dispatchEvent(type.indexOf('pointer') === 0 ? new PointerEvent(type, opts) : new MouseEvent(type, opts)); } catch (e) {}
-      }
-      try { el.click(); } catch (e) {}
-    }
-
     function visible(el) {
       try {
         const st = window.getComputedStyle(el);
@@ -360,22 +347,16 @@ const RANK_PANEL_SCRIPT = `(() => {
         console.log('[RankPanel] 未找到触发器：穿透元素总数=' + all.length + ' shadowRoot=' + shadowCount + ' iframe=' + iframeCount + ' 含榜单文本元素=' + keyHit);
         return 'trigger_not_found';
       }
-      try { const tr = trigger.getBoundingClientRect(); console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' @ x=' + Math.round(tr.left) + ',y=' + Math.round(tr.top) + '，执行展开'); } catch (e) {}
+      const tr = trigger.getBoundingClientRect();
+      const cx = Math.round(tr.left + tr.width / 2);
+      const cy = Math.round(tr.top + tr.height / 2);
+      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' @ x=' + Math.round(tr.left) + ',y=' + Math.round(tr.top) + '，记录待真实点击坐标 (' + cx + ',' + cy + ')');
       lastClickAt = now;
-      clicking = true;
-      const beforeHref = location.href;
-      try {
-        // 完整鼠标事件序列点击（模拟真实用户操作，提高抖音组件响应率）
-        realClick(trigger);
-        // 防跳转：点击若引发页面导航则立即回退
-        setTimeout(() => { try { if (location.href !== beforeHref) history.back(); } catch (e) {} }, 600);
-        // 点击后延迟判定面板是否展开并更新 rect，缓存引用
-        setTimeout(() => { try { updatePanelInfo(); } catch (e) {} clicking = false; }, 1200);
-        return 'clicked';
-      } catch (e) {
-        clicking = false;
-        return 'error:' + e.message;
-      }
+      // 记录待点击坐标，由主进程用 webContents.sendInputEvent 发送真实鼠标事件（isTrusted=true，绕过页面合成点击被忽略的问题）
+      window.__rankClickPos = { x: cx, y: cy, ts: now };
+      // 真实点击由主进程异步触发，延迟判定面板是否展开并缓存 rect
+      setTimeout(() => { try { updatePanelInfo(); } catch (e) {} }, 1500);
+      return 'need_click';
     }
 
     // 立即展开一次，随后每 2s 更新面板信息 + 保持展开（收起则重新展开）
@@ -1467,6 +1448,8 @@ class CommentRenderer {
     try {
       logger.info('[CommentRenderer] 团播榜单模式：注入穿透展开脚本并等待榜单展开...');
       await this._injectRankPanelScript();
+      // 启动真实点击泵：读取页面记录的待点击坐标，用 sendInputEvent 发送真实鼠标事件
+      this._startRankClickPump();
       // 等待榜单展开（最多12s），非团播/展开失败则保持原评论区（降级普通特效区模式）
       const rankInfo = await this._waitRankPanelExpanded(12000);
       if (rankInfo) {
@@ -1506,6 +1489,31 @@ class CommentRenderer {
     } catch (e) {
       return null;
     }
+  }
+
+  // 启动团播榜单真实点击泵：读取页面记录的待点击坐标（window.__rankClickPos），用 sendInputEvent 发送真实鼠标事件（isTrusted=true，比注入脚本的合成 MouseEvent 更接近真实用户操作）
+  _startRankClickPump() {
+    this._stopRankClickPump();
+    this._lastRankClickTs = 0;
+    this._rankClickTimer = setInterval(async () => {
+      try {
+        if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+        const pos = await this.captureWindow.webContents.executeJavaScript('window.__rankClickPos || null');
+        if (pos && pos.ts && pos.ts !== this._lastRankClickTs && typeof pos.x === 'number' && typeof pos.y === 'number') {
+          this._lastRankClickTs = pos.ts;
+          const wc = this.captureWindow.webContents;
+          // 完整真实鼠标事件序列：移动 -> 按下 -> 抬起
+          wc.sendInputEvent({ type: 'mouseMove', x: pos.x, y: pos.y });
+          wc.sendInputEvent({ type: 'mouseDown', x: pos.x, y: pos.y, button: 'left', clickCount: 1 });
+          wc.sendInputEvent({ type: 'mouseUp', x: pos.x, y: pos.y, button: 'left', clickCount: 1 });
+          logger.info(`[CommentRenderer] 团播榜单真实点击 @ (${pos.x},${pos.y})`);
+        }
+      } catch (e) { /* 忽略点击泵异常，避免影响录制主流程 */ }
+    }, 800);
+  }
+
+  _stopRankClickPump() {
+    if (this._rankClickTimer) { clearInterval(this._rankClickTimer); this._rankClickTimer = null; }
   }
 
   // 轮询等待榜单展开，返回面板 rect 信息；超时返回 null
@@ -1745,6 +1753,7 @@ class CommentRenderer {
    */
   stopCapture() {
     this.capturing = false;
+    this._stopRankClickPump(); // 停止团播榜单真实点击泵
 
     if (this._captureTimer) {
       clearTimeout(this._captureTimer);
