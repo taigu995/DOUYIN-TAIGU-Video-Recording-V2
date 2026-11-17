@@ -353,6 +353,41 @@ const RANK_PANEL_SCRIPT = `(() => {
       return !!updatePanelInfo();
     }
 
+    // 穿透 shadow DOM 的 elementFromPoint：Lynx 组件常嵌套 shadowRoot，需深入到最内层元素
+    function deepElementFromPoint(x, y) {
+      let el = null;
+      try { el = document.elementFromPoint(x, y); } catch (e) { return null; }
+      let guard = 0;
+      while (el && el.shadowRoot && guard < 12) {
+        let inner = null;
+        try { inner = el.shadowRoot.elementFromPoint(x, y); } catch (e) { break; }
+        if (!inner || inner === el) break;
+        el = inner;
+        guard++;
+      }
+      return el;
+    }
+
+    // 当 Lynx X-VIEW 的 getBoundingClientRect 为逻辑坐标（不可信）时，
+    // 以候选中心 x 为基准垂直扫描 elementFromPoint，找含关键词的视觉位置（真实可点击点）
+    function scanVisualPos(keyword, baseX) {
+      // 扫描列：候选中心x 及左右各偏移，覆盖按钮宽度
+      const cols = [Math.round(baseX), Math.round(baseX) - 15, Math.round(baseX) + 15, Math.round(baseX) - 30, Math.round(baseX) + 30];
+      for (let ci = 0; ci < cols.length; ci++) {
+        const x = cols[ci];
+        if (x < 2) continue;
+        for (let y = 40; y < 360; y += 3) {
+          const el = deepElementFromPoint(x, y);
+          if (!el || !el.tagName) continue;
+          const t = norm(el.innerText || el.textContent);
+          if (t && t.length <= 30 && t.indexOf(keyword) >= 0) {
+            return { x: x, y: y, tag: el.tagName, cls: clsOf(el), text: t.slice(0, 12) };
+          }
+        }
+      }
+      return null;
+    }
+
     function expandOnce() {
       if (clicking) return 'clicking';
       const now = Date.now();
@@ -368,17 +403,33 @@ const RANK_PANEL_SCRIPT = `(() => {
         return 'trigger_not_found';
       }
       const tr = trigger.getBoundingClientRect();
-      const cx = Math.round(tr.left + tr.width / 2);
-      const cy = Math.round(tr.top + tr.height / 2);
-      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' cls=' + clsOf(trigger) + ' text=' + norm(trigger.innerText || trigger.textContent).slice(0, 14) + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，记录待真实点击坐标 (' + cx + ',' + cy + ')');
-      // 验证 rect 可信度：elementFromPoint 该点元素是否含关键词（Lynx X-VIEW 的 getBoundingClientRect 可能不反映视觉位置）
+      let cx = Math.round(tr.left + tr.width / 2);
+      let cy = Math.round(tr.top + tr.height / 2);
+      const triggerText = norm(trigger.innerText || trigger.textContent).slice(0, 14);
+      let triggerKey = null;
+      for (const k of KEYS) { if (triggerText.indexOf(k) >= 0) { triggerKey = k; break; } }
+      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' key=' + (triggerKey || '?') + ' cls=' + clsOf(trigger) + ' text=' + triggerText + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，初始中心 (' + cx + ',' + cy + ')');
+      // 验证 rect 可信度：elementFromPoint 该点元素是否含关键词（Lynx X-VIEW 的 getBoundingClientRect 可能是逻辑坐标而非视觉位置）
+      let rectTrusted = false;
       try {
-        const hitEl = document.elementFromPoint(cx, cy);
+        const hitEl = deepElementFromPoint(cx, cy);
         const hitText = norm((hitEl && (hitEl.innerText || hitEl.textContent)) || '');
         let hitKey = null;
         for (const k of KEYS) { if (hitText.indexOf(k) >= 0) { hitKey = k; break; } }
         console.log('[RankPanel] 点击点验证 elementFromPoint(' + cx + ',' + cy + ')=' + (hitEl ? hitEl.tagName : 'null') + ' key=' + (hitKey || 'none') + ' text=' + hitText.slice(0, 12) + ' cls=' + (hitEl ? clsOf(hitEl) : ''));
+        rectTrusted = !!hitKey;
       } catch (ve) { console.log('[RankPanel] 点击点验证异常 ' + ve.message); }
+      // rect 不可信（Lynx 逻辑坐标）→ 用 elementFromPoint 垂直扫描定位视觉按钮真实坐标
+      if (!rectTrusted && triggerKey) {
+        const scan = scanVisualPos(triggerKey, cx);
+        if (scan) {
+          console.log('[RankPanel] 扫描定位视觉按钮成功 (' + scan.x + ',' + scan.y + ') ' + scan.tag + ' text=' + scan.text + ' cls=' + scan.cls);
+          cx = scan.x; cy = scan.y;
+        } else {
+          console.log('[RankPanel] 扫描定位视觉按钮失败，仍用原坐标 (' + cx + ',' + cy + ')');
+        }
+      }
+      console.log('[RankPanel] 记录待真实点击坐标 (' + cx + ',' + cy + ')');
       lastClickAt = now;
       // 记录待点击坐标，由主进程用 webContents.sendInputEvent 发送真实鼠标事件（isTrusted=true，绕过页面合成点击被忽略的问题）
       window.__rankClickPos = { x: cx, y: cy, ts: now };
