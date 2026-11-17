@@ -428,7 +428,7 @@ function hidePreviewModal() {
 function handlePreviewModeChange(mode) {
   const accountSection = document.getElementById('preview-account-section');
   if (accountSection) {
-    accountSection.style.display = mode === 'with-account' ? 'block' : 'none';
+    accountSection.style.display = (mode === 'with-account' || mode === 'stream+comment' || mode === 'stream+comment+effect' || mode === 'stream+comment+effect+rank') ? 'block' : 'none';
   }
 }
 
@@ -447,7 +447,7 @@ async function confirmAddStream() {
     const result = await window.electronAPI.addStream(
       pendingPreviewData.inputText,
       pendingPreviewData.customName,
-      mode === 'with-account' ? accountId : null,
+      (mode === 'with-account' || mode === 'stream+comment' || mode === 'stream+comment+effect' || mode === 'stream+comment+effect+rank') ? accountId : null,
       commentFps,
       mode,
       pendingPreviewData.streamerName
@@ -1039,7 +1039,7 @@ function createStreamCard(stream) {
   const updateAccountVisibility = () => {
     if (!accountSelect) return;
     const mode = modeSelect ? modeSelect.value : stream.recordMode;
-    const showAccount = mode === 'with-account' || mode === 'stream+comment' || mode === 'stream+comment+effect';
+    const showAccount = mode === 'with-account' || mode === 'stream+comment' || mode === 'stream+comment+effect' || mode === 'stream+comment+effect+rank';
     accountSelect.style.display = showAccount ? '' : 'none';
   };
 

@@ -160,28 +160,72 @@ const RANK_PANEL_SCRIPT = `(() => {
     if (window.__rankPanelScriptInstalled) return 'already';
     window.__rankPanelScriptInstalled = true;
 
-    const KEY = '团员榜单';
+    const KEYS = ['团员榜单', '团员榜', '成员榜单', '成员榜'];
+    const KEY = KEYS[0]; // 面板识别主关键词
     let panelRef = null;      // 展开后榜单面板的引用（用于判定是否仍展开）
     let clicking = false;     // 点击进行中，防并发
     let lastClickAt = 0;      // 上次点击时间（冷却）
+    let diagDone = false;     // 首次诊断是否已执行
+    let shadowCount = 0, iframeCount = 0; // 穿透统计（诊断用）
 
     const norm = (s) => (s || '').replace(/\\s+/g, '');
+    function clsOf(el) {
+      try { const c = el.className; return (c && c.baseVal !== undefined ? c.baseVal : c || '').toString().slice(0, 40); } catch (e) { return ''; }
+    }
 
-    // 穿透 Shadow DOM，递归收集 root 下所有元素（含 shadow 内部）
-    function collectAll(root, acc) {
-      if (!root || !root.querySelectorAll) return;
+    // 穿透 Shadow DOM + 同源 iframe，递归收集 root 下所有元素（含 shadow 内部）
+    function collectAll(root, acc, depth) {
+      depth = depth || 0;
+      if (!root || !root.querySelectorAll || depth > 25) return;
       let all;
       try { all = root.querySelectorAll('*'); } catch (e) { return; }
       for (let i = 0; i < all.length; i++) {
         const el = all[i];
         acc.push(el);
-        if (el.shadowRoot) collectAll(el.shadowRoot, acc);
+        try { if (el.shadowRoot) { shadowCount++; collectAll(el.shadowRoot, acc, depth + 1); } } catch (e) {}
+        if (el.tagName === 'IFRAME') {
+          iframeCount++;
+          try { if (el.contentDocument) collectAll(el.contentDocument, acc, depth + 1); } catch (e) {}
+        }
       }
     }
     function getAllElements() {
+      shadowCount = 0; iframeCount = 0;
       const acc = [];
-      collectAll(document, acc);
+      collectAll(document, acc, 0);
       return acc;
+    }
+
+    // 首次全面诊断：打印穿透结构与含榜单关键词/"本场成员"的候选元素，便于定位触发器真实位置
+    function diagnose(all) {
+      if (diagDone) return; diagDone = true;
+      try {
+        const hits = [];
+        for (const el of all) {
+          if (!el || !el.getBoundingClientRect) continue;
+          const t = norm(el.innerText || el.textContent);
+          if (!t || t.length > 30) continue;
+          let hit = null;
+          for (const k of KEYS) { if (t.indexOf(k) >= 0) { hit = k; break; } }
+          if (!hit && t.indexOf('本场成员') >= 0) hit = '本场成员';
+          if (!hit) continue;
+          const r = el.getBoundingClientRect();
+          hits.push((el.tagName || '?') + ' | text=' + t.slice(0, 10) + ' | x=' + Math.round(r.left) + ',y=' + Math.round(r.top) + ',w=' + Math.round(r.width) + ',h=' + Math.round(r.height) + ' | vis=' + (visible(el) ? 1 : 0) + ' | cls=' + clsOf(el));
+        }
+        console.log('[RankPanel] 诊断 元素总数=' + all.length + ' shadowRoot=' + shadowCount + ' iframe=' + iframeCount + ' 关键词命中=' + hits.length);
+        for (let i = 0; i < Math.min(hits.length, 12); i++) console.log('[RankPanel] 候选[' + i + '] ' + hits[i]);
+      } catch (e) { console.log('[RankPanel] 诊断异常 ' + e.message); }
+    }
+
+    // 完整鼠标事件序列点击（模拟真实用户操作，提高抖音组件响应率）
+    function realClick(el) {
+      let r; try { r = el.getBoundingClientRect(); } catch (e) { r = { left: 0, top: 0, width: 1, height: 1 }; }
+      const opts = { bubbles: true, cancelable: true, view: window, clientX: r.left + (r.width || 1) / 2, clientY: r.top + (r.height || 1) / 2, button: 0 };
+      const seq = ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+      for (const type of seq) {
+        try { el.dispatchEvent(type.indexOf('pointer') === 0 ? new PointerEvent(type, opts) : new MouseEvent(type, opts)); } catch (e) {}
+      }
+      try { el.click(); } catch (e) {}
     }
 
     function visible(el) {
@@ -214,20 +258,23 @@ const RANK_PANEL_SCRIPT = `(() => {
       return inner[0] || matched[matched.length - 1];
     }
 
-    // 穿透定位"团员榜单"触发器（最内层含该文本的元素）
+    // 穿透定位"团员榜单"触发器（最内层含榜单关键词的元素，支持多关键词）
     function findTrigger() {
       const els = getAllElements();
       for (const el of els) {
-        if (!/^(DIV|SPAN|P|A|BUTTON|LI)$/.test(el.tagName)) continue;
+        if (!/^(DIV|SPAN|P|A|BUTTON|LI|I|EM|STRONG|HEADER)$/.test(el.tagName)) continue;
         const t = norm(el.innerText || el.textContent);
-        if (!t) continue;
-        if (t === KEY || (t.indexOf(KEY) === 0 && t.length <= 8)) {
-          let childHas = false;
-          for (const c of el.children) {
-            if (norm(c.innerText || c.textContent).indexOf(KEY) >= 0) { childHas = true; break; }
-          }
-          if (!childHas && visible(el)) return el;
+        if (!t || t.length > 12) continue; // 触发器文本短，过长的是面板/容器
+        let hit = null;
+        for (const k of KEYS) { if (t.indexOf(k) >= 0) { hit = k; break; } }
+        if (!hit) continue;
+        let childHas = false;
+        for (const c of el.children) {
+          const ct = norm(c.innerText || c.textContent);
+          for (const k of KEYS) { if (ct.indexOf(k) >= 0) { childHas = true; break; } }
+          if (childHas) break;
         }
+        if (!childHas && visible(el)) return el;
       }
       return null;
     }
@@ -274,13 +321,12 @@ const RANK_PANEL_SCRIPT = `(() => {
       if (now - lastClickAt < 8000) return 'cooldown'; // 8s 冷却，防止 toggle 高频展开/收起
       const trigger = findTrigger();
       if (!trigger) {
-        // 诊断：打印穿透收集的元素总数与含"团员榜单"文本的元素数，便于区分"穿透失效"还是"非团播直播间"
-        let total = 0, keyHit = 0;
-        try {
-          const all = getAllElements(); total = all.length;
-          for (const el of all) { if (norm(el.innerText || el.textContent).indexOf(KEY) >= 0) keyHit++; }
-        } catch (e) {}
-        console.log('[RankPanel] 未找到"团员榜单"触发器：穿透元素总数=' + total + '，含榜单文本元素=' + keyHit);
+        // 诊断：首次失败时输出全面诊断（穿透结构+候选元素），便于区分"穿透失效/触发器在iframe/非团播直播间"
+        const all = getAllElements();
+        diagnose(all); // 仅首次执行
+        let keyHit = 0;
+        for (const el of all) { const t = norm(el.innerText || el.textContent); for (const k of KEYS) { if (t.indexOf(k) >= 0) { keyHit++; break; } } }
+        console.log('[RankPanel] 未找到触发器：穿透元素总数=' + all.length + ' shadowRoot=' + shadowCount + ' iframe=' + iframeCount + ' 含榜单文本元素=' + keyHit);
         return 'trigger_not_found';
       }
       try { const tr = trigger.getBoundingClientRect(); console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' @ x=' + Math.round(tr.left) + ',y=' + Math.round(tr.top) + '，执行展开'); } catch (e) {}
@@ -288,13 +334,8 @@ const RANK_PANEL_SCRIPT = `(() => {
       clicking = true;
       const beforeHref = location.href;
       try {
-        // 先 hover（部分面板悬停展开）
-        ['mouseover', 'mouseenter', 'mousemove'].forEach((type) => {
-          try { trigger.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); } catch (e) {}
-        });
-        // 再点击（折叠面板多为点击展开）
-        try { trigger.click(); } catch (e) {}
-        try { trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+        // 完整鼠标事件序列点击（模拟真实用户操作，提高抖音组件响应率）
+        realClick(trigger);
         // 防跳转：点击若引发页面导航则立即回退
         setTimeout(() => { try { if (location.href !== beforeHref) history.back(); } catch (e) {} }, 600);
         // 点击后延迟判定面板是否展开并更新 rect，缓存引用
