@@ -140,7 +140,7 @@ const LEFT_PANEL_HEARTBEAT_SCRIPT = `
 `;
 
 class LeftPanelRendererV2 {
-  constructor(roomUrl, fps = 5) {
+  constructor(roomUrl, fps = 5, debugDir = null) {
     this.roomUrl = roomUrl;
     this.fps = fps;
     this.captureWindow = null;
@@ -148,7 +148,7 @@ class LeftPanelRendererV2 {
     this.frameDir = null;
     this.frameIndex = 0;
     this.isRunning = false;
-    this.debugDir = null;
+    this.debugDir = debugDir; // 使用传入的调试目录
     this._leftPanelRect = null;
     this._commentRect = null;
     this._isDestroyed = false;
@@ -160,7 +160,10 @@ class LeftPanelRendererV2 {
     // 创建帧保存目录
     const cfg = getConfig();
     this.frameDir = path.join(cfg.outputFolder, '.temp', 'left_panel');
-    this.debugDir = path.join(cfg.outputFolder, '.temp', 'debug');
+    // 如果没有传入 debugDir，则使用默认路径
+    if (!this.debugDir) {
+      this.debugDir = path.join(cfg.outputFolder, '.temp', 'debug');
+    }
     fs.mkdirSync(this.frameDir, { recursive: true });
     fs.mkdirSync(this.debugDir, { recursive: true });
 

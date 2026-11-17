@@ -128,3 +128,4 @@ pnpm run build:dir
 - 修复左侧面板渲染器 logger 导入错误（v2.13.6）：left-panel-renderer-v2.js 中 logger 导入方式不正确导致初始化失败。修复：将 `const logger = require('./logger')` 改为 `const { getLogger } = require('./logger'); const logger = getLogger()`，与其他文件保持一致
 - 修复左侧面板渲染器 config 导入错误（v2.13.7）：left-panel-renderer-v2.js 中 config 导入方式不正确导致初始化失败。修复：将 `config.get('outputPath')` 改为 `getConfig('outputPath')`，正确使用 config 模块导出的函数
 - 修复左侧面板渲染器 getConfig 使用错误（v2.13.8）：left-panel-renderer-v2.js 中 getConfig() 使用方式不正确导致初始化失败。修复：将 `getConfig('outputPath')` 改为 `getConfig().outputFolder`，正确获取配置对象属性
+- 修复左侧面板调试截图保存路径错误（v2.13.9）：调试截图保存在全局临时目录 `.temp\debug\`，而不是录制文件夹中。修复：①LeftPanelRendererV2 构造函数添加 `debugDir` 参数；②recorder.js 中传递 `path.dirname(this.outputFile)` 作为调试目录

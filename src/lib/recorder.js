@@ -491,7 +491,8 @@ class Recorder {
         try {
           logger.info(`[Recorder] 初始化左侧面板渲染器... (模式: ${this.recordMode}, FPS: ${this.commentFps})`);
           const LeftPanelRendererV2 = require('./left-panel-renderer-v2');
-          this.leftPanelRenderer = new LeftPanelRendererV2(this.liveUrl, this.commentFps);
+          // 传递录制文件夹作为调试目录
+          this.leftPanelRenderer = new LeftPanelRendererV2(this.liveUrl, this.commentFps, path.dirname(this.outputFile));
           await this.leftPanelRenderer.init();
           logger.info('[Recorder] 左侧面板渲染器初始化成功');
         } catch (leftErr) {
