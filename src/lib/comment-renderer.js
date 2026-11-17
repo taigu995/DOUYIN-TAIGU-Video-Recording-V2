@@ -162,6 +162,8 @@ const RANK_PANEL_SCRIPT = `(() => {
 
     const KEYS = ['本场成员', '团员榜单', '团员榜', '成员榜单', '成员榜'];
     const KEY = KEYS[0]; // 面板识别主关键词
+    // 触发器关键词优先级：团员榜单类优先（用户要的是团员贡献榜），本场成员最后（它展开的是在线观众面板，非团员榜）
+    const PRIORITY = ['团员榜单', '团员榜', '成员榜单', '成员榜', '本场成员'];
     let panelRef = null;      // 展开后榜单面板的引用（用于判定是否仍展开）
     let clicking = false;     // 点击进行中，防并发
     let lastClickAt = 0;      // 上次点击时间（冷却）
@@ -266,14 +268,20 @@ const RANK_PANEL_SCRIPT = `(() => {
         if (!el || !el.getBoundingClientRect || !el.tagName) continue;
         if (el.tagName === 'BODY' || el.tagName === 'HTML') continue;
         const t = norm(el.innerText || el.textContent);
-        if (!t || t.length > 12) continue; // 触发器文本短，过长的是面板/大容器
+        if (!t || t.length > 30) continue; // 放宽到30：视觉按钮常含榜首名（如"团员榜单世一萌…14639"）
         let hit = null;
         for (const k of KEYS) { if (t.indexOf(k) >= 0) { hit = k; break; } }
         if (!hit) continue;
         if (!visible(el)) continue;
         const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 120) continue; // 触发器是小按钮，排除整页大容器
-        candidates.push({ el: el, area: r.width * r.height });
+        if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 200) continue; // 触发器是小按钮/小行，排除整页大容器
+        candidates.push({ el: el, area: r.width * r.height, key: hit, text: t, rect: r, cls: clsOf(el) });
+      }
+      // 诊断：总是打印候选（区分 Lynx 逻辑节点与视觉按钮，定位真正可点击的元素）
+      console.log('[RankPanel] 触发器候选数=' + candidates.length);
+      for (let ci = 0; ci < Math.min(candidates.length, 8); ci++) {
+        const c = candidates[ci];
+        console.log('[RankPanel] 候选[' + ci + '] ' + c.el.tagName + ' key=' + c.key + ' text=' + c.text.slice(0, 14) + ' rect=' + Math.round(c.rect.left) + ',' + Math.round(c.rect.top) + ',' + Math.round(c.rect.width) + 'x' + Math.round(c.rect.height) + ' cls=' + c.cls);
       }
       if (!candidates.length) {
         // 诊断：输出每个含关键词元素被排除的原因（定位是文本过长/不可见/尺寸异常）
@@ -289,15 +297,23 @@ const RANK_PANEL_SCRIPT = `(() => {
             const r = (el.getBoundingClientRect ? el.getBoundingClientRect() : { width: 0, height: 0 });
             let why = 'OK';
             if (!t) why = 'empty-text';
-            else if (t.length > 12) why = 'text-too-long(' + t.length + ')';
+            else if (t.length > 30) why = 'text-too-long(' + t.length + ')';
             else if (!visible(el)) why = 'invisible';
-            else if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 120) why = 'size-out(' + Math.round(r.width) + 'x' + Math.round(r.height) + ')';
+            else if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 200) why = 'size-out(' + Math.round(r.width) + 'x' + Math.round(r.height) + ')';
             console.log('[RankPanel] 排除分析 ' + el.tagName + ' | text=' + t.slice(0, 8) + ' | ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' | 原因=' + why);
           }
         }
         return null;
       }
-      candidates.sort((a, b) => a.area - b.area); // 面积最小者最精确（最内层）
+      // 排序：先按关键词优先级（团员榜单优先于本场成员），同关键词取视觉位置更靠下的（避开页面顶部的 Lynx 逻辑节点），再取面积最小（最内层）
+      candidates.sort((a, b) => {
+        const pa = PRIORITY.indexOf(a.key), pb = PRIORITY.indexOf(b.key);
+        const ra = pa < 0 ? 99 : pa, rb = pb < 0 ? 99 : pb;
+        if (ra !== rb) return ra - rb;
+        const ya = Math.round(a.rect.top), yb = Math.round(b.rect.top);
+        if (ya !== yb) return yb - ya; // 视觉靠下优先：顶部 y≈4 多为 Lynx 逻辑节点，视觉按钮在内容区 y 较大
+        return a.area - b.area;
+      });
       return candidates[0].el;
     }
 
@@ -354,7 +370,15 @@ const RANK_PANEL_SCRIPT = `(() => {
       const tr = trigger.getBoundingClientRect();
       const cx = Math.round(tr.left + tr.width / 2);
       const cy = Math.round(tr.top + tr.height / 2);
-      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' @ x=' + Math.round(tr.left) + ',y=' + Math.round(tr.top) + '，记录待真实点击坐标 (' + cx + ',' + cy + ')');
+      console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' cls=' + clsOf(trigger) + ' text=' + norm(trigger.innerText || trigger.textContent).slice(0, 14) + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，记录待真实点击坐标 (' + cx + ',' + cy + ')');
+      // 验证 rect 可信度：elementFromPoint 该点元素是否含关键词（Lynx X-VIEW 的 getBoundingClientRect 可能不反映视觉位置）
+      try {
+        const hitEl = document.elementFromPoint(cx, cy);
+        const hitText = norm((hitEl && (hitEl.innerText || hitEl.textContent)) || '');
+        let hitKey = null;
+        for (const k of KEYS) { if (hitText.indexOf(k) >= 0) { hitKey = k; break; } }
+        console.log('[RankPanel] 点击点验证 elementFromPoint(' + cx + ',' + cy + ')=' + (hitEl ? hitEl.tagName : 'null') + ' key=' + (hitKey || 'none') + ' text=' + hitText.slice(0, 12) + ' cls=' + (hitEl ? clsOf(hitEl) : ''));
+      } catch (ve) { console.log('[RankPanel] 点击点验证异常 ' + ve.message); }
       lastClickAt = now;
       // 记录待点击坐标，由主进程用 webContents.sendInputEvent 发送真实鼠标事件（isTrusted=true，绕过页面合成点击被忽略的问题）
       window.__rankClickPos = { x: cx, y: cy, ts: now };
