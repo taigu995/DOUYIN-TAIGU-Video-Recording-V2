@@ -293,6 +293,7 @@ class LeftPanelRenderer {
 
   /**
    * 通过 DOM 探测左侧面板实际位置
+   * 使用与评论区渲染器相同的捕获方法，但捕获左侧特效区
    */
   async _detectLeftPanelAreaFromDOM() {
     if (!this.captureWindow) return null;
@@ -316,36 +317,35 @@ class LeftPanelRenderer {
               }
             }
             
-            // 方法2：通过页面左侧区域查找
+            // 方法2：通过页面左侧区域查找（与评论区渲染器相同的捕获方法）
             const sels = [
-              '[class*="webcast-chatroom"] ~ *', // 评论区的兄弟元素
-              '[class*="webcast-left"]',
-              '[class*="left-panel"]',
-              '[class*="LeftPanel"]',
-              '[class*="anchor-info"]',
-              '[class*="AnchorInfo"]',
-              '[class*="gift-rank"]',
-              '[class*="GiftRank"]',
-              '[class*="audience-list"]',
-              '[class*="AudienceList"]',
-              '[class*="user-list"]',
-              '[class*="UserList"]',
-              '[class*="side-left"]',
-              '[class*="SideLeft"]',
-              '[class*="left-side"]',
-              '[class*="LeftSide"]'
+              '[class*="webcast-chatroom"]', // 评论区容器
+              '[class*="chat-list"]',
+              '[class*="ChatList"]',
+              '[class*="chat-room"]',
+              '[class*="ChatRoom"]',
+              '[class*="right-side"]',
+              '[class*="RightSide"]',
+              '[class*="side-panel"]',
+              '[class*="SidePanel"]',
+              '[class*="live-side"]',
+              '[class*="LiveSide"]'
             ];
 
             for (const sel of sels) {
               const el = document.querySelector(sel);
               if (el && el.offsetWidth > 80 && el.offsetHeight > 100) {
-                const rect = el.getBoundingClientRect();
-                return {
-                  x: Math.round(rect.left),
-                  y: Math.round(rect.top),
-                  width: Math.round(rect.width),
-                  height: Math.round(rect.height)
-                };
+                // 找到评论区容器，取它的前一个兄弟元素作为左侧面板
+                const leftPanel = el.previousElementSibling;
+                if (leftPanel && leftPanel.offsetWidth > 80 && leftPanel.offsetHeight > 100) {
+                  const rect = leftPanel.getBoundingClientRect();
+                  return {
+                    x: Math.round(rect.left),
+                    y: Math.round(rect.top),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                  };
+                }
               }
             }
             return null;
