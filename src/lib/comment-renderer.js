@@ -160,7 +160,7 @@ const RANK_PANEL_SCRIPT = `(() => {
     if (window.__rankPanelScriptInstalled) return 'already';
     window.__rankPanelScriptInstalled = true;
 
-    const KEYS = ['团员榜单', '团员榜', '成员榜单', '成员榜'];
+    const KEYS = ['本场成员', '团员榜单', '团员榜', '成员榜单', '成员榜'];
     const KEY = KEYS[0]; // 面板识别主关键词
     let panelRef = null;      // 展开后榜单面板的引用（用于判定是否仍展开）
     let clicking = false;     // 点击进行中，防并发
@@ -235,7 +235,11 @@ const RANK_PANEL_SCRIPT = `(() => {
         if (!c || !c.getBoundingClientRect || !c.tagName) continue;
         if (c.tagName === 'BODY' || c.tagName === 'HTML') continue;
         const t = norm(c.innerText || c.textContent);
-        if (!t || t.indexOf(KEY) < 0) continue;
+        if (!t) continue;
+        // 面板识别需匹配任一关键词（完好"本场成员"/"团员榜单"两种团播 UI）
+        let isKey = false;
+        for (const k of KEYS) { if (t.indexOf(k) >= 0) { isKey = true; break; } }
+        if (!isKey) continue;
         if (!visible(c)) continue;
         const r = c.getBoundingClientRect();
         if (r.width <= 0 || r.height < 120) continue; // 折叠态仅一两行(高<120)
@@ -1532,6 +1536,9 @@ class CommentRenderer {
   _applyRankPanelWiden(rankInfo) {
     if (!this._commentRect || !rankInfo) return false;
     const commentRight = this._commentRect.x + this._commentRect.width;
+    // 面板右缘明显小于评论区左缘的 80% -> 面板在页面左侧，由左特效区捕获，无需扩宽右侧（避免错把左侧榜单当弹窗扩宽）
+    const panelRight = rankInfo.x + rankInfo.width;
+    if (panelRight < this._commentRect.x * 0.8) return false;
     const MARGIN = 6; // 余量，包含面板左边缘阴影/边框
     let newX = Math.min(this._commentRect.x, Math.round(rankInfo.x) - MARGIN);
     newX = Math.max(0, newX);
