@@ -150,6 +150,114 @@ const TIMESTAMP_SCRIPT = `(() => {
   } catch (e) { return 'error:' + e.message; }
 })();`;
 
+// 团播直播间"团员榜单"自动展开脚本：
+// 团播直播间左侧特效区左上角有折叠的"团员榜单 >"，录制时需要自动展开以捕获完整榜单。
+// 策略：文本定位"团员榜单"触发元素 → hover+click 展开（带防跳转回退）→ 定时检测榜单面板是否保持展开，
+//       收起则重新展开；点击冷却 8s 防止 toggle 高频展开收起。
+const MEMBER_RANK_EXPAND_SCRIPT = `(() => {
+  try {
+    if (window.__memberRankExpanderInstalled) return 'already';
+    window.__memberRankExpanderInstalled = true;
+
+    const KEY = '团员榜单';
+    let panelRef = null;      // 展开后榜单面板的引用（用于判定是否仍展开）
+    let clicking = false;     // 点击进行中，防并发
+    let lastClickAt = 0;      // 上次点击时间（冷却）
+
+    const norm = (s) => (s || '').replace(/\\s+/g, '');
+
+    // 查找"已展开"的榜单面板：最内层的、含"团员榜单"文本且高度明显增大或含多个团员头像的可见容器
+    function findPanel() {
+      const cands = Array.from(document.querySelectorAll('div, ul, ol, section, aside'));
+      const matched = [];
+      for (const c of cands) {
+        const t = norm(c.innerText || c.textContent);
+        if (!t || t.indexOf(KEY) < 0) continue;
+        const style = window.getComputedStyle(c);
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const r = c.getBoundingClientRect();
+        if (r.width <= 0 || r.height < 120) continue; // 折叠态仅一两行(高<120)
+        const imgs = c.querySelectorAll('img');
+        // 展开特征：出现多个团员头像，或容器显著变高
+        if (imgs.length >= 2 || r.height >= 200) matched.push(c);
+      }
+      if (!matched.length) return null;
+      // 取最内层（不包含其它匹配容器），避免误取包裹整区的大容器
+      const inner = matched.filter((c) => !matched.some((o) => o !== c && c.contains(o)));
+      return inner[0] || matched[matched.length - 1];
+    }
+
+    function isExpanded() {
+      if (panelRef && panelRef.isConnected) {
+        try {
+          const style = window.getComputedStyle(panelRef);
+          const r = panelRef.getBoundingClientRect();
+          if (r.height >= 120 && style.display !== 'none' && style.visibility !== 'hidden') return true;
+        } catch (e) {}
+      }
+      const p = findPanel();
+      if (p) { panelRef = p; return true; }
+      return false;
+    }
+
+    // 定位"团员榜单"触发元素（最内层含该文本的元素）
+    function findTrigger() {
+      const all = document.querySelectorAll('div, span, p, a, button, li');
+      for (const el of all) {
+        const t = norm(el.innerText || el.textContent);
+        if (!t) continue;
+        if (t === KEY || (t.indexOf(KEY) === 0 && t.length <= 7)) {
+          let childHas = false;
+          for (const c of el.children) {
+            if (norm(c.innerText || c.textContent).indexOf(KEY) >= 0) { childHas = true; break; }
+          }
+          if (!childHas) return el;
+        }
+      }
+      return null;
+    }
+
+    function expandOnce() {
+      if (clicking) return 'clicking';
+      const now = Date.now();
+      if (now - lastClickAt < 8000) return 'cooldown'; // 8s 冷却，防止 toggle 高频展开/收起
+      const trigger = findTrigger();
+      if (!trigger) return 'trigger_not_found';
+      lastClickAt = now;
+      clicking = true;
+      const beforeHref = location.href;
+      try {
+        // 先 hover（部分面板悬停展开）
+        ['mouseover', 'mouseenter', 'mousemove'].forEach((type) => {
+          try { trigger.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+        });
+        // 再点击（折叠面板多为点击展开）
+        try { trigger.click(); } catch (e) {}
+        try { trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+        // 防跳转：点击若引发页面导航则立即回退
+        setTimeout(() => { try { if (location.href !== beforeHref) history.back(); } catch (e) {} }, 600);
+        // 点击后延迟判定面板是否展开，缓存引用
+        setTimeout(() => {
+          try { const p = findPanel(); if (p) panelRef = p; } catch (e) {}
+          clicking = false;
+        }, 1200);
+        return 'clicked';
+      } catch (e) {
+        clicking = false;
+        return 'error:' + e.message;
+      }
+    }
+
+    // 立即展开一次，随后每 4s 检测一次：已展开则不动，收起则重新展开
+    const first = expandOnce();
+    window.__memberRankTimer = setInterval(() => {
+      try { if (!isExpanded()) expandOnce(); } catch (e) {}
+    }, 4000);
+
+    return 'installed:' + first;
+  } catch (e) { return 'error:' + e.message; }
+})();`;
+
 
 class CommentRenderer {
   constructor(options) {
@@ -618,6 +726,16 @@ class CommentRenderer {
       logger.warn('[CommentRenderer] 时间戳脚本注入失败:', e.message);
     }
 
+    // 注入团播"团员榜单"自动展开脚本（仅特效区模式）：展开左侧特效区左上角的团员榜单
+    if (this.enableLeftPanel) {
+      try {
+        const mrRet = await this.captureWindow.webContents.executeJavaScript(MEMBER_RANK_EXPAND_SCRIPT);
+        logger.info(`[CommentRenderer] 团员榜单展开脚本注入结果: ${mrRet}`);
+      } catch (e) {
+        logger.warn('[CommentRenderer] 团员榜单展开脚本注入失败:', e.message);
+      }
+    }
+
     logger.info('[CommentRenderer] 初始化完成');
 
   }
@@ -690,6 +808,15 @@ class CommentRenderer {
         logger.info(`[CommentRenderer] 自愈刷新后时间戳脚本注入结果: ${tsRet}`);
       } catch (e) {
         logger.warn('[CommentRenderer] 自愈刷新后时间戳脚本注入失败:', e.message);
+      }
+      // 4) 重新注入团播"团员榜单"自动展开脚本（仅特效区模式，刷新后页面脚本丢失需重注入）
+      if (this.enableLeftPanel) {
+        try {
+          const mrRet = await this.captureWindow.webContents.executeJavaScript(MEMBER_RANK_EXPAND_SCRIPT);
+          logger.info(`[CommentRenderer] 自愈刷新后团员榜单展开脚本注入结果: ${mrRet}`);
+        } catch (e) {
+          logger.warn('[CommentRenderer] 自愈刷新后团员榜单展开脚本注入失败:', e.message);
+        }
       }
 
       // 重新探测评论区位置，更新裁剪区域（页面布局可能变化）
