@@ -440,8 +440,8 @@ class CommentRenderer {
         `);
         
         if (!hasContent) {
-          logger.warn('[CommentRenderer] 评论区容器无内容，可能仍在加载中，等待 5 秒后重新检测...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
+          logger.warn('[CommentRenderer] 评论区容器无内容，可能仍在加载中，等待 8 秒后重新检测...');
+          await new Promise(resolve => setTimeout(resolve, 8000));
           detectedRect = await this._detectCommentAreaFromDOM();
           if (detectedRect) {
             logger.info(`[CommentRenderer] 重新检测后DOM探测评论区: x=${detectedRect.x}, y=${detectedRect.y}, w=${detectedRect.width}, h=${detectedRect.height}`);
@@ -453,8 +453,8 @@ class CommentRenderer {
     } else {
       // 开播瞬间页面可能仍是"直播已结束"快照（服务端/CDN缓存延迟），
       // 若继续按右侧估算裁剪，整场录制右侧会停留在"猜你喜欢"推荐页。
-      // 快速刷新重试最多2次（每次约10秒），争取录制一开始就拿到直播页
-      for (let attempt = 1; attempt <= 2 && !detectedRect; attempt++) {
+      // 快速刷新重试最多3次（每次约15秒），争取录制一开始就拿到直播页
+      for (let attempt = 1; attempt <= 3 && !detectedRect; attempt++) {
         if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
         let pageEnded = false;
         try {
@@ -463,15 +463,15 @@ class CommentRenderer {
           );
         } catch (e) { break; }
         if (!pageEnded) break; // 非结束页：可能是结构变化，交给心跳自愈机制处理
-        logger.warn(`[CommentRenderer] 页面仍显示"直播已结束"（开播快照延迟），快速刷新重试 (${attempt}/2)`);
+        logger.warn(`[CommentRenderer] 页面仍显示"直播已结束"（开播快照延迟），快速刷新重试 (${attempt}/3)`);
         try {
           const reloaded = new Promise((resolve) => {
-            const timer = setTimeout(resolve, 15000);
+            const timer = setTimeout(resolve, 20000);
             this.captureWindow.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve(); });
           });
           this.captureWindow.webContents.reload();
           await reloaded;
-          await new Promise((r) => setTimeout(r, 10000)); // 从 8000ms 增加到 10000ms
+          await new Promise((r) => setTimeout(r, 15000)); // 从 10000ms 增加到 15000ms
           if (!this.captureWindow || this.captureWindow.isDestroyed()) break;
           detectedRect = await this._detectCommentAreaFromDOM();
         } catch (e) {
