@@ -929,15 +929,46 @@ class CommentRenderer {
           const pageH = document.documentElement.clientHeight || window.innerHeight;
           const pageCenterX = pageW / 2;
 
-          // 左侧面板可能关联的选择器（评论区容器本身，用于找其左侧兄弟）
+          // 参考：右侧评论区宽度（限制特效区宽度上限，避免把中间直播画面包进来）
+          let commentRefW = 0;
+          try {
+            const cr = document.querySelector('[class*="webcast-chatroom"], [id*="chatroom"], [class*="ChatRoom"], [class*="chat-room"]');
+            if (cr) { const rr = cr.getBoundingClientRect(); if (rr.left > pageCenterX && rr.width > 80) commentRefW = rr.width; }
+          } catch(e) {}
+          if (!commentRefW) commentRefW = Math.round(pageW * 0.21);
+          // 特效区宽度上限：不超过评论区宽度的1.4倍，且不超过页面34%
+          const maxLeftW = Math.min(Math.round(commentRefW * 1.4), Math.round(pageW * 0.34));
+
+          // 策略1: 直播主画面（页面中面积最大的 video/canvas）的左边界 = 特效区右边界
+          // 竖屏直播画面在中间，其左边界即左侧公屏弹幕区的右边界，最精确
+          let mainMedia = null, maxArea = 0;
+          try {
+            const mediaEls = document.querySelectorAll('video, canvas');
+            for (const el of mediaEls) {
+              const r = el.getBoundingClientRect();
+              if (r.width < 120 || r.height < pageH * 0.3) continue;
+              const area = r.width * r.height;
+              if (area > maxArea) { maxArea = area; mainMedia = r; }
+            }
+          } catch(e) {}
+          if (mainMedia && mainMedia.left > 150 && mainMedia.left < pageCenterX) {
+            const w = Math.round(mainMedia.left);
+            if (w > 100 && w <= maxLeftW) {
+              return { x: 0, width: w, strategy: 'video-left-bound' };
+            }
+            // 视频左边界超出上限，按上限收敛（防止误包直播画面）
+            if (w > maxLeftW) {
+              return { x: 0, width: maxLeftW, strategy: 'video-left-bound-clamped' };
+            }
+          }
+
+          // 策略2: 沿评论区左侧兄弟链取最左侧非视频节点（宽度限制在上限内）
           const roomSelectors = [
             '[class*="webcast-chatroom"]',
             '[id*="chatroom"]',
             '[class*="chat-room"]',
             '[class*="ChatRoom"]'
           ];
-
-          // 先找评论区容器，再取其在页面最左侧的兄弟节点（通常即公屏聊天区）
           let commentRoot = null;
           for (const sel of roomSelectors) {
             try {
@@ -949,21 +980,19 @@ class CommentRenderer {
             } catch(e) {}
             if (commentRoot) break;
           }
-
-          // 沿评论区一路往前找左侧兄弟节点链，取最左侧的非视频、宽度>80 的节点
           if (commentRoot) {
             let node = commentRoot.previousElementSibling;
             while (node) {
               const rect = node.getBoundingClientRect();
               const hasVideoOrCanvas = !!(node.querySelector && (node.querySelector('video, canvas')));
-              if (rect.width > 80 && !hasVideoOrCanvas && rect.right <= pageCenterX + 30) {
+              if (rect.width > 80 && rect.width <= maxLeftW && !hasVideoOrCanvas && rect.right <= pageCenterX + 30) {
                 return { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'prev-of-comment' };
               }
               node = node.previousElementSibling;
             }
           }
 
-          // 策略2：页面左侧面积最大的可见 div（排除 video/canvas/导航栏/中间视频）
+          // 策略3: 页面左侧面积最大的可见 div（宽度限制在上限内，排除 video/canvas/导航）
           let best = null;
           let bestScore = 0;
           const allDivs = document.querySelectorAll('div');
@@ -971,13 +1000,12 @@ class CommentRenderer {
             const rect = div.getBoundingClientRect();
             if (rect.left >= pageCenterX) continue;
             if (rect.right <= 0) continue;
-            if (rect.width < 120 || rect.height < 150) continue;
+            if (rect.width < 120 || rect.width > maxLeftW || rect.height < 150) continue;
             if (div.querySelector('video') || div.querySelector('canvas')) continue;
             if (div.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"]')) continue;
             const style = window.getComputedStyle(div);
             if (style.display === 'none' || style.visibility === 'hidden') continue;
             const area = rect.width * rect.height;
-            if (area > pageW * pageH * 0.85) continue;
             // 文本量较大的区域更可能是聊天/信息区
             const text = (div.innerText || '').length;
             const score = area + text * 30;
