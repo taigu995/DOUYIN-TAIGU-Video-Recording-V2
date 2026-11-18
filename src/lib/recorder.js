@@ -98,6 +98,7 @@ class Recorder {
 
     // 合并进度持久化
     this._mergeProgressFile = ''; // 合并进度文件路径
+    this._streamSegmentCount = 0; // 流重启分段计数（v2.13.28：URL刷新重启归档为stream_partN.mp4，合并时concat拼接）
     this._isManualStop = false; // 手动停止标志，用于跳过5分钟合并延迟
     this._lastProgressSave = 0; // 上次保存进度的时间戳
 
@@ -965,11 +966,25 @@ class Recorder {
       });
 
       try {
-        // commentInfo 为 null（渲染器已销毁）但帧目录仍有文件时，构造默认 commentInfo 以便触发合并
+        // commentInfo 为 null（渲染器已销毁）但帧目录仍有文件时，构造默认 commentInfo 以便触发合并。
+        // v2.13.28：fps 不能直接用目标值 this.commentFps（capturePage 耗时使实际 fps 常低于目标，
+        // 固定帧率兜底编码时长会失真）——优先从 timestamps.json 推算实际平均帧率。
+        const fpsFromTimestamps = (dir, frameCount) => {
+          try {
+            const tsFile = path.join(dir, 'timestamps.json');
+            if (frameCount > 1 && fs.existsSync(tsFile)) {
+              const arr = JSON.parse(fs.readFileSync(tsFile, 'utf8'));
+              if (Array.isArray(arr) && arr.length >= frameCount && arr[frameCount - 1] > 0) {
+                return frameCount / (arr[frameCount - 1] / 1000);
+              }
+            }
+          } catch (e) { /* ignore */ }
+          return null;
+        };
         const mergeCommentInfo = commentInfo || {
           frameCount: commentFrameFiles,
           outputDir: this._commentFramesDir,
-          fps: this.commentFps,
+          fps: fpsFromTimestamps(this._commentFramesDir, commentFrameFiles) || this.commentFps,
           duration: 0,
           timestamps: [],
           width: 0,
@@ -979,7 +994,7 @@ class Recorder {
         const mergeLeftPanelInfo = leftPanelInfo || (hasLeftPanelFrames ? {
           frameCount: leftPanelFrameFiles,
           outputDir: this._leftPanelFramesDir,
-          fps: this.commentFps,
+          fps: fpsFromTimestamps(this._leftPanelFramesDir, leftPanelFrameFiles) || this.commentFps,
           duration: 0,
           width: 0,
           height: 0
@@ -1059,16 +1074,92 @@ class Recorder {
    * 用于「无评论区」或「合并失败兜底」场景，保证最终文件在任意播放器可播
    * @param {string} outputFile 输出文件路径
    */
+  /**
+   * 流重启分段归档（v2.13.28）：视频轨停滞/时间轴回绕触发的 URL 刷新重启 FFmpeg 时，
+   * 新进程以 `-y` 写同一路径会覆盖已录内容（曾致重启前数小时录制全丢）。
+   * kill 旧进程前把当前流文件改名为 stream_part{N}.mp4 保留，合并时多段 concat 拼接。
+   */
+  _archiveCurrentStreamSegment() {
+    try {
+      if (!this._tempStreamFile || !fs.existsSync(this._tempStreamFile)) return;
+      const size = fs.statSync(this._tempStreamFile).size;
+      if (size <= 0) return;
+      this._streamSegmentCount = (this._streamSegmentCount || 0) + 1;
+      const segPath = path.join(this._tempDir, `stream_part${this._streamSegmentCount}.mp4`);
+      fs.renameSync(this._tempStreamFile, segPath);
+      logger.warn(`[Recorder] 流重启分段归档: ${segPath} (${(size / 1024 / 1024).toFixed(1)}MB，第 ${this._streamSegmentCount} 段)`);
+    } catch (e) {
+      logger.warn(`[Recorder] 流分段归档失败（继续重启，旧内容可能被覆盖）: ${e.message}`);
+    }
+  }
+
+  /**
+   * 获取完整流文件（v2.13.28）：存在分段（流重启产生 stream_partN.mp4）时，
+   * 按序 concat 拼接（stream copy，不重编码）为 stream_full.mp4 返回；无分段直接返回当前流文件。
+   * 段间 gap（重启耗时，通常数秒）在拼接后被压缩，对评论时间轴影响可忽略，但内容不再丢失。
+   */
+  async _getFullStreamFile() {
+    if (!this._tempDir) return this._tempStreamFile;
+    let segFiles = [];
+    try {
+      segFiles = fs.readdirSync(this._tempDir)
+        .filter(f => /^stream_part\d+\.mp4$/.test(f))
+        .sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10));
+    } catch (e) { /* ignore */ }
+    if (segFiles.length === 0) return this._tempStreamFile;
+
+    const parts = segFiles.map(f => path.join(this._tempDir, f));
+    // 当前流文件（最后一段，录制停止后落盘完成）追加到末尾
+    if (this._tempStreamFile && fs.existsSync(this._tempStreamFile) && fs.statSync(this._tempStreamFile).size > 0) {
+      parts.push(this._tempStreamFile);
+    }
+    if (parts.length === 1) return parts[0];
+
+    const fullFile = path.join(this._tempDir, 'stream_full.mp4');
+    const listFile = path.join(this._tempDir, '_stream_concat.txt');
+    const listContent = ['ffconcat version 1.0']
+      .concat(parts.map(p => `file '${p.replace(/\\/g, '/')}'`))
+      .join('\n');
+    fs.writeFileSync(listFile, listContent, 'utf8');
+    logger.warn(`[Recorder] 检测到 ${parts.length} 段流文件（流重启分段），concat 拼接为完整流: ${parts.map(p => path.basename(p)).join(' + ')}`);
+
+    const resolvedPath = getFFmpegPath();
+    await new Promise((resolve, reject) => {
+      const args = [
+        '-fflags', '+genpts',
+        '-f', 'concat', '-safe', '0',
+        '-i', listFile,
+        '-c', 'copy',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-y', fullFile
+      ];
+      const proc = spawn(resolvedPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      proc.stderr.on('data', (d) => { stderr = (stderr + d.toString()).slice(-2000); });
+      proc.on('close', (code) => {
+        if (code === 0 && fs.existsSync(fullFile) && fs.statSync(fullFile).size > 0) resolve();
+        else reject(new Error(`流分段拼接失败 (code ${code}): ${stderr.slice(-300)}`));
+      });
+      proc.on('error', reject);
+    }).catch((e) => {
+      // 拼接失败兜底：用最后一段（行为同旧版，至少保留最近内容），日志明确提示
+      logger.error(`[Recorder] 流分段拼接失败，回退使用最后一段（前 ${parts.length - 1} 段内容丢失）: ${e.message}`);
+    });
+    return (fs.existsSync(fullFile) && fs.statSync(fullFile).size > 0) ? fullFile : this._tempStreamFile;
+  }
+
   async _normalizeStream(outputFile) {
     const resolvedPath = getFFmpegPath();
-    if (!fs.existsSync(this._tempStreamFile)) {
+    // 多段流（流重启分段）先拼接为完整流再标准化（v2.13.28）
+    const streamSrc = await this._getFullStreamFile();
+    if (!fs.existsSync(streamSrc)) {
       throw new Error('直播流临时文件不存在，无法标准化');
     }
     logger.info(`[Recorder] 标准化直播流为普通MP4: ${outputFile}`);
     await new Promise((resolve, reject) => {
       const args = [
         '-y',
-        '-i', this._tempStreamFile,
+        '-i', streamSrc,
         '-c', 'copy',               // 不重编码，仅 remux
         '-movflags', '+faststart',  // moov 移到文件头，便于快速起播
         outputFile
@@ -1184,7 +1275,8 @@ class Recorder {
    */
   async _mergeStreamAndComments(commentInfo, streamFileOverride, commentFileOverride, outputFileOverride, leftPanelInfo) {
     const resolvedPath = getFFmpegPath();
-    const streamFile = streamFileOverride || this._tempStreamFile;
+    // 多段流（流重启分段 stream_partN.mp4）先拼接为完整流再参与合并（v2.13.28）
+    const streamFile = streamFileOverride || await this._getFullStreamFile();
     const commentVideoFile = commentFileOverride || path.join(this._tempDir, 'comment_video.mp4');
     const leftPanelVideoFile = path.join(this._tempDir, 'left_panel_video.mp4');
     const outputFile = outputFileOverride || this.outputFile;
@@ -1278,7 +1370,13 @@ class Recorder {
     try {
       if (fs.existsSync(commentTsFile)) {
         const arr = JSON.parse(fs.readFileSync(commentTsFile, 'utf8'));
-        if (Array.isArray(arr) && arr.length >= Math.min(commentInfo.frameCount, 2)) commentTimestamps = arr;
+        // 严格校验：时间戳必须覆盖全部帧，否则 concat 中越界帧会退化为 0.001s 极速闪屏+末帧冻结，
+        // 比固定帧率兜底更糟糕（v2.13.28）
+        if (Array.isArray(arr) && arr.length >= commentInfo.frameCount) {
+          commentTimestamps = arr;
+        } else if (Array.isArray(arr)) {
+          logger.warn(`[Merge] 评论 timestamps.json 长度不足(${arr.length}<${commentInfo.frameCount})，回退固定帧率编码`);
+        }
       }
     } catch (e) {
       logger.warn(`[Merge] 读取评论 timestamps.json 失败，回退固定帧率编码: ${e.message}`);
@@ -1390,7 +1488,11 @@ class Recorder {
       try {
         if (fs.existsSync(leftTsFile)) {
           const arr = JSON.parse(fs.readFileSync(leftTsFile, 'utf8'));
-          if (Array.isArray(arr) && arr.length >= Math.min(leftPanelInfo.frameCount, 2)) leftTimestamps = arr;
+          if (Array.isArray(arr) && arr.length >= leftPanelInfo.frameCount) {
+            leftTimestamps = arr;
+          } else if (Array.isArray(arr)) {
+            logger.warn(`[Merge] 左侧 timestamps.json 长度不足(${arr.length}<${leftPanelInfo.frameCount})，回退固定帧率编码`);
+          }
         }
       } catch (e) {
         logger.warn(`[Merge] 读取左侧 timestamps.json 失败，回退固定帧率编码: ${e.message}`);
@@ -1920,6 +2022,8 @@ class Recorder {
       logger.info(`[Recorder] 用新 URL 重启 FFmpeg 进程: ${this.streamerName}`);
       // 标记为视频轨停滞重启（避免触发 stream-interrupted）
       this._stallUrlRefresh = true;
+      // v2.13.28：kill 前归档当前流文件为 stream_partN.mp4——新进程 -y 写同一路径会覆盖已录内容
+      this._archiveCurrentStreamSegment();
       try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
       // 更新 URL 并重置统计
       this._streamUrl = newStreamUrl;
@@ -2469,12 +2573,12 @@ class Recorder {
     const outputDir = path.dirname(this.outputFile);
     const baseName = path.basename(this.outputFile, '.mp4');
 
-    // 保存 stream.mp4（分片源 → 标准化为标准 MP4，保证可播放）
-    const streamSrc = this._tempStreamFile;
+    // 保存 stream.mp4（分片源 → 标准化为标准 MP4，保证可播放；多段流先拼接，v2.13.28）
+    const streamSrc = await this._getFullStreamFile();
     const streamDst = path.join(outputDir, `${baseName}_stream.mp4`);
-    if (fs.existsSync(streamSrc)) {
+    if (streamSrc && fs.existsSync(streamSrc)) {
       try {
-        if (this._tempStreamFile !== streamDst) {
+        if (streamSrc !== streamDst) {
           // 用标准化的副本来保存，避免分片源直接在播放器中打不开
           const normalizedTmp = path.join(this._tempDir, 'stream_normalized_tmp.mp4');
           await new Promise((resolve, reject) => {
@@ -2587,7 +2691,10 @@ class Recorder {
         leftPanelOutputDir: wasLeftPanelEnabled ? this._leftPanelFramesDir : null,
         enableRankPanel: wasRankPanelEnabled,
         noLoginMode: true,
-        frameStartIndex: absoluteCount
+        frameStartIndex: absoluteCount,
+        // v2.13.28：传入首段捕获起点作为全局时间轴基准，续帧段时间戳含回滚 gap，
+        // 合并端评论时间轴与源视频不再因回滚空档压缩而错位
+        globalCaptureStartEpoch: this._commentStartEpoch || null
       });
       await this.commentRenderer.init();
       this.captureWindow = this.commentRenderer.captureWindow;

@@ -602,6 +602,10 @@ class CommentRenderer {
 
     // 续帧起始编号：录制中检测到账号冲突回滚重建渲染器时，从已有帧数继续编号，避免覆盖已录帧
     this.frameStartIndex = options.frameStartIndex || 0;
+    // 全局捕获起点（v2.13.28）：回滚续帧场景由外层传入首段捕获起点墙钟，
+    // 使本段帧时间戳直接落在全场绝对时间轴上（含回滚 gap），合并端时间轴与源视频不错位；
+    // 为空则保持旧行为（本段起点为 0，stopCapture 时按历史末帧偏移拼接，gap 被压缩）
+    this._globalCaptureStartEpoch = options.globalCaptureStartEpoch || null;
     // 左侧特效区捕获模式（stream+comment+effect）：复用本离屏窗口，在 capturePage() 时同时裁剪
     // 评论区（右侧）和左侧特效区（公屏聊天/礼物栏），帧分别写入两个目录，避免再开一个独立窗口去渲染页面
     this.enableLeftPanel = !!options.enableLeftPanel;
@@ -631,6 +635,9 @@ class CommentRenderer {
     this.frameCount = 0;
     this._captureTimer = null;
     this._startTime = null;
+    // stopCapture 幂等状态（v2.13.28）：destroy() 会重复调用 stopCapture
+    this._stopCaptureDone = false;
+    this._lastStopResult = null;
   }
 
   /**
@@ -2049,7 +2056,8 @@ class CommentRenderer {
     this.capturing = true;
     this.frameCount = 0;
     this._startTime = Date.now();
-    this._captureStartTime = this._startTime;
+    // 回滚续帧：有全局起点时帧时间戳直接基于首段起点（含回滚 gap），否则基于本段起点（v2.13.28）
+    this._captureStartTime = this._globalCaptureStartEpoch || this._startTime;
 
     this._timestamps = [];
 
@@ -2183,7 +2191,10 @@ class CommentRenderer {
       }
 
       // 记录帧时间戳（相对捕获开始，供合并精确控时）
-      this._timestamps.push(this.frameCount ? Date.now() - this._captureStartTime : 0);
+      // 回滚续帧（有全局起点）：首帧也记录真实偏移（含回滚 gap），保证合并端时间轴与源视频不错位（v2.13.28）
+      this._timestamps.push(
+        (this.frameCount === 0 && !this._globalCaptureStartEpoch) ? 0 : Date.now() - this._captureStartTime
+      );
 
       // 安排下一次捕获：全程使用固定帧率
       if (this.capturing) {
@@ -2212,6 +2223,12 @@ class CommentRenderer {
    * @returns {{ frameCount: number, outputDir: string, fps: number, duration: number }}
    */
   async stopCapture() {
+    // 幂等（v2.13.28）：destroy() 会再次调用本方法；_finishRecording 已 stop 过一次后，
+    // 合并失败清理 .temp 目录再 destroy 会重复写 timestamps.json 报 ENOENT（脏日志），
+    // 且回滚场景 stop→destroy 序列会二次触发时间戳合并写入。已停止则直接返回上次结果。
+    if (this._stopCaptureDone) {
+      return this._lastStopResult || null;
+    }
     this.capturing = false;
     this._stopRankClickPump(); // 停止团播榜单真实点击泵
     this._stopRankWatch();     // 停止录制期间榜单展开监听
@@ -2249,8 +2266,14 @@ class CommentRenderer {
             if (Array.isArray(prev)) {
               // 历史帧数为 frameStartIndex，若历史长度匹配则以历史为基准追加本次增量
               const tail = prev.length >= this.frameStartIndex ? prev.slice(0, this.frameStartIndex) : prev;
-              const lastT = tail.length ? tail[tail.length - 1] : 0;
-              merged = tail.concat(this._timestamps.map((t) => t + lastT));
+              if (this._globalCaptureStartEpoch) {
+                // v2.13.28：本段时间戳已基于全局起点（含回滚 gap），直接拼接即为完整绝对时间轴
+                merged = tail.concat(this._timestamps);
+              } else {
+                // 旧行为兜底：本段从 0 起，按历史末帧偏移拼接（回滚 gap 被压缩，仅兼容场景）
+                const lastT = tail.length ? tail[tail.length - 1] : 0;
+                merged = tail.concat(this._timestamps.map((t) => t + lastT));
+              }
             }
           } catch (e) {
             // 历史读取失败时直接使用本次（保持简单，避免覆盖坏数据）
@@ -2300,17 +2323,21 @@ class CommentRenderer {
       await this._normalizeFramesWidth(this.leftPanelOutputDir, 'left_frame_', 'right', 0, this._leftPanelFrameCount - 1);
     }
 
-    return {
+    const stopResult = {
       frameCount: absoluteCount,
       outputDir: this.outputDir,
       fps: actualFps,
       duration: duration,
       timestamps: this._timestamps || [],
-      startEpoch: this._startTime || 0, // 本段捕获起点墙钟（ms），供合并端与流录制起点对齐时间轴（v2.13.26）
+      startEpoch: this._globalCaptureStartEpoch || this._startTime || 0, // 捕获起点墙钟（ms），供合并端与流录制起点对齐时间轴（v2.13.26；回滚续帧时为全局首段起点，v2.13.28）
       width: this._commentRect ? this._commentRect.width : COMMENT_WIDTH,
       height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT,
       leftPanelInfo: leftPanelInfo
     };
+    // 幂等标记（v2.13.28）：destroy() 重复调用时直接返回本结果，避免重复写 timestamps/归一化帧
+    this._stopCaptureDone = true;
+    this._lastStopResult = stopResult;
+    return stopResult;
   }
 
   /**
