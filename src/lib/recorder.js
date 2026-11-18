@@ -389,7 +389,7 @@ class Recorder {
    * 生成 FFmpeg concat demuxer 文件（v2.13.26 三路时间轴统一）：
    * 按逐帧真实捕获时间戳给出每帧 duration，替代"固定帧率均匀铺开"，
    * 消除 capturePage 耗时不均（礼物时更慢）造成的中间内容相对源视频漂移。
-   * @param {string} dir 帧目录（concat 文件与帧同目录，file 用相对文件名）
+   * @param {string} dir 帧目录（concat 文件与帧同目录，file 用绝对路径条目——concat demuxer 的相对路径按进程 CWD 解析，Windows 实测失败）
    * @param {string} prefix 帧文件名前缀（frame_ / left_frame_）
    * @param {number} frameCount 帧数
    * @param {number[]} timestamps 每帧相对捕获起点的毫秒时间戳（长度可能不等于 frameCount，缺值按平均间隔外推）
@@ -406,7 +406,8 @@ class Recorder {
       return lastIdx >= 0 ? ts[lastIdx] + (i - lastIdx) * avgMs : i * avgMs;
     };
     const lines = ['ffconcat version 1.0'];
-    const name = (i) => `${prefix}${String(i).padStart(6, '0')}.jpg`;
+    // 绝对路径 + 正斜杠：与进程 CWD 解耦（concat demuxer 相对路径按 CWD 解析，Windows 下 .temp\comments\_concat.txt 实测打不开；正斜杠规避 Windows 反斜杠在 concat 内的解析坑）
+    const name = (i) => path.join(dir, `${prefix}${String(i).padStart(6, '0')}.jpg`).replace(/\\/g, '/');
     for (let i = 0; i < frameCount; i++) {
       lines.push(`file '${name(i)}'`);
       let dur;
@@ -1349,7 +1350,31 @@ class Recorder {
       progress: 0
     });
 
-    await this._runFFmpeg(resolvedPath, commentEncodeCmd, 'Merge-Comment', commentDurationMs, '编码评论区');
+    if (commentTimestamps) {
+      // concat 精确控时为主路径；失败自动降级 image2 固定帧率重试，杜绝合并失败丢评论区（v2.13.27）
+      try {
+        await this._runFFmpeg(resolvedPath, commentEncodeCmd, 'Merge-Comment', commentDurationMs, '编码评论区');
+      } catch (e) {
+        logger.warn(`[Merge] concat 精确控时编码失败，降级固定帧率 ${commentInfo.fps.toFixed(1)}fps 重试（${e.message || e}）`);
+        commentEncodeCmd = [
+          '-f', 'image2',
+          '-framerate', String(commentInfo.fps),
+          '-start_number', '0',
+          '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
+          '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-y',
+          commentVideoFile
+        ];
+        commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
+        await this._runFFmpeg(resolvedPath, commentEncodeCmd, 'Merge-Comment', commentDurationMs, '编码评论区(固定帧率降级)');
+      }
+    } else {
+      await this._runFFmpeg(resolvedPath, commentEncodeCmd, 'Merge-Comment', commentDurationMs, '编码评论区');
+    }
 
     if (!fs.existsSync(commentVideoFile)) {
       throw new Error('评论区视频编码失败');
@@ -1413,7 +1438,30 @@ class Recorder {
         ];
       }
 
-      await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板');
+      if (leftTimestamps) {
+        // concat 精确控时为主路径；失败自动降级 image2 固定帧率重试（v2.13.27）
+        try {
+          await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板');
+        } catch (e) {
+          logger.warn(`[Merge] 左侧面板 concat 编码失败，降级固定帧率 ${leftPanelInfo.fps.toFixed(1)}fps 重试（${e.message || e}）`);
+          leftPanelEncodeCmd = [
+            '-f', 'image2',
+            '-framerate', String(leftPanelInfo.fps),
+            '-start_number', '0',
+            '-i', path.join(this._leftPanelFramesDir, 'left_frame_%06d.jpg'),
+            '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
+            '-c:v', 'libx264',
+            '-preset', 'medium',
+            '-crf', '15',
+            '-pix_fmt', 'yuv420p',
+            '-y',
+            leftPanelVideoFile
+          ];
+          await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板(固定帧率降级)');
+        }
+      } else {
+        await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板');
+      }
 
       if (!fs.existsSync(leftPanelVideoFile)) {
         logger.warn('[Merge] 左侧面板视频编码失败，将使用双区域合并');
