@@ -94,6 +94,7 @@ class Recorder {
     this._mergeResult = null;
     this._lastRecordingResult = null;
     this._stallUrlRefresh = false; // 视频轨停滞后的 URL 刷新重启标志
+    this._commentStartEpoch = 0; // 评论捕获起点墙钟(ms)（v2.13.26 三路时间轴对齐：与流首帧起点 this.startTime 配合计算偏移）
 
     // 合并进度持久化
     this._mergeProgressFile = ''; // 合并进度文件路径
@@ -385,6 +386,49 @@ class Recorder {
   }
 
   /**
+   * 生成 FFmpeg concat demuxer 文件（v2.13.26 三路时间轴统一）：
+   * 按逐帧真实捕获时间戳给出每帧 duration，替代"固定帧率均匀铺开"，
+   * 消除 capturePage 耗时不均（礼物时更慢）造成的中间内容相对源视频漂移。
+   * @param {string} dir 帧目录（concat 文件与帧同目录，file 用相对文件名）
+   * @param {string} prefix 帧文件名前缀（frame_ / left_frame_）
+   * @param {number} frameCount 帧数
+   * @param {number[]} timestamps 每帧相对捕获起点的毫秒时间戳（长度可能不等于 frameCount，缺值按平均间隔外推）
+   * @param {number} tailTargetSec 末帧需要延长到的目标总时长（秒，从 0 起算；不足则按平均间隔）
+   * @param {string} outFile 输出 concat 文件路径
+   */
+  static _buildConcatFile(dir, prefix, frameCount, timestamps, tailTargetSec, outFile) {
+    const ts = Array.isArray(timestamps) ? timestamps : [];
+    const avgMs = (ts.length >= 2 && ts[ts.length - 1] > 0) ? ts[ts.length - 1] / (ts.length - 1) : 100;
+    const tsAt = (i) => {
+      if (i < ts.length && typeof ts[i] === 'number') return ts[i];
+      // 外推：最后一个已知时间戳 + 平均间隔
+      const lastIdx = ts.length - 1;
+      return lastIdx >= 0 ? ts[lastIdx] + (i - lastIdx) * avgMs : i * avgMs;
+    };
+    const lines = ['ffconcat version 1.0'];
+    const name = (i) => `${prefix}${String(i).padStart(6, '0')}.jpg`;
+    for (let i = 0; i < frameCount; i++) {
+      lines.push(`file '${name(i)}'`);
+      let dur;
+      if (i < frameCount - 1) {
+        dur = (tsAt(i + 1) - tsAt(i)) / 1000;
+        if (!(dur > 0)) dur = avgMs / 1000;
+        // 单帧间隔上限钳制（异常长间隔按 2s 封顶，避免某帧卡死过久；真实长间隔由后续帧追赶对齐）
+        if (dur > 2) dur = 2;
+      } else {
+        // 末帧：延长到目标总时长（对齐源视频/评论统一时长），至少保留一个平均间隔
+        const elapsed = tsAt(i) / 1000;
+        dur = Math.max(tailTargetSec - elapsed, avgMs / 1000, 0.04);
+      }
+      lines.push(`duration ${dur.toFixed(3)}`);
+    }
+    // concat demuxer 已知怪癖：末帧需再重复一次 file 行，duration 才会生效
+    if (frameCount > 0) lines.push(`file '${name(frameCount - 1)}'`);
+    fs.writeFileSync(outFile, lines.join('\n'), 'utf8');
+    return outFile;
+  }
+
+  /**
    * 开始录制
    */
   async startRecording() {
@@ -556,6 +600,10 @@ class Recorder {
 
       // Step 4: 开始评论区帧捕获（仅评论区模式）
       if (this.commentRenderer) {
+        // 记录评论捕获起点墙钟（v2.13.26）：与流录制首帧起点（this.startTime）对齐，
+        // 合并时按偏移平移评论/左特效区时间轴，保证三路时间轴一致。
+        // 仅首次记录——账号冲突回滚重建渲染器续帧时（2411行）保持首段基准不变。
+        if (!this._commentStartEpoch) this._commentStartEpoch = Date.now();
         this.commentRenderer.startCapture();
       }
 
@@ -1199,36 +1247,92 @@ class Recorder {
       logger.info(`[Merge] 布局: 直播 ${streamScaleW}x${streamScaleH} + 评论 ${commentScaleW}x${commentScaleH} = ${totalWidth}x${outputHeight}`);
     }
 
-    // Phase 1: 将评论区帧编码为视频
-    logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps`);
-
-    // 计算评论区视频总时长(毫秒)，默认按固定帧率
-    let commentDurationMs = Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
-
-    // 评论区已全程使用设置的固定帧率录制（不再因礼物提帧），合并端统一按固定帧率编码，
-    // 不再使用 timestamps.json 做动态帧率编码，确保评论区视频时间轴均匀、与源视频时长对齐。
-    let commentEncodeArgs = null;
-    const timestampsFile = path.join(this._commentFramesDir, 'timestamps.json');
+    // ===== 三路时间轴统一（v2.13.26）=====
+    // 源视频真实起点 = 流录制首帧时刻（this.startTime，FFmpeg stderr 首次 frame= 输出）；
+    // 评论/左特效区真实起点 = this._commentStartEpoch（首段捕获起点，回滚续帧时保持不变）。
+    // 两路存在启动时间差（FFmpeg spawn 到首帧通常有数秒延迟，评论捕获立即开始），
+    // 合并时评论/左侧视频按该偏移 setpts 平移对齐；输出统一 -t 截断，三路等长。
+    let streamDurationMs = 0;
     try {
-      if (fs.existsSync(timestampsFile)) {
-        logger.info('[Merge] 评论区为全程固定帧率，忽略 timestamps.json，统一按固定帧率编码');
+      streamDurationMs = await Recorder._getMediaDuration(streamFile);
+    } catch (e) {
+      logger.warn(`[Merge] 探测源视频时长失败，回退墙钟估算: ${e.message}`);
+    }
+    if (!streamDurationMs || streamDurationMs <= 0) {
+      streamDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : 0;
+    }
+    const streamStartEpoch = this.startTime ? this.startTime.getTime() : 0;
+    const commentStartEpoch = this._commentStartEpoch || commentInfo.startEpoch || 0;
+    let timelineOffsetMs = (streamStartEpoch && commentStartEpoch) ? (commentStartEpoch - streamStartEpoch) : 0;
+    if (!isFinite(timelineOffsetMs) || Math.abs(timelineOffsetMs) > 30000) {
+      logger.warn(`[Merge] 时间轴偏移异常 (${timelineOffsetMs}ms)，按 0 处理`);
+      timelineOffsetMs = 0;
+    }
+    const timelineOffsetSec = timelineOffsetMs / 1000;
+    logger.info(`[Merge] 三路时间轴对齐: 源视频时长=${(streamDurationMs / 1000).toFixed(1)}s, 评论起点${timelineOffsetMs >= 0 ? '晚' : '早'}于流首帧 ${Math.abs(timelineOffsetMs)}ms`);
+
+    // 读取评论逐帧真实时间戳（concat demuxer 精确控时，消除 capturePage 耗时不均造成的漂移）
+    let commentTimestamps = null;
+    const commentTsFile = path.join(this._commentFramesDir, 'timestamps.json');
+    try {
+      if (fs.existsSync(commentTsFile)) {
+        const arr = JSON.parse(fs.readFileSync(commentTsFile, 'utf8'));
+        if (Array.isArray(arr) && arr.length >= Math.min(commentInfo.frameCount, 2)) commentTimestamps = arr;
       }
     } catch (e) {
-      logger.debug(`[Merge] timestamps 检查失败(忽略): ${e && e.message}`);
+      logger.warn(`[Merge] 读取评论 timestamps.json 失败，回退固定帧率编码: ${e.message}`);
     }
-    const commentEncodeCmd = commentEncodeArgs || [
-      '-f', 'image2',
-      '-framerate', String(commentInfo.fps),
-      '-start_number', '0',
-      '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
-      '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
-      '-c:v', 'libx264',
-      '-preset', 'medium',
-      '-crf', '15',
-      '-pix_fmt', 'yuv420p',
-      '-y',
-      commentVideoFile
-    ];
+
+    // 评论区视频总时长（毫秒）：有时间戳时取末帧时间戳（真实捕获时长），否则按固定帧率估算
+    let commentDurationMs = commentTimestamps
+      ? Math.round(commentTimestamps[Math.min(commentInfo.frameCount, commentTimestamps.length) - 1])
+      : Math.round((commentInfo.frameCount / commentInfo.fps) * 1000);
+
+    // 统一目标时长：三路等长。源视频短则 tpad 末帧补齐；评论/左侧 concat 末帧延长 + 输出 -t 截断。
+    const targetDurationMs = Math.max(streamDurationMs, timelineOffsetMs + commentDurationMs);
+    const targetDurationSec = targetDurationMs / 1000;
+
+    // Phase 1: 将评论区帧编码为视频
+    logger.info(`[Merge] 编码评论区视频: ${commentInfo.frameCount} 帧 @ ${commentInfo.fps.toFixed(1)} fps${commentTimestamps ? '（concat 真实时间戳精确控时）' : '（固定帧率兜底）'}`);
+
+    let commentEncodeCmd;
+    if (commentTimestamps) {
+      const concatFile = path.join(this._commentFramesDir, '_concat.txt');
+      // 末帧延长目标：评论视角下的统一时长（扣除评论相对流的起点偏移）
+      Recorder._buildConcatFile(
+        this._commentFramesDir, 'frame_', commentInfo.frameCount, commentTimestamps,
+        Math.max(1, targetDurationSec - timelineOffsetSec), concatFile
+      );
+      commentEncodeCmd = [
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', concatFile,
+        // 必须保留逐帧真实时间戳：默认 vsync=auto(cfr) 会把 VFR 按平均帧率重采样回均匀时间轴，
+        // concat 的逐帧 duration 将失效（时间轴漂移修复白费）
+        '-vsync', 'passthrough',
+        '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '15',
+        '-pix_fmt', 'yuv420p',
+        '-y',
+        commentVideoFile
+      ];
+    } else {
+      commentEncodeCmd = [
+        '-f', 'image2',
+        '-framerate', String(commentInfo.fps),
+        '-start_number', '0',
+        '-i', path.join(this._commentFramesDir, 'frame_%06d.jpg'),
+        '-vf', `scale=${commentScaleW}:${commentScaleH},setsar=1`,
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '15',
+        '-pix_fmt', 'yuv420p',
+        '-y',
+        commentVideoFile
+      ];
+    }
 
     // 保存评论区编码阶段的进度数据（供 _runFFmpeg 读取）
     this._mergeProgressData = {
@@ -1254,23 +1358,63 @@ class Recorder {
     // Phase 1.5: 编码左侧面板视频（如果有）
     if (hasLeftPanel) {
       logger.info(`[Merge] 编码左侧面板视频: ${leftPanelInfo.frameCount} 帧 @ ${leftPanelInfo.fps.toFixed(1)} fps`);
-      
-      const leftPanelEncodeCmd = [
-        '-f', 'image2',
-        '-framerate', String(leftPanelInfo.fps),
-        '-start_number', '0',
-        '-i', path.join(this._leftPanelFramesDir, 'left_frame_%06d.jpg'),
-        '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
-        '-c:v', 'libx264',
-        '-preset', 'medium',
-        '-crf', '15',
-        '-pix_fmt', 'yuv420p',
-        '-y',
-        leftPanelVideoFile
-      ];
+
+      // 左侧帧与评论帧同一次 capturePage 同时裁剪，共享同一时间戳（v2.13.26 起写入左侧目录），同样 concat 精确控时
+      let leftTimestamps = null;
+      const leftTsFile = path.join(this._leftPanelFramesDir, 'timestamps.json');
+      try {
+        if (fs.existsSync(leftTsFile)) {
+          const arr = JSON.parse(fs.readFileSync(leftTsFile, 'utf8'));
+          if (Array.isArray(arr) && arr.length >= Math.min(leftPanelInfo.frameCount, 2)) leftTimestamps = arr;
+        }
+      } catch (e) {
+        logger.warn(`[Merge] 读取左侧 timestamps.json 失败，回退固定帧率编码: ${e.message}`);
+      }
+      // 左侧时间戳与评论共享，缺失时可复用评论的（同帧序列）
+      if (!leftTimestamps && commentTimestamps && commentTimestamps.length >= leftPanelInfo.frameCount) {
+        leftTimestamps = commentTimestamps;
+        logger.info('[Merge] 左侧 timestamps.json 缺失，复用评论区时间戳（同帧序列）');
+      }
+
+      let leftPanelEncodeCmd;
+      if (leftTimestamps) {
+        const leftConcatFile = path.join(this._leftPanelFramesDir, '_concat.txt');
+        Recorder._buildConcatFile(
+          this._leftPanelFramesDir, 'left_frame_', leftPanelInfo.frameCount, leftTimestamps,
+          Math.max(1, targetDurationSec - timelineOffsetSec), leftConcatFile
+        );
+        leftPanelEncodeCmd = [
+          '-f', 'concat',
+          '-safe', '0',
+          '-i', leftConcatFile,
+          // 保留逐帧真实时间戳（同评论区，防默认 cfr 重采样抹平）
+          '-vsync', 'passthrough',
+          '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-y',
+          leftPanelVideoFile
+        ];
+      } else {
+        leftPanelEncodeCmd = [
+          '-f', 'image2',
+          '-framerate', String(leftPanelInfo.fps),
+          '-start_number', '0',
+          '-i', path.join(this._leftPanelFramesDir, 'left_frame_%06d.jpg'),
+          '-vf', `scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1`,
+          '-c:v', 'libx264',
+          '-preset', 'medium',
+          '-crf', '15',
+          '-pix_fmt', 'yuv420p',
+          '-y',
+          leftPanelVideoFile
+        ];
+      }
 
       await this._runFFmpeg(resolvedPath, leftPanelEncodeCmd, 'Merge-LeftPanel', commentDurationMs, '编码左侧面板');
-      
+
       if (!fs.existsSync(leftPanelVideoFile)) {
         logger.warn('[Merge] 左侧面板视频编码失败，将使用双区域合并');
         hasLeftPanel = false;
@@ -1292,36 +1436,19 @@ class Recorder {
     // 兼容旧版 FFmpeg（overlay 不会自动扩展画布的问题）
     const totalWithSep = totalWidth;
 
-    // 使用「源视频真实时长」作为 Merge-Final 进度分母。
-    // 旧版用墙钟时间(Date.now()-startTime)估算，受 FFmpeg 退出延迟影响常偏大，
-    // 导致进度条长时间卡在小百分比、看似不更新。改为探测真实媒体时长，探测失败再回退墙钟。
-    let mergeFinalDurationMs = 0;
-    try {
-      mergeFinalDurationMs = await Recorder._getMediaDuration(streamFile);
-    } catch (e) {
-      logger.warn(`[Merge] 探测源视频时长失败，回退墙钟估算: ${e.message}`);
-    }
-    if (!mergeFinalDurationMs || mergeFinalDurationMs <= 0) {
-      mergeFinalDurationMs = this.startTime ? Date.now() - this.startTime.getTime() : commentDurationMs;
-    }
-    const streamDurationMs = mergeFinalDurationMs;
+    // 进度分母使用统一目标时长（v2.13.26：streamDurationMs 已在 Phase 1 前探测完成）
+    const mergeFinalDurationMs = targetDurationMs;
 
-    // 检测源视频和评论区视频的时长差
-    // 如果源视频比评论区视频短，需要在源视频后面添加黑屏帧，使其时长与评论区视频一致
-    let commentVideoDurationMs = 0;
-    try {
-      commentVideoDurationMs = await Recorder._getMediaDuration(commentVideoFile);
-    } catch (e) {
-      logger.warn(`[Merge] 探测评论区视频时长失败: ${e.message}`);
-      commentVideoDurationMs = commentDurationMs;
-    }
-
-    const durationDiffMs = commentVideoDurationMs - streamDurationMs;
+    // 源视频短于统一目标时长时，在源视频末尾 tpad 克隆末帧补齐（评论/左侧视频由 concat 末帧延长对齐，此处不再探测其时长）
+    const durationDiffMs = targetDurationMs - streamDurationMs;
     const needsPadding = durationDiffMs > 1000; // 时长差超过 1 秒才需要补偿
 
     if (needsPadding) {
-      logger.info(`[Merge] 源视频时长 (${(streamDurationMs / 1000).toFixed(1)}s) 小于评论区视频时长 (${(commentVideoDurationMs / 1000).toFixed(1)}s)，需要补偿 ${(durationDiffMs / 1000).toFixed(1)}s`);
+      logger.info(`[Merge] 源视频时长 (${(streamDurationMs / 1000).toFixed(1)}s) 小于统一目标时长 (${(targetDurationMs / 1000).toFixed(1)}s)，tpad 补偿 ${(durationDiffMs / 1000).toFixed(1)}s`);
     }
+
+    // 评论/左特效区时间轴平移量（setpts，秒）：评论捕获起点相对流首帧起点的偏移
+    const offsetPts = timelineOffsetSec.toFixed(3);
 
     // 保存最终合并阶段的进度数据
     this._mergeProgressData = {
@@ -1355,8 +1482,8 @@ class Recorder {
           '-i', leftPanelVideoFile,
           '-filter_complex',
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
-            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-            `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
+            `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[2:v]setpts=PTS+(${offsetPts})/TB,scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
             `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
             `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
             `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
@@ -1372,6 +1499,8 @@ class Recorder {
           '-c:a', 'aac',
           '-b:a', '192k',
           '-movflags', '+faststart',
+          // 统一输出时长（v2.13.26）：三路等长截断，防止评论/左侧 concat 末帧延长导致输出超长
+          '-t', targetDurationSec.toFixed(3),
           '-y',
           outputFile
         ];
@@ -1384,7 +1513,7 @@ class Recorder {
           '-i', commentVideoFile,
           '-filter_complex',
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
-            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
             `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
             `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
@@ -1398,6 +1527,8 @@ class Recorder {
           '-c:a', 'aac',
           '-b:a', '192k',
           '-movflags', '+faststart',
+          // 统一输出时长（v2.13.26）：三路等长截断，防止评论/左侧 concat 末帧延长导致输出超长
+          '-t', targetDurationSec.toFixed(3),
           '-y',
           outputFile
         ];
@@ -1414,8 +1545,8 @@ class Recorder {
           '-i', leftPanelVideoFile,
           '-filter_complex',
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
-            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
-            `[2:v]scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
+            `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[2:v]setpts=PTS+(${offsetPts})/TB,scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
             `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
             `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
             `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
@@ -1431,6 +1562,8 @@ class Recorder {
           '-c:a', 'aac',
           '-b:a', '192k',
           '-movflags', '+faststart',
+          // 统一输出时长（v2.13.26）：三路等长截断，防止评论/左侧 concat 末帧延长导致输出超长
+          '-t', targetDurationSec.toFixed(3),
           '-y',
           outputFile
         ];
@@ -1443,7 +1576,7 @@ class Recorder {
           '-i', commentVideoFile,
           '-filter_complex',
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
-            `[1:v]scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
+            `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[stream]pad=${totalWithSep}:${streamScaleH}:0:0:black[stream_padded];` +
             `[stream_padded]drawbox=x=${streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[stream_sep];` +
             `[stream_sep][comments]overlay=${streamScaleW + separatorW}:0:eof_action=repeat[out]`,
@@ -1457,13 +1590,15 @@ class Recorder {
         '-c:a', 'aac',
         '-b:a', '192k',
         '-movflags', '+faststart',
+        // 统一输出时长（v2.13.26）：三路等长截断
+        '-t', targetDurationSec.toFixed(3),
         '-y',
         outputFile
       ];
       }
     }
 
-    await this._runFFmpeg(resolvedPath, mergeArgs, 'Merge-Final', streamDurationMs, '合并视频');
+    await this._runFFmpeg(resolvedPath, mergeArgs, 'Merge-Final', mergeFinalDurationMs, '合并视频');
 
     if (!fs.existsSync(outputFile)) {
       throw new Error('最终视频合并失败');

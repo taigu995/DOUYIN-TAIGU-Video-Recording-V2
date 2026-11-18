@@ -480,6 +480,39 @@ const RANK_PANEL_SCRIPT = `(() => {
       for (const k of KEYS) { if (triggerText.indexOf(k) >= 0) { triggerKey = k; break; } }
       const isLynx = /^X-[A-Z]/.test(trigger.tagName);
       console.log('[RankPanel] 命中触发器 ' + trigger.tagName + ' key=' + (triggerKey || '?') + ' isLynx=' + isLynx + ' cls=' + clsOf(trigger) + ' text=' + triggerText + ' rect=' + Math.round(tr.left) + ',' + Math.round(tr.top) + ',' + Math.round(tr.width) + 'x' + Math.round(tr.height) + '，初始中心 (' + cx + ',' + cy + ')');
+
+      // iframe 内触发器专项处理（v2.13.26）：v2.13.25 实测坐标已换算正确（vp=13,92 命中 LYNX-VIEW）但点击无响应，
+      // 疑似 sendInputEvent 不能路由进 iframe 内 Lynx。此处：
+      // ①挂 iframe 内事件监听（诊断 sendInputEvent 是否路由进 iframe，打印 trusted/坐标/target）
+      // ②对触发器元素直接 dispatch 完整合成事件序列（元素级，不依赖视觉坐标，事件在 iframe 文档上下文内派生）
+      if (inIframe(trigger)) {
+        if (!window.__rankIframeEvtHooked) {
+          window.__rankIframeEvtHooked = true;
+          try {
+            const idoc = trigger.ownerDocument;
+            ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((ty) => {
+              idoc.addEventListener(ty, (e) => {
+                const t = e.target;
+                console.log('[RankPanel] iframe内收到事件 ' + ty + ' @(' + Math.round(e.clientX) + ',' + Math.round(e.clientY) + ') target=' + (t && t.tagName) + ' trusted=' + e.isTrusted);
+              }, true);
+            });
+            console.log('[RankPanel] iframe事件监听已挂载');
+          } catch (he) { console.log('[RankPanel] iframe事件监听挂载失败 ' + he.message); }
+        }
+        try {
+          const win = trigger.ownerDocument.defaultView;
+          const evOpts = { bubbles: true, cancelable: true, view: win, composed: true };
+          const seq = ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+          for (const ty of seq) {
+            let ev;
+            if (ty.indexOf('pointer') === 0 && win.PointerEvent) ev = new win.PointerEvent(ty, evOpts);
+            else ev = new win.MouseEvent(ty, evOpts);
+            trigger.dispatchEvent(ev);
+          }
+          try { if (typeof trigger.click === 'function') trigger.click(); } catch (ce) {}
+          console.log('[RankPanel] iframe内触发器元素级合成点击已派发 tag=' + trigger.tagName);
+        } catch (ee) { console.log('[RankPanel] 元素级合成点击异常 ' + ee.message); }
+      }
       let rectTrusted = false;
       if (isLynx) {
         // Lynx 元素：getBoundingClientRect 可能是布局树逻辑坐标（视觉按钮另在 canvas 绘制，elementFromPoint 也命中不到）。
@@ -1434,10 +1467,22 @@ class CommentRenderer {
           // 竖屏直播画面在中间，其左边界即左侧公屏弹幕区的右边界，最精确
           const mediaEls = [];
           collectMedia(document, mediaEls);
+          // 诊断信息收集（v2.13.26）：未命中时输出各元素详情与排除原因，便于定位穿透失效环节
+          const diag = {
+            mediaCount: mediaEls.length,
+            mediaList: mediaEls.slice(0, 12).map((el) => {
+              const r = toVpRect(el);
+              let inIframe = false;
+              try { inIframe = !!(el.ownerDocument && el.ownerDocument.defaultView && el.ownerDocument.defaultView.frameElement); } catch(e) {}
+              return { tag: el.tagName, rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], iframe: inIframe };
+            }),
+            filteredSmallMedia: 0,
+            strategy1: '', strategy2: '', strategy3: ''
+          };
           let mainMedia = null, maxArea = 0;
           for (const el of mediaEls) {
             const r = toVpRect(el); // 主视口坐标（iframe 内媒体自动换算，v2.13.25）
-            if (r.width < 100 || r.height < pageH * 0.2) continue;
+            if (r.width < 100 || r.height < pageH * 0.2) { diag.filteredSmallMedia++; continue; }
             const area = r.width * r.height;
             if (area > maxArea) { maxArea = area; mainMedia = r; }
           }
@@ -1452,8 +1497,11 @@ class CommentRenderer {
             // 视频几乎占满左侧（vLeft < 100）：该直播间左侧无独立特效区（视频即背景）
             // 返回 width=0，让上层走对称估算回退，避免误选整屏视频容器
             if (vLeft < 100) {
-              return { x: 0, width: 0, strategy: 'video-fullscreen-no-leftpanel' };
+              return { x: 0, width: 0, strategy: 'video-fullscreen-no-leftpanel', diag };
             }
+            diag.strategy1 = 'mainMedia左边界vLeft=' + vLeft + '>=页面中点' + Math.round(pageCenterX) + '，不视为左侧有特效区';
+          } else {
+            diag.strategy1 = mediaEls.length === 0 ? '未收集到任何video/canvas(含穿透)' : '收集到' + mediaEls.length + '个媒体元素但全部被尺寸过滤(排除' + diag.filteredSmallMedia + '个)';
           }
 
           // 策略2: 沿评论区左侧兄弟链取最左侧非视频节点（穿透排除视频容器）
@@ -1475,31 +1523,36 @@ class CommentRenderer {
             if (commentRoot) break;
           }
           if (commentRoot) {
+            let sibChecked = 0;
             let node = commentRoot.previousElementSibling;
             while (node) {
+              sibChecked++;
               const rect = node.getBoundingClientRect();
               if (rect.width > 80 && rect.width <= maxLeftW && !containsMediaDeep(node) && rect.right <= pageCenterX + 30) {
                 return { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'prev-of-comment' };
               }
               node = node.previousElementSibling;
             }
+            diag.strategy2 = '找到评论区容器但左侧兄弟链' + sibChecked + '个节点均不满足(宽度/含媒体/越界)';
+          } else {
+            diag.strategy2 = '未找到右侧评论区容器(webcast-chatroom等选择器未命中或不在右侧)';
           }
 
           // 策略3: 页面左侧文字密集的可见 div（弹幕区特征：文字多、相对紧凑，穿透排除视频容器）
           let best = null;
           let bestScore = 0;
+          let s3Excluded = { size: 0, media: 0, header: 0, invisible: 0, text: 0, pos: 0 };
           const allDivs = document.querySelectorAll('div');
           for (const div of allDivs) {
             const rect = div.getBoundingClientRect();
-            if (rect.left >= pageCenterX) continue;
-            if (rect.right <= 0) continue;
-            if (rect.width < 120 || rect.width > maxLeftW || rect.height < 150) continue;
-            if (containsMediaDeep(div)) continue;
-            if (div.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"]')) continue;
+            if (rect.left >= pageCenterX || rect.right <= 0) { s3Excluded.pos++; continue; }
+            if (rect.width < 120 || rect.width > maxLeftW || rect.height < 150) { s3Excluded.size++; continue; }
+            if (containsMediaDeep(div)) { s3Excluded.media++; continue; }
+            if (div.closest('header, nav, [class*="header"], [class*="Header"], [class*="navbar"], [class*="Navbar"]')) { s3Excluded.header++; continue; }
             const style = window.getComputedStyle(div);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            if (style.display === 'none' || style.visibility === 'hidden') { s3Excluded.invisible++; continue; }
             const text = (div.innerText || '').trim();
-            if (text.length < 15) continue; // 弹幕区必须有足够文字，排除纯视频背景容器
+            if (text.length < 15) { s3Excluded.text++; continue; } // 弹幕区必须有足够文字，排除纯视频背景容器
             const area = rect.width * rect.height;
             const density = text.length / area;
             // 以文字量为主、密度为辅（避免大面积视频容器胜出）
@@ -1509,7 +1562,9 @@ class CommentRenderer {
               best = { x: Math.max(0, Math.round(rect.left)), width: Math.round(rect.width), strategy: 'largest-left-div' };
             }
           }
-          return best;
+          if (best) return best;
+          diag.strategy3 = '共' + allDivs.length + '个div，排除: 位置' + s3Excluded.pos + '/尺寸' + s3Excluded.size + '/含媒体' + s3Excluded.media + '/头部' + s3Excluded.header + '/不可见' + s3Excluded.invisible + '/文字不足' + s3Excluded.text;
+          return { x: 0, width: 0, strategy: 'no-hit', diag };
         })();
       `);
       jsPromise.catch(() => {});
@@ -1522,6 +1577,15 @@ class CommentRenderer {
       if (raced && raced.width > 80) {
         logger.info(`[CommentRenderer] 左侧特效区DOM探测策略: ${raced.strategy || 'unknown'}`);
         return { x: raced.x, y: 0, width: raced.width, height: 1040 };
+      }
+      // 未命中：输出收集诊断（v2.13.26），定位穿透/过滤环节
+      if (raced && raced.diag) {
+        const d = raced.diag;
+        logger.warn(`[CommentRenderer] 左侧特效区DOM探测未命中诊断: media共${d.mediaCount}个(尺寸过滤排除${d.filteredSmallMedia}) ` +
+          `mediaList=${JSON.stringify(d.mediaList)}`);
+        logger.warn(`[CommentRenderer] 未命中原因: [策略1]${d.strategy1} [策略2]${d.strategy2} [策略3]${d.strategy3}`);
+      } else if (raced && raced.strategy === 'video-fullscreen-no-leftpanel') {
+        logger.info('[CommentRenderer] 视频几乎占满左侧，该直播间无独立特效区，回退对称估算');
       }
     } catch (e) {
       logger.warn('[CommentRenderer] 左侧特效区DOM探测失败:', e && e.message);
@@ -1728,6 +1792,8 @@ class CommentRenderer {
           wc.sendInputEvent({ type: 'mouseDown', x: pos.x, y: pos.y, button: 'left', clickCount: 1 });
           wc.sendInputEvent({ type: 'mouseUp', x: pos.x, y: pos.y, button: 'left', clickCount: 1 });
           logger.info(`[CommentRenderer] 团播榜单真实点击 @ (${pos.x},${pos.y})`);
+          // 点击后自动保存全页面诊断截图（v2.13.26）：观察点击后页面实际变化（弹窗是否打开/被二次点击toggle关掉）
+          this._scheduleRankClickScreenshot();
         }
       } catch (e) { /* 忽略点击泵异常，避免影响录制主流程 */ }
     }, 800);
@@ -1735,6 +1801,28 @@ class CommentRenderer {
 
   _stopRankClickPump() {
     if (this._rankClickTimer) { clearInterval(this._rankClickTimer); this._rankClickTimer = null; }
+    if (this._rankClickShotTimer) { clearTimeout(this._rankClickShotTimer); this._rankClickShotTimer = null; }
+  }
+
+  // 点击后延迟自动保存全页面诊断截图（v2.13.26）：直观察看点击后页面实际状态
+  // 弹窗是否打开/是否被后续点击toggle关闭，截图命名 debug_rank_click_NN.png（最多8张防刷屏）
+  _scheduleRankClickScreenshot() {
+    if (!this.debugDir) return;
+    this._rankClickShotCount = (this._rankClickShotCount || 0) + 1;
+    if (this._rankClickShotCount > 8) return;
+    const seq = this._rankClickShotCount;
+    if (this._rankClickShotTimer) clearTimeout(this._rankClickShotTimer);
+    this._rankClickShotTimer = setTimeout(async () => {
+      try {
+        if (!this.captureWindow || this.captureWindow.isDestroyed()) return;
+        const img = await this.captureWindow.webContents.capturePage();
+        const file = path.join(this.debugDir, `debug_rank_click_${String(seq).padStart(2, '0')}.png`);
+        fs.writeFileSync(file, img.toPNG());
+        logger.info(`[CommentRenderer] 榜单点击后诊断截图已保存: ${file}`);
+      } catch (e) {
+        logger.warn('[CommentRenderer] 榜单点击诊断截图失败:', e && e.message);
+      }
+    }, 1500);
   }
 
   // 轮询等待榜单展开，返回面板 rect 信息；超时返回 null
@@ -2147,6 +2235,7 @@ class CommentRenderer {
 
     // 保存帧时间戳列表，供合并精确控时（动态帧率必需）
     // 续帧场景：已有历史 timestamps 时追加，保证时间轴连续、与帧号一一对应
+    let mergedTimestamps = null;
     if (this.outputDir && this._timestamps && this._timestamps.length) {
       try {
         const fs = require('fs');
@@ -2168,6 +2257,7 @@ class CommentRenderer {
           }
         }
         fs.writeFileSync(tsPath, JSON.stringify(merged), 'utf8');
+        mergedTimestamps = merged;
       } catch (e) {
         logger.warn('[CommentRenderer] 写 timestamps.json 失败:', e.message);
       }
@@ -2184,12 +2274,20 @@ class CommentRenderer {
       leftPanelInfo = {
         frameCount: this._leftPanelFrameCount,
         outputDir: this.leftPanelOutputDir,
-        fps: this.targetFps,
+        fps: actualFps, // 左侧帧与评论帧同一次 capturePage 同时裁剪，帧序列时间轴完全一致，必须用 actualFps（v2.13.26 修复：原误用 targetFps 致左侧视频时长与评论区不一致）
         duration: duration,
         width: this._leftPanelRect ? this._leftPanelRect.width : (this._commentRect ? this._commentRect.width : 400),
         height: this._leftPanelRect ? this._leftPanelRect.height : (this._commentRect ? this._commentRect.height : 720)
       };
       logger.info(`[CommentRenderer] 停止捕获, 左侧特效区帧数: ${leftPanelInfo.frameCount}, 目录: ${leftPanelInfo.outputDir}`);
+      // 左侧帧与评论帧同帧序列（同一次 capturePage 同时裁剪），共享同一时间戳列表，写入左侧目录供合并端精确控时
+      if (mergedTimestamps) {
+        try {
+          fs.writeFileSync(path.join(this.leftPanelOutputDir, 'timestamps.json'), JSON.stringify(mergedTimestamps), 'utf8');
+        } catch (e) {
+          logger.warn('[CommentRenderer] 写左侧 timestamps.json 失败:', e.message);
+        }
+      }
     }
 
     // 帧尺寸归一化兜底（v2.13.24）：自愈刷新重探测/录制期间动态扩宽等场景可能造成帧序列宽度突变，
@@ -2208,6 +2306,7 @@ class CommentRenderer {
       fps: actualFps,
       duration: duration,
       timestamps: this._timestamps || [],
+      startEpoch: this._startTime || 0, // 本段捕获起点墙钟（ms），供合并端与流录制起点对齐时间轴（v2.13.26）
       width: this._commentRect ? this._commentRect.width : COMMENT_WIDTH,
       height: this._commentRect ? this._commentRect.height : COMMENT_HEIGHT,
       leftPanelInfo: leftPanelInfo
