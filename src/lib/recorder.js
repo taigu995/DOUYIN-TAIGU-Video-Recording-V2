@@ -98,7 +98,7 @@ class Recorder {
 
     // 合并进度持久化
     this._mergeProgressFile = ''; // 合并进度文件路径
-    this._streamSegmentCount = 0; // 流重启分段计数（v2.13.28：URL刷新重启归档为stream_partN.mp4，合并时concat拼接）
+    this._streamSegmentCount = 0; // 流重启分段计数（v2.13.29：重启直写stream_partN.mp4新文件，合并时concat拼接）
     this._isManualStop = false; // 手动停止标志，用于跳过5分钟合并延迟
     this._lastProgressSave = 0; // 上次保存进度的时间戳
 
@@ -664,6 +664,18 @@ class Recorder {
       fs.mkdirSync(this._tempDir, { recursive: true });
     }
 
+    // v2.13.29：流重启分段直写——首次录 stream.mp4，每次停滞/回绕重启写新分段 stream_part{N}.mp4。
+    // 旧版"归档(rename)再覆盖"在 Windows 上因句柄释放延迟 rename 报 EBUSY 导致旧内容仍被覆盖
+    // （实测：梦华录·水月场前 56 分钟丢失）；直写新文件名彻底不碰旧文件，无句柄竞争。
+    const segCount = this._streamSegmentCount || 0;
+    const streamFile = segCount === 0
+      ? path.join(this._tempDir, 'stream.mp4')
+      : path.join(this._tempDir, `stream_part${segCount}.mp4`);
+    if (streamFile !== this._tempStreamFile) {
+      logger.warn(`[Recorder] 流重启分段直写新文件: ${path.basename(streamFile)}（第 ${segCount + 1} 段，旧段保留）`);
+      this._tempStreamFile = streamFile;
+    }
+
     const args = [
       // 网络超时设置（10秒，直播流无数据则报错退出并触发断流处理）
       '-rw_timeout', '10000000',
@@ -891,7 +903,15 @@ class Recorder {
     }
 
     // Step 3: 合并直播流和评论区
-    const streamFileExists = fs.existsSync(this._tempStreamFile);
+    // v2.13.29 分段直写后 _tempStreamFile 指向最后一段；极端场景（停滞重启后立即下播）该文件可能
+    // 尚未落盘而首段 stream.mp4 已有内容——流存在性改为扫描首段+所有分段任一非空。
+    let streamFileExists = fs.existsSync(this._tempStreamFile);
+    if (!streamFileExists && this._tempDir) {
+      try {
+        streamFileExists = fs.readdirSync(this._tempDir).some((f) =>
+          /^stream(_part\d+)?\.mp4$/.test(f) && fs.statSync(path.join(this._tempDir, f)).size > 0);
+      } catch (e) { /* ignore */ }
+    }
 
     // 判定是否有关注区帧：优先扫描帧目录实际文件数，避免 commentRenderer 为 null（如回滚失败/初始化失败）时误判
     let commentFrameFiles = 0;
@@ -1075,27 +1095,9 @@ class Recorder {
    * @param {string} outputFile 输出文件路径
    */
   /**
-   * 流重启分段归档（v2.13.28）：视频轨停滞/时间轴回绕触发的 URL 刷新重启 FFmpeg 时，
-   * 新进程以 `-y` 写同一路径会覆盖已录内容（曾致重启前数小时录制全丢）。
-   * kill 旧进程前把当前流文件改名为 stream_part{N}.mp4 保留，合并时多段 concat 拼接。
-   */
-  _archiveCurrentStreamSegment() {
-    try {
-      if (!this._tempStreamFile || !fs.existsSync(this._tempStreamFile)) return;
-      const size = fs.statSync(this._tempStreamFile).size;
-      if (size <= 0) return;
-      this._streamSegmentCount = (this._streamSegmentCount || 0) + 1;
-      const segPath = path.join(this._tempDir, `stream_part${this._streamSegmentCount}.mp4`);
-      fs.renameSync(this._tempStreamFile, segPath);
-      logger.warn(`[Recorder] 流重启分段归档: ${segPath} (${(size / 1024 / 1024).toFixed(1)}MB，第 ${this._streamSegmentCount} 段)`);
-    } catch (e) {
-      logger.warn(`[Recorder] 流分段归档失败（继续重启，旧内容可能被覆盖）: ${e.message}`);
-    }
-  }
-
-  /**
-   * 获取完整流文件（v2.13.28）：存在分段（流重启产生 stream_partN.mp4）时，
-   * 按序 concat 拼接（stream copy，不重编码）为 stream_full.mp4 返回；无分段直接返回当前流文件。
+   * 获取完整流文件（v2.13.29 修订）：流分段直写语义——stream.mp4 为首段，
+   * stream_part1..N 为后续段（停滞/回绕重启产生）。存在分段时按录制顺序 concat 拼接
+   * （stream copy，不重编码）为 stream_full.mp4 返回；无分段直接返回当前流文件。
    * 段间 gap（重启耗时，通常数秒）在拼接后被压缩，对评论时间轴影响可忽略，但内容不再丢失。
    */
   async _getFullStreamFile() {
@@ -1106,14 +1108,18 @@ class Recorder {
         .filter(f => /^stream_part\d+\.mp4$/.test(f))
         .sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10));
     } catch (e) { /* ignore */ }
-    if (segFiles.length === 0) return this._tempStreamFile;
 
-    const parts = segFiles.map(f => path.join(this._tempDir, f));
-    // 当前流文件（最后一段，录制停止后落盘完成）追加到末尾
-    if (this._tempStreamFile && fs.existsSync(this._tempStreamFile) && fs.statSync(this._tempStreamFile).size > 0) {
-      parts.push(this._tempStreamFile);
+    const parts = [];
+    // v2.13.29 顺序：stream.mp4（首段）在前，stream_part1..N（重启后续段）升序在后
+    const firstSeg = path.join(this._tempDir, 'stream.mp4');
+    if (fs.existsSync(firstSeg) && fs.statSync(firstSeg).size > 0) {
+      parts.push(firstSeg);
     }
-    if (parts.length === 1) return parts[0];
+    for (const f of segFiles) {
+      const p = path.join(this._tempDir, f);
+      try { if (fs.statSync(p).size > 0) parts.push(p); } catch (e) { /* ignore */ }
+    }
+    if (parts.length <= 1) return parts.length === 1 ? parts[0] : this._tempStreamFile;
 
     const fullFile = path.join(this._tempDir, 'stream_full.mp4');
     const listFile = path.join(this._tempDir, '_stream_concat.txt');
@@ -2022,8 +2028,9 @@ class Recorder {
       logger.info(`[Recorder] 用新 URL 重启 FFmpeg 进程: ${this.streamerName}`);
       // 标记为视频轨停滞重启（避免触发 stream-interrupted）
       this._stallUrlRefresh = true;
-      // v2.13.28：kill 前归档当前流文件为 stream_partN.mp4——新进程 -y 写同一路径会覆盖已录内容
-      this._archiveCurrentStreamSegment();
+      // v2.13.29：不再归档(rename)旧流文件——Windows 下 kill 后句柄释放有延迟，同步 rename 报 EBUSY
+      // 导致旧内容仍被覆盖。改为 kill 后递增分段计数，新进程直写 stream_part{N}.mp4，旧文件碰都不碰。
+      this._streamSegmentCount = (this._streamSegmentCount || 0) + 1;
       try { this.ffmpegProcess.kill('SIGKILL'); } catch (e) { /* 忽略 */ }
       // 更新 URL 并重置统计
       this._streamUrl = newStreamUrl;
