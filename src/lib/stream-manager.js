@@ -1099,8 +1099,18 @@ class StreamManager {
           }
           logger.info(`[StreamManager] 正在合并视频和评论区: ${streamState.info.streamerName}, 评论帧数: ${data.commentFrames}, FPS: ${data.commentFps ? data.commentFps.toFixed(1) : 'N/A'}`);
         } else if (status === 'stopped') {
+          // v2.13.30：必须区分事件来源实例。旧实例（手动停止后合并耗时数分钟）完成时，
+          // streamState.recorder 往往已指向新一场录制——若按旧逻辑无差别 destroy
+          // streamState.recorder，会把正在录制的新实例销毁（流被kill、评论/特效帧被清理），
+          // 实测致 13-33-52 场录制 6 分钟后"中途突然中断"且评论区/特效区全部丢失。
+          const isCurrentRecorder = streamState.recorder === recorder;
           // 后台合并完成的旧实例不影响新录制的主状态
           const isDetachedMerge = streamState.mergingRecorder === recorder;
+          if (!isCurrentRecorder && !isDetachedMerge) {
+            // 既非当前实例也非摘离合并实例：迟到的旧实例事件，仅记录日志，不动主状态
+            logger.info(`[StreamManager] 忽略旧实例迟到的 stopped 事件: ${data && data.outputFile}`);
+            return;
+          }
           if (!isDetachedMerge) {
             streamState.status = streamState.isLive ? 'live' : 'offline';
           }

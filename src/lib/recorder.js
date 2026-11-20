@@ -76,6 +76,11 @@ class Recorder {
 
     this.recording = false;
     this._startingUp = false; // 启动中（init/取流/FFmpeg启动阶段），供 stopRecording 识别"启动挂起被取消"
+    // v2.13.30 收尾防重入：_finishRecording 可能耗时数分钟（大文件合并/标准化），
+    // 期间 stopRecording 重入/FFmpeg close 回调/destroy 都可能再次触发收尾或清理，
+    // 曾致合并输入（评论帧）被提前删除、合并失败只剩源视频。
+    this._finishPromise = null;  // 进行中的收尾 Promise（单例，重入时返回同一 Promise）
+    this._finishSettled = false; // 收尾是否已完成（destroy 据此决定是否需等待）
     this.ffmpegProcess = null;
     this.commentRenderer = null;
     this.leftPanelRenderer = null; // 左侧信息面板渲染器
@@ -357,32 +362,56 @@ class Recorder {
    * 获取媒体文件时长（毫秒）
    */
   static async _getMediaDuration(filePath) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const ffmpegPath = getFFmpegPath();
       const resolvedPath = ffmpegPath.resolvedPath || ffmpegPath;
       const proc = spawn(resolvedPath, ['-i', filePath, '-f', 'null', '-']);
 
+      // v2.13.30：Duration 在 FFmpeg 启动时的 stderr 头部即输出，收到立即解析并终止进程。
+      // 旧实现等进程 close 才解析——等于把整段视频完整解码一遍（-f null 仍逐帧解码），
+      // 9.2GB/3小时视频实测耗时 8 分钟，合并流程长时间"假死"并诱发停止流程重入踩踏。
       let stderr = '';
+      let settled = false;
+      const finish = (ms) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          if (proc.exitCode === null && !proc.killed) proc.kill('SIGKILL');
+        } catch (e) { /* ignore */ }
+        resolve(ms);
+      };
+      const parseDuration = (text) => {
+        const match = text.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+        if (!match) return null;
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const seconds = parseInt(match[3], 10);
+        const centiseconds = parseInt(match[4], 10);
+        return (hours * 3600 + minutes * 60 + seconds) * 1000 + centiseconds * 10;
+      };
+
+      // 30s 超时兜底：异常文件/磁盘卡顿时返回 0，由调用方回退墙钟估算
+      const timer = setTimeout(() => {
+        logger.warn(`[Recorder] 媒体时长探测超时(30s)，回退估算: ${path.basename(filePath)}`);
+        finish(0);
+      }, 30000);
+
       proc.stderr.on('data', (data) => {
+        if (settled) return;
         stderr += data.toString();
+        const ms = parseDuration(stderr);
+        if (ms !== null) { finish(ms); return; }
+        // 分片源（stream copy 未重写 moov）常报 Duration: N/A——继续等只会全解码，直接回退
+        if (/Duration:\s*N\/A/.test(stderr)) finish(0);
       });
 
       proc.on('close', () => {
-        // 解析 Duration: 00:00:00.00
-        const match = stderr.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
-        if (match) {
-          const hours = parseInt(match[1], 10);
-          const minutes = parseInt(match[2], 10);
-          const seconds = parseInt(match[3], 10);
-          const centiseconds = parseInt(match[4], 10);
-          const durationMs = (hours * 3600 + minutes * 60 + seconds) * 1000 + centiseconds * 10;
-          resolve(durationMs);
-        } else {
-          resolve(0);
-        }
+        const ms = parseDuration(stderr);
+        finish(ms !== null ? ms : 0);
       });
 
-      proc.on('error', () => resolve(0));
+      proc.on('error', () => finish(0));
     });
   }
 
@@ -866,7 +895,15 @@ class Recorder {
       await this._cleanup();
       return;
     }
-    if (!this.recording) return;
+    if (!this.recording) {
+      // v2.13.30：收尾（合并/标准化）可能仍在进行——重入停止必须等待其完成，
+      // 否则上层（stream-manager）会误以为已结束而提前 destroy，删除合并输入帧。
+      if (this._finishPromise && !this._finishSettled) {
+        logger.info('[Recorder] 停止重入：收尾仍在进行，等待合并/清理完成...');
+        try { await this._finishPromise; } catch (e) { /* 收尾错误已在其内部记录 */ }
+      }
+      return;
+    }
 
     this.recording = false;
     this._isManualStop = true; // 标记为手动停止，跳过5分钟合并延迟
@@ -880,8 +917,22 @@ class Recorder {
 
   /**
    * 完成录制流程：停止采集 → 合并 → 清理
+   * v2.13.30 单例防重入：stopRecording / FFmpeg close 回调 / 下播检测可能并发触发，
+   * 重入时返回同一 Promise，避免并发收尾互相删除对方的合并输入。
    */
-  async _finishRecording() {
+  _finishRecording() {
+    if (this._finishPromise) return this._finishPromise;
+    this._finishPromise = (async () => {
+      try {
+        await this._doFinishRecording();
+      } finally {
+        this._finishSettled = true;
+      }
+    })();
+    return this._finishPromise;
+  }
+
+  async _doFinishRecording() {
     // Step 1: 停止 FFmpeg 流录制
     await this._stopFFmpeg();
 
@@ -1056,7 +1107,7 @@ class Recorder {
     }
 
     // Step 4: 清理临时文件
-    await this._cleanupTempFiles();
+    await this._cleanupTempFiles({ fromFinish: true });
 
     // Step 5: 销毁评论区渲染器
     if (this.commentRenderer) {
@@ -2555,8 +2606,16 @@ class Recorder {
   /**
    * 清理临时文件（保留最终输出文件和中间文件）
    */
-  async _cleanupTempFiles() {
+  async _cleanupTempFiles(options = {}) {
     if (!this._tempDir) return;
+    // v2.13.30：收尾（合并）进行中时，非收尾自身的清理一律跳过——
+    // 否则 destroy/_cleanup 会删除合并正在读取的评论/特效帧，导致合并失败只剩源视频。
+    if (this._finishPromise && !this._finishSettled && !options.fromFinish) {
+      logger.warn('[Recorder] 收尾进行中，跳过临时文件清理（保护合并输入）');
+      return;
+    }
+    if (this._tempCleaned) return; // 幂等：避免 destroy 与收尾重复保存/清理
+    this._tempCleaned = true;
 
     // 保存中间文件到输出目录
     await this._saveIntermediateFiles();
@@ -2777,6 +2836,12 @@ class Recorder {
   async destroy() {
     this.recording = false;
     if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
+    // v2.13.30：收尾（合并）进行中时被 destroy（如上层旧实例事件串台/重复停止），
+    // 必须等收尾完成再清理——否则合并输入帧被删、合并进程被杀，整场评论区丢失。
+    if (this._finishPromise && !this._finishSettled) {
+      logger.warn('[Recorder] destroy 时收尾仍在进行，等待合并完成后再清理...');
+      try { await this._finishPromise; } catch (e) { /* 收尾错误已在其内部记录 */ }
+    }
     await this._cleanup();
   }
 
