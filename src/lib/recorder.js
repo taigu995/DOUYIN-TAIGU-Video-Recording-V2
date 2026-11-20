@@ -2694,13 +2694,35 @@ class Recorder {
     if (this._tempCleaned) return; // 幂等：避免 destroy 与收尾重复保存/清理
     this._tempCleaned = true;
 
-    // 保存中间文件到输出目录
-    await this._saveIntermediateFiles();
+    // 保存中间文件到输出目录（含评论/特效区视频的复制或现场编码，v2.13.32）
+    const report = await this._saveIntermediateFiles() || {};
+
+    // v2.13.32：有数据但保全失败的区域存在时，**不删除 .temp**——
+    // 旧逻辑无条件 rm -rf，评论/特效视频没生成时帧序列被一并删除，数据彻底丢失。
+    // 现在：保全失败 → 保留帧目录 + 补写恢复进度，下次启动自动恢复合并/重试保全。
+    const failedPanels = [];
+    if (report.comment === false) failedPanels.push('评论区');
+    if (report.left === false) failedPanels.push('特效区');
+    if (failedPanels.length > 0) {
+      logger.error(`[Recorder] ${failedPanels.join('/')}视频保全失败，保留临时目录以便恢复: ${this._tempDir}`);
+      try {
+        if (this._mergeProgressFile) {
+          const ci = this._lastCommentInfo || {};
+          this._saveMergeProgress({
+            phase: 'preserve-failed', progress: 0,
+            fps: ci.fps || 10,
+            commentInfo: ci,
+            commentStartEpoch: this._commentStartEpoch || ci.startEpoch || null,
+          });
+        }
+      } catch (e) { logger.warn('[Recorder] 写入保全失败恢复进度失败:', e.message); }
+      return;
+    }
 
     try {
       if (fs.existsSync(this._tempDir)) {
         fs.rmSync(this._tempDir, { recursive: true, force: true });
-        logger.info('[Recorder] 临时文件已清理');
+        logger.info('[Recorder] 临时文件已清理（所有区域视频已保全）');
       }
     } catch (e) {
       logger.warn('[Recorder] 清理临时文件失败:', e.message);
@@ -2708,10 +2730,24 @@ class Recorder {
   }
 
   /**
-   * 保存中间文件（stream.mp4 和 comment_video.mp4）到输出目录
+   * 保存中间文件到输出目录（v2.13.32 保全驱动重构）
+   *
+   * 旧逻辑：只复制合并成功后才存在的 comment_video.mp4/left_panel_video.mp4，
+   * 合并失败/取消/未走到合并时这两个文件不存在 → 评论区/特效区视频永远不生成，
+   * 帧序列又被清理 → 数据彻底丢失（用户反复反馈"销毁后没留下评论区特效区视频"）。
+   *
+   * 新逻辑：每个区域独立保全——
+   *   ① 输出已存在 → 跳过（幂等）
+   *   ② 已有编码 mp4 且时长校验通过 → 直接复制（正常路径秒级）
+   *   ③ 否则帧目录有帧 → 现场从帧序列编码生成留存视频
+   *   ④ 返回各区域保全结果，供 _cleanupTempFiles 决定是否可以删帧
+   *
+   * @returns {{stream: boolean|null, comment: boolean|null, left: boolean|null}}
+   *          true=已保全 false=有数据但保全失败 null=无此区域数据
    */
   async _saveIntermediateFiles() {
-    if (!this.outputFile || !this._tempDir) return;
+    const report = { stream: null, comment: null, left: null };
+    if (!this.outputFile || !this._tempDir) return report;
 
     const outputDir = path.dirname(this.outputFile);
     const baseName = path.basename(this.outputFile, '.mp4');
@@ -2721,7 +2757,9 @@ class Recorder {
     const streamDst = path.join(outputDir, `${baseName}_stream.mp4`);
     if (streamSrc && fs.existsSync(streamSrc)) {
       try {
-        if (streamSrc !== streamDst) {
+        if (fs.existsSync(streamDst) && fs.statSync(streamDst).size > 0) {
+          report.stream = true; // 已保全过，跳过（幂等）
+        } else {
           // 用标准化的副本来保存，避免分片源直接在播放器中打不开
           const normalizedTmp = path.join(this._tempDir, 'stream_normalized_tmp.mp4');
           await new Promise((resolve, reject) => {
@@ -2739,37 +2777,167 @@ class Recorder {
             nproc.on('error', reject);
           });
           logger.info(`[Recorder] 已保存直播流文件(标准化): ${streamDst}`);
-        } else {
-          fs.copyFileSync(streamSrc, streamDst);
+          report.stream = true;
         }
       } catch (e) {
         logger.warn(`[Recorder] 保存直播流文件失败: ${e.message}`);
+        report.stream = false;
       }
     }
 
-    // 保存 comment_video.mp4
-    const commentVideoSrc = path.join(this._tempDir, 'comment_video.mp4');
-    const commentVideoDst = path.join(outputDir, `${baseName}_comments.mp4`);
-    if (fs.existsSync(commentVideoSrc)) {
+    // 评论区/特效区：独立保全（复制或现场编码）
+    report.comment = await this._ensurePanelVideoSaved('comment');
+    report.left = await this._ensurePanelVideoSaved('left');
+    return report;
+  }
+
+  /**
+   * 保全单个区域（评论区/特效区）的留存视频
+   * @param {'comment'|'left'} kind
+   * @returns {boolean|null} true=已保全 false=有数据但失败 null=无数据
+   */
+  async _ensurePanelVideoSaved(kind) {
+    const isComment = kind === 'comment';
+    const label = isComment ? '评论区' : '特效区';
+    const framesDir = isComment ? this._commentFramesDir : this._leftPanelFramesDir;
+    const encodedSrc = path.join(this._tempDir, isComment ? 'comment_video.mp4' : 'left_panel_video.mp4');
+    const outputDir = path.dirname(this.outputFile);
+    const baseName = path.basename(this.outputFile, '.mp4');
+    const dst = path.join(outputDir, `${baseName}${isComment ? '_comments.mp4' : '_effect.mp4'}`);
+
+    // ① 输出已存在且非空 → 已保全过；但若帧目录还在，需校验完整性（防御历史半截文件）
+    const dstExists = fs.existsSync(dst) && fs.statSync(dst).size > 0;
+
+    // 盘点帧目录（磁盘扫描为准；评论区 frame_ 前缀，特效区 left_frame_ 前缀）
+    const frameRe = isComment ? /^frame_\d{6}\.jpg$/ : /^left_frame_\d{6}\.jpg$/;
+    let frameFiles = [];
+    if (framesDir && fs.existsSync(framesDir)) {
+      frameFiles = fs.readdirSync(framesDir).filter(f => frameRe.test(f));
+    }
+    const frameCount = frameFiles.length;
+    const hasEncoded = fs.existsSync(encodedSrc) && fs.statSync(encodedSrc).size > 0;
+    if (frameCount === 0 && !hasEncoded) {
+      // 无帧无中间编码文件：输出已存在则视为已保全，否则无数据不阻止清理
+      if (dstExists) {
+        logger.info(`[Recorder] ${label}留存视频已存在，跳过: ${path.basename(dst)}`);
+        return true;
+      }
+      return null;
+    }
+
+    // 预期时长（用于校验已编码 mp4 是否完整）：优先 timestamps 末值，回退 帧数/fps
+    let timestamps = null;
+    let expectedSec = 0;
+    let fps = (this._lastCommentInfo && this._lastCommentInfo.fps) || 0;
+    if (framesDir) {
       try {
-        fs.copyFileSync(commentVideoSrc, commentVideoDst);
-        logger.info(`[Recorder] 已保存评论区视频: ${commentVideoDst}`);
-      } catch (e) {
-        logger.warn(`[Recorder] 保存评论区视频失败: ${e.message}`);
+        const tsFile = path.join(framesDir, 'timestamps.json');
+        if (fs.existsSync(tsFile)) {
+          const arr = JSON.parse(fs.readFileSync(tsFile, 'utf8'));
+          if (Array.isArray(arr) && arr.length > 0) {
+            timestamps = arr;
+            const last = arr[arr.length - 1];
+            if (typeof last === 'number' && last > 0) expectedSec = last / 1000;
+            if (!fps && arr.length > 1) {
+              const span = (arr[arr.length - 1] - arr[0]) / 1000;
+              if (span > 0) fps = (arr.length - 1) / span;
+            }
+          }
+        }
+      } catch (_) { /* timestamps 读取失败走固定帧率 */ }
+    }
+    if (!fps || fps <= 0 || fps > 60) fps = 10;
+    if (expectedSec <= 0 && frameCount > 0) expectedSec = frameCount / fps;
+
+    // ①（续）留存输出已存在：有帧可对照时校验完整性，完整才跳过；半截文件走重编
+    if (dstExists) {
+      try {
+        const ms = await Recorder._getMediaDuration(dst);
+        const sec = ms / 1000;
+        if (sec > 0 && (expectedSec <= 0 || sec >= expectedSec * 0.9)) {
+          logger.info(`[Recorder] ${label}留存视频已存在且完整，跳过: ${path.basename(dst)}`);
+          return true;
+        }
+        logger.warn(`[Recorder] ${label}留存视频不完整(${(ms / 1000).toFixed(1)}s/预期${expectedSec.toFixed(1)}s)，将重新保全`);
+      } catch (_) { /* 校验失败则继续走复制/重编 */ }
+    }
+
+    // ② 已有编码 mp4 且完整（时长 ≥ 预期 90%）→ 直接复制
+    if (hasEncoded) {
+      let intact = false;
+      try {
+        const ms = await Recorder._getMediaDuration(encodedSrc);
+        const sec = ms / 1000;
+        intact = sec > 0 && (expectedSec <= 0 || sec >= expectedSec * 0.9);
+        if (!intact) {
+          logger.warn(`[Recorder] ${label}已编码视频不完整(实测${sec.toFixed(1)}s/预期${expectedSec.toFixed(1)}s)，将从帧序列重新编码`);
+        }
+      } catch (_) { intact = false; }
+      if (intact) {
+        try {
+          fs.copyFileSync(encodedSrc, dst);
+          logger.info(`[Recorder] 已保存${label}视频: ${dst}`);
+          return true;
+        } catch (e) {
+          logger.warn(`[Recorder] 复制${label}视频失败，尝试从帧编码: ${e.message}`);
+        }
       }
     }
 
-    // 保存 left_panel_video.mp4（特效区视频，三区域模式下生成）
-    const leftPanelVideoSrc = path.join(this._tempDir, 'left_panel_video.mp4');
-    const leftPanelVideoDst = path.join(outputDir, `${baseName}_effect.mp4`);
-    if (fs.existsSync(leftPanelVideoSrc)) {
-      try {
-        fs.copyFileSync(leftPanelVideoSrc, leftPanelVideoDst);
-        logger.info(`[Recorder] 已保存特效区视频: ${leftPanelVideoDst}`);
-      } catch (e) {
-        logger.warn(`[Recorder] 保存特效区视频失败: ${e.message}`);
+    // ③ 从帧序列现场编码（合并未执行/失败时也能留下区域视频）
+    if (frameCount > 0) {
+      const prefix = isComment ? 'frame_' : 'left_frame_';
+      logger.info(`[Recorder] 从帧序列编码${label}留存视频: ${frameCount}帧 → ${path.basename(dst)}`);
+      const ok = await this._encodeFramesToVideo(framesDir, prefix, frameCount, fps, timestamps, dst);
+      if (ok) {
+        logger.info(`[Recorder] 已保存${label}视频(帧编码): ${dst}`);
+        return true;
       }
+      logger.error(`[Recorder] ${label}视频帧编码失败，帧目录将保留以便恢复`);
+      return false;
     }
+    return false; // 有已编码文件但不完整且无帧可重编
+  }
+
+  /**
+   * 从 JPEG 帧序列编码留存视频（concat 真实时间轴优先，固定帧率兜底）
+   * 留存用途：CRF 18 + veryfast（速度优先，主输出仍用配置的高画质参数）
+   */
+  async _encodeFramesToVideo(framesDir, prefix, frameCount, fps, timestamps, outputFile) {
+    const encode = (useConcat) => new Promise((resolve) => {
+      let args;
+      if (useConcat) {
+        const listFile = path.join(framesDir, '_preserve_concat.txt');
+        const wrote = Recorder._buildConcatFile(framesDir, prefix, frameCount, timestamps, 0, listFile);
+        if (!wrote) { resolve(false); return; }
+        args = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-vsync', 'passthrough'];
+      } else {
+        args = ['-y', '-framerate', String(Math.max(1, Math.round(fps * 100) / 100)),
+          '-i', path.join(framesDir, `${prefix}%06d.jpg`)];
+      }
+      args = args.concat(['-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', outputFile]);
+      const proc = spawn(getFFmpegPath(), args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      this._mergeProcesses.add(proc);
+      let err = '';
+      proc.stderr.on('data', d => { err += d.toString(); });
+      const finish = (ok) => {
+        this._mergeProcesses.delete(proc);
+        if (!ok) {
+          // 删除半截输出：残留的损坏 mp4 会骗过"输出已存在则跳过"的幂等判断
+          try { if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile); } catch (_) { /* ignore */ }
+          logger.warn(`[Recorder] 留存编码失败(${useConcat ? 'concat' : '固定帧率'}): ${err.split('\n').slice(-4).join(' | ').slice(0, 300)}`);
+        }
+        resolve(ok);
+      };
+      proc.on('close', c => finish(c === 0 && fs.existsSync(outputFile) && fs.statSync(outputFile).size > 0));
+      proc.on('error', () => finish(false));
+    });
+
+    if (Array.isArray(timestamps) && timestamps.length >= frameCount && frameCount > 0) {
+      if (await encode(true)) return true;
+      logger.warn('[Recorder] concat 留存编码失败，降级固定帧率重试');
+    }
+    return await encode(false);
   }
 
   /**
