@@ -1054,9 +1054,15 @@ app.on('activate', () => {
   }
 });
 
-// 退出前清理
-app.on('before-quit', () => {
+// 退出前清理（v2.13.31 异步化：阻止退出直到资源清理完成，限时10秒兜底）
+let cleanupStarted = false;
+app.on('before-quit', async (event) => {
   app.isQuitting = true;
+  // 第二次 before-quit（清理完成后 app.exit 触发）直接放行
+  if (cleanupStarted) return;
+  cleanupStarted = true;
+  event.preventDefault();
+
   if (tray) {
     tray.destroy();
     tray = null;
@@ -1065,7 +1071,25 @@ app.on('before-quit', () => {
   if (globalManualMerger) {
     try { globalManualMerger.cancel(); } catch (e) { /* ignore */ }
   }
-  if (streamManager) {
-    streamManager.destroyAll();
+
+  // 旧版同步调用后立即退出，异步清理（终止FFmpeg/保存帧数据）来不及执行，
+  // 导致合并进程孤儿、评论帧无法恢复。现在等待清理完成再退出（限时10秒）。
+  const forceExitTimer = setTimeout(() => {
+    console.warn('资源清理超时，强制退出');
+    app.exit(0);
+  }, 10000);
+
+  try {
+    if (streamManager) {
+      // force：不等待合并完成，终止所有 FFmpeg 进程，保留 .temp 并写出恢复信息，
+      // 下次启动自动恢复合并（含正在录制中的场次）
+      await streamManager.destroyAll({ force: true });
+    }
+    console.log('资源清理完成');
+  } catch (error) {
+    console.error('资源清理出错:', error);
+  } finally {
+    clearTimeout(forceExitTimer);
+    app.exit(0);
   }
 });

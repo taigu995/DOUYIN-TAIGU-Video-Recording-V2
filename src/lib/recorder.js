@@ -116,6 +116,22 @@ class Recorder {
    * 保存合并进度到文件（用于崩溃恢复）
    * @param {object} progressData - 进度数据
    */
+  /**
+   * 取消下播后的5分钟合并延迟（v2.13.31）：用户显式停止/删除直播间/销毁时立即合并
+   */
+  _cancelMergeDelay() {
+    if (this._mergeDelayTimer) {
+      clearTimeout(this._mergeDelayTimer);
+      this._mergeDelayTimer = null;
+      logger.info('[Recorder] 已取消5分钟合并延迟，立即进入合并');
+    }
+    if (this._mergeDelayResolve) {
+      const resolve = this._mergeDelayResolve;
+      this._mergeDelayResolve = null;
+      resolve();
+    }
+  }
+
   _saveMergeProgress(progressData) {
     if (!this._mergeProgressFile) return;
     try {
@@ -129,6 +145,9 @@ class Recorder {
         commentFramesDir: this._commentFramesDir,
         leftPanelFramesDir: this._leftPanelFramesDir,
         leftPanelInfo: this._leftPanelInfo,
+        commentStartEpoch: this._commentStartEpoch || null,
+        // v2.13.31：保存评论区真实尺寸/帧率等信息，恢复合并时保持布局与时间轴保真
+        commentInfo: this._lastCommentInfo || null,
         timestamp: Date.now()
       };
       fs.writeFileSync(this._mergeProgressFile, JSON.stringify(data, null, 2), 'utf-8');
@@ -211,6 +230,7 @@ class Recorder {
     tempRecorder._tempDir = progressData.tempDir;
     tempRecorder._tempStreamFile = progressData.tempStreamFile;
     tempRecorder._commentFramesDir = progressData.commentFramesDir;
+    tempRecorder._commentStartEpoch = progressData.commentStartEpoch || null;
     tempRecorder._leftPanelFramesDir = progressData.leftPanelFramesDir;
     tempRecorder.outputFile = progressData.outputFile;
     tempRecorder._mergeProgressFile = path.join(progressData.tempDir, 'merge_progress.json');
@@ -229,12 +249,20 @@ class Recorder {
         resuming: true
       });
 
-      const commentInfo = {
+      // v2.13.31：优先使用进度文件中保存的真实评论信息（尺寸/scaleH/startEpoch），
+      // 避免恢复合并时评论区被拉伸变形、三路时间轴偏移丢失
+      const savedCommentInfo = progressData.commentInfo || {};
+      const commentInfo = Object.assign({
         frameCount: actualFrameCount,
         fps: progressData.fps || 30,
         width: COMMENT_WIDTH,
         height: COMMENT_HEIGHT
-      };
+      }, savedCommentInfo, {
+        frameCount: actualFrameCount, // 帧数以磁盘实际扫描为准
+        outputDir: tempRecorder._commentFramesDir,
+        startEpoch: savedCommentInfo.startEpoch || progressData.commentStartEpoch || null
+      });
+      tempRecorder._lastCommentInfo = commentInfo;
 
       // 恢复左侧面板信息（如果有）
       const leftPanelInfo = progressData.leftPanelInfo || null;
@@ -243,6 +271,14 @@ class Recorder {
 
       logger.info(`[Merge-Resume] 合并恢复成功: ${progressData.outputFile}`);
       onComplete({ success: true, outputFile: progressData.outputFile, resumed: true });
+
+      // v2.13.31：恢复合并成功后清理 .temp（原逻辑残留帧+流副本，双倍占用磁盘）
+      try {
+        await tempRecorder._cleanupTempFiles({ fromFinish: true });
+        logger.info(`[Merge-Resume] 临时文件已清理: ${progressData.tempDir}`);
+      } catch (e) {
+        logger.warn('[Merge-Resume] 清理临时文件失败:', e.message);
+      }
       return true;
     } catch (err) {
       logger.error(`[Merge-Resume] 合并恢复失败: ${err.message}`);
@@ -896,6 +932,8 @@ class Recorder {
       return;
     }
     if (!this.recording) {
+      // v2.13.31：用户显式停止时取消下播后的5分钟合并延迟，立即进入合并
+      this._cancelMergeDelay();
       // v2.13.30：收尾（合并/标准化）可能仍在进行——重入停止必须等待其完成，
       // 否则上层（stream-manager）会误以为已结束而提前 destroy，删除合并输入帧。
       if (this._finishPromise && !this._finishSettled) {
@@ -953,6 +991,17 @@ class Recorder {
       this._leftPanelInfo = leftPanelInfo;
     }
 
+    // Step 2.6: 捕获已全部停止，立即销毁评论区离屏窗口（v2.13.31）
+    // 合并只依赖帧文件不需要窗口；提前销毁可释放内存，并避免手动停止后立即重开新场时，
+    // 同账号两个离屏窗口同时打开直播间页导致新场评论区触发账号冲突回滚。
+    if (this.commentRenderer) {
+      try {
+        await this.commentRenderer.destroy(); // 内部 stopCapture 幂等，直接返回缓存结果
+      } catch (e) { logger.warn('[Recorder] 销毁评论区窗口失败:', e.message); }
+      this.commentRenderer = null;
+      this.captureWindow = null;
+    }
+
     // Step 3: 合并直播流和评论区
     // v2.13.29 分段直写后 _tempStreamFile 指向最后一段；极端场景（停滞重启后立即下播）该文件可能
     // 尚未落盘而首段 stream.mp4 已有内容——流存在性改为扫描首段+所有分段任一非空。
@@ -990,14 +1039,10 @@ class Recorder {
 
     // 流中断（网络波动等）场景：直播间可能仍在直播。
     // 这里不再让上层干等合并完成（可能数分钟）才重启录制，而是：
-    // 1) 提前销毁评论区渲染窗口（帧已保存到磁盘，合并不再需要窗口，避免与新录制的评论窗口冲突）
+    // 1) 评论区窗口已在 Step2.6 统一销毁（帧已保存到磁盘，合并不再需要窗口）
     // 2) 立即通知上层「流中断」，由上层马上检测并重启新一轮录制
     // 3) 本实例的合并/清理继续在后台执行，完成后照常发 'stopped'
     if (this._stopReason === 'stream-interrupted') {
-      if (this.commentRenderer) {
-        try { await this.commentRenderer.destroy(); } catch (e) { /* ignore */ }
-        this.commentRenderer = null;
-      }
       if (this.leftPanelRenderer) {
         try { await this.leftPanelRenderer.destroy(); } catch (e) { /* ignore */ }
         this.leftPanelRenderer = null;
@@ -1026,7 +1071,15 @@ class Recorder {
         logger.info(`[Recorder] 手动停止，立即开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
       } else {
         logger.info(`[Recorder] 等待 5 分钟后开始合并直播流和评论区... (副本: commentInfo=${commentInfoFrameCount}帧, 实际帧文件=${commentFrameFiles})`);
-        await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000)); // 5 分钟
+        // v2.13.31：延迟可取消——用户显式停止/删除直播间/强制退出时立即合并，不再干等5分钟
+        await new Promise(resolve => {
+          this._mergeDelayResolve = resolve;
+          this._mergeDelayTimer = setTimeout(() => {
+            this._mergeDelayTimer = null;
+            this._mergeDelayResolve = null;
+            resolve();
+          }, 5 * 60 * 1000);
+        });
       }
       logger.info('[Recorder] 开始合并直播流和评论区...');
       this.onStatusChange('merging', {
@@ -1070,6 +1123,8 @@ class Recorder {
           width: 0,
           height: 0
         } : null);
+        // v2.13.31：保存合并输入信息快照（退出恢复/进度文件携带真实评论尺寸与帧率）
+        this._lastCommentInfo = mergeCommentInfo;
         await this._mergeStreamAndComments(mergeCommentInfo, undefined, undefined, undefined, mergeLeftPanelInfo);
         this._mergeResult = { success: true, outputFile: this.outputFile };
       } catch (mergeErr) {
@@ -1153,6 +1208,10 @@ class Recorder {
    */
   async _getFullStreamFile() {
     if (!this._tempDir) return this._tempStreamFile;
+    // v2.13.31：拼接结果缓存（合并与 _saveIntermediateFiles 各调一次，避免大文件重复拼接）
+    if (this._fullStreamFileCache && fs.existsSync(this._fullStreamFileCache)) {
+      return this._fullStreamFileCache;
+    }
     let segFiles = [];
     try {
       segFiles = fs.readdirSync(this._tempDir)
@@ -1170,7 +1229,10 @@ class Recorder {
       const p = path.join(this._tempDir, f);
       try { if (fs.statSync(p).size > 0) parts.push(p); } catch (e) { /* ignore */ }
     }
-    if (parts.length <= 1) return parts.length === 1 ? parts[0] : this._tempStreamFile;
+    if (parts.length <= 1) {
+      this._fullStreamFileCache = parts.length === 1 ? parts[0] : this._tempStreamFile;
+      return this._fullStreamFileCache;
+    }
 
     const fullFile = path.join(this._tempDir, 'stream_full.mp4');
     const listFile = path.join(this._tempDir, '_stream_concat.txt');
@@ -1199,10 +1261,25 @@ class Recorder {
       });
       proc.on('error', reject);
     }).catch((e) => {
-      // 拼接失败兜底：用最后一段（行为同旧版，至少保留最近内容），日志明确提示
-      logger.error(`[Recorder] 流分段拼接失败，回退使用最后一段（前 ${parts.length - 1} 段内容丢失）: ${e.message}`);
+      // 拼接失败兜底：改用内容最多的一段（v2.13.31 修正——原返回首段 _tempStreamFile，与注释不符且可能大量丢内容）
+      logger.error(`[Recorder] 流分段拼接失败，回退使用单段（其余段内容丢失）: ${e.message}`);
     });
-    return (fs.existsSync(fullFile) && fs.statSync(fullFile).size > 0) ? fullFile : this._tempStreamFile;
+    let result = this._tempStreamFile;
+    if (fs.existsSync(fullFile) && fs.statSync(fullFile).size > 0) {
+      result = fullFile;
+    } else if (parts.length > 1) {
+      // 拼接失败：取体积最大的一段，尽量保留更多录制内容
+      let maxSize = -1;
+      for (const p of parts) {
+        try {
+          const s = fs.statSync(p).size;
+          if (s > maxSize) { maxSize = s; result = p; }
+        } catch (e) { /* ignore */ }
+      }
+      logger.warn(`[Recorder] 回退使用最大分段: ${path.basename(result)} (${(maxSize / 1024 / 1024).toFixed(1)}MB)`);
+    }
+    this._fullStreamFileCache = result;
+    return result;
   }
 
   async _normalizeStream(outputFile) {
@@ -2779,7 +2856,8 @@ class Recorder {
     });
   }
 
-  async _cleanup() {
+  async _cleanup(options = {}) {
+    const { preserveTempFiles = false } = options;
     // 停止 FFmpeg
     if (this.ffmpegProcess) {
       try {
@@ -2824,18 +2902,71 @@ class Recorder {
       this.commentRenderer = null;
     }
 
-    // 清理临时文件
-    await this._cleanupTempFiles();
+    // 清理临时文件（force 销毁时保留 .temp，供下次启动恢复合并）
+    if (preserveTempFiles) {
+      logger.info(`[Recorder] 已保留临时文件目录（供恢复合并）: ${this._tempDir}`);
+    } else {
+      await this._cleanupTempFiles();
+    }
 
     await new Promise(r => setTimeout(r, 300));
   }
 
   /**
    * 销毁录制器
+   * @param {Object} options - { force: true } 应用退出等强制销毁场景：
+   *   不等待收尾/合并完成，立即终止所有 FFmpeg 进程（含合并进程，防孤儿），
+   *   保留 .temp 临时文件并写出合并进度，供下次启动自动恢复合并（v2.13.31）
    */
-  async destroy() {
+  async destroy(options = {}) {
     this.recording = false;
     if (this._stallWatchdog) { clearInterval(this._stallWatchdog); this._stallWatchdog = null; }
+    this._cancelMergeDelay(); // v2.13.31：销毁时取消5分钟合并延迟（普通destroy等收尾、force直接终止）
+
+    if (options.force) {
+      logger.warn('[Recorder] 强制销毁（应用退出）：终止进程、保留临时文件供恢复合并');
+      // 录制中/收尾中退出：保存评论帧数据（timestamps）并写合并进度，确保下次启动可恢复
+      if (!this._finishSettled) {
+        try {
+          let frameCount = 0;
+          let fps = (this._lastCommentInfo && this._lastCommentInfo.fps) || 10;
+          let startEpoch = this._commentStartEpoch || null;
+          if (this.commentRenderer) {
+            const commentInfo = await this.commentRenderer.stopCapture(); // 幂等
+            if (commentInfo) {
+              frameCount = commentInfo.frameCount || 0;
+              fps = commentInfo.fps || fps;
+              startEpoch = commentInfo.startEpoch || startEpoch;
+              this._lastCommentInfo = commentInfo;
+            }
+          }
+          // 评论渲染器已销毁（如收尾的合并延迟中）：从磁盘帧目录扫描实际帧数
+          if (frameCount === 0 && this._commentFramesDir && fs.existsSync(this._commentFramesDir)) {
+            try {
+              frameCount = fs.readdirSync(this._commentFramesDir)
+                .filter(f => /^frame_\d{6}\.jpg$/.test(f)).length;
+            } catch (e) { /* ignore */ }
+          }
+          if (frameCount > 0) {
+            this._saveMergeProgress({
+              phase: this._finishPromise ? 'interrupted' : 'recording-exit',
+              progress: 0,
+              totalFrames: frameCount,
+              fps,
+              commentStartEpoch: startEpoch,
+              startTime: this.startTime || Date.now(),
+              message: '应用退出中断，待恢复合并'
+            });
+            logger.info(`[Recorder] 退出前已保存合并恢复信息（${frameCount} 帧）`);
+          }
+        } catch (e) {
+          logger.warn('[Recorder] 退出前保存合并恢复信息失败:', e.message);
+        }
+      }
+      await this._cleanup({ preserveTempFiles: true });
+      return;
+    }
+
     // v2.13.30：收尾（合并）进行中时被 destroy（如上层旧实例事件串台/重复停止），
     // 必须等收尾完成再清理——否则合并输入帧被删、合并进程被杀，整场评论区丢失。
     if (this._finishPromise && !this._finishSettled) {

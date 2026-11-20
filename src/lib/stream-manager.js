@@ -880,7 +880,9 @@ class StreamManager {
               const progressFile = path.join(fullPath, 'merge_progress.json');
               if (fs.existsSync(progressFile)) {
                 const progressData = Recorder.loadMergeProgress(progressFile);
-                if (progressData && progressData.phase !== 'init' && progressData.progress < 100) {
+                // v2.13.31 放宽 phase 限制：init（布局/探测阶段中断）与 recording-exit/interrupted
+                // （应用退出中断）同样可恢复——流+帧数据完整，resumeMerge 内部做文件校验
+                if (progressData && progressData.progress < 100) {
                   // 找到未完成的合并任务
                   logger.info(`[StreamManager] 发现未完成的合并任务: ${progressData.outputFile}`);
                   logger.info(`[StreamManager] 进度: ${progressData.phase} ${progressData.progress}%`);
@@ -966,12 +968,17 @@ class StreamManager {
         // 强制重置：先停止现有录制
         logger.warn(`[StreamManager] 强制重置录制: ${streamState.info.streamerName} (${roomId})`);
         try {
-          await streamState.recorder.stopRecording();
-          streamState.recorder.destroy();
+          // v2.13.31：局部变量持有旧实例——await 期间其自然 stopped 会将
+          // streamState.recorder 置 null，直接用当前引用 destroy 会抛 TypeError
+          const stoppingRecorder = streamState.recorder;
+          await stoppingRecorder.stopRecording();
+          try { stoppingRecorder.destroy(); } catch (e) { /* ignore */ }
         } catch (e) {
           logger.warn(`[StreamManager] 强制重置时清理旧录制出错: ${e.message}`);
         }
-        streamState.recorder = null;
+        if (streamState.recorder && !streamState.recorder.recording) {
+          streamState.recorder = null;
+        }
       } else {
         logger.warn(`[StreamManager] 已在录制中: ${streamState.info.streamerName} (${roomId})`);
         throw new Error('该直播间正在录制中，请先停止当前录制');
@@ -1290,9 +1297,7 @@ class StreamManager {
         logger.info(`[StreamManager] 录制记录已保存: ${outputFile}, 大小: ${fileSize} bytes, 合并: ${record.merged}`);
       }
     }
-    
-    streamState.currentRecordingStart = null;
-    
+
     // 在销毁 recorder 之前读取结果
     const resultData = {
       hasAudio,
@@ -1303,8 +1308,16 @@ class StreamManager {
     };
     
     try { recorder.destroy(); } catch (e) { /* ignore */ }
-    streamState.recorder = null;
-    streamState.status = streamState.isLive ? 'live' : 'offline';
+    // v2.13.31：await 停止期间可能发生摘离+新录制（主播复播/手动重开），
+    // 仅当 streamState.recorder 仍是本实例时才清空——否则会把新实例引用误置 null，
+    // 使其成为 manager 管不到的孤儿（UI 显示未录制、周期检测可能重复开录）
+    if (streamState.recorder === recorder) {
+      streamState.recorder = null;
+      streamState.currentRecordingStart = null;
+      streamState.status = streamState.isLive ? 'live' : 'offline';
+    } else {
+      logger.info(`[StreamManager] 停止流程完成时已存在新录制实例，保留其引用与状态: ${streamState.info.streamerName}`);
+    }
     this.notifyUpdate();
 
     // 停止录制后不在这里立即重启：如果是主播下播则不应重启；
@@ -1751,8 +1764,10 @@ class StreamManager {
 
   /**
    * 销毁所有资源
+   * @param {Object} options - { force: true } 应用退出强制销毁：不等待合并完成，
+   *   终止所有 FFmpeg 进程、保留 .temp 并写出恢复信息，供下次启动自动恢复合并（v2.13.31）
    */
-  async destroyAll() {
+  async destroyAll(options = {}) {
     for (const [roomId, state] of this.streams) {
       // 停止监控定时器
       if (state.timer) {
@@ -1761,15 +1776,15 @@ class StreamManager {
       }
       // 强制销毁录制器（终止FFmpeg进程）
       if (state.recorder) {
-        try { 
-          await state.recorder.destroy(); 
+        try {
+          await state.recorder.destroy(options);
         } catch (e) { /* ignore */ }
         state.recorder = null;
       }
       // 销毁后台合并中的旧录制实例
       if (state.mergingRecorder) {
         try {
-          await state.mergingRecorder.destroy();
+          await state.mergingRecorder.destroy(options);
         } catch (e) { /* ignore */ }
         state.mergingRecorder = null;
       }
