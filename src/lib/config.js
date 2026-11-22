@@ -20,6 +20,8 @@ const defaults = {
   // 合并设置
   mergeCrf: 15,           // 合并视频 CRF（越低质量越高）
   mergePreset: 'medium',  // 合并视频编码预设
+  mergeEncoder: 'auto',   // 合并编码器：auto=自动检测硬编/cpu=纯CPU/nvenc/qsv/amf
+  mergeThreads: 0,        // 编码线程数（0=自动：核数-2，>0 限制线程降低CPU占用）
   // 账号列表
   accounts: [],           // [{ id, nickname, cookies: [{name, value, domain, path, ...}] }]
   streams: []             // 已添加的直播间列表
@@ -61,6 +63,8 @@ function getConfig() {
     commentJpegQuality: s.get('commentJpegQuality'),
     mergeCrf: s.get('mergeCrf'),
     mergePreset: s.get('mergePreset'),
+    mergeEncoder: s.get('mergeEncoder'),
+    mergeThreads: s.get('mergeThreads'),
     accounts: s.get('accounts') || [],
     streams: s.get('streams') || []
   };

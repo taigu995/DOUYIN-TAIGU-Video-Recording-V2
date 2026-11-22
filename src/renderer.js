@@ -32,6 +32,10 @@ const elements = {
   btnBrowse: document.getElementById('btn-browse'),
   outputFolder: document.getElementById('output-folder'),
   checkInterval: document.getElementById('check-interval'),
+  mergeEncoder: document.getElementById('merge-encoder'),
+  mergePreset: document.getElementById('merge-preset'),
+  mergeCrf: document.getElementById('merge-crf'),
+  mergeThreads: document.getElementById('merge-threads'),
   autoStart: document.getElementById('auto-start'),
   minimizeToTray: document.getElementById('minimize-to-tray'),
   launchAtLogin: document.getElementById('launch-at-login'),
@@ -134,6 +138,11 @@ async function init() {
       if (config) {
         elements.outputFolder.value = config.outputFolder || '';
         elements.checkInterval.value = config.checkInterval || 30;
+        // v2.13.34 合并编码设置
+        if (elements.mergeEncoder) elements.mergeEncoder.value = config.mergeEncoder || 'auto';
+        if (elements.mergePreset) elements.mergePreset.value = config.mergePreset || 'medium';
+        if (elements.mergeCrf) elements.mergeCrf.value = config.mergeCrf || 15;
+        if (elements.mergeThreads) elements.mergeThreads.value = config.mergeThreads || 0;
         elements.autoStart.checked = config.autoRecord !== false;
         elements.minimizeToTray.checked = config.minimizeToTray !== false;
         elements.launchAtLogin.checked = config.launchAtLogin === true;
@@ -521,6 +530,11 @@ async function handleSaveSettings() {
   if (isElectron) {
     await window.electronAPI.setConfig('outputFolder', elements.outputFolder.value);
     await window.electronAPI.setConfig('checkInterval', parseInt(elements.checkInterval.value) || 30);
+    // v2.13.34 合并编码设置
+    if (elements.mergeEncoder) await window.electronAPI.setConfig('mergeEncoder', elements.mergeEncoder.value);
+    if (elements.mergePreset) await window.electronAPI.setConfig('mergePreset', elements.mergePreset.value);
+    if (elements.mergeCrf) await window.electronAPI.setConfig('mergeCrf', Math.min(28, Math.max(12, parseInt(elements.mergeCrf.value) || 15)));
+    if (elements.mergeThreads) await window.electronAPI.setConfig('mergeThreads', Math.max(0, parseInt(elements.mergeThreads.value) || 0));
     await window.electronAPI.setConfig('autoRecord', elements.autoStart.checked);
     await window.electronAPI.setConfig('minimizeToTray', elements.minimizeToTray.checked);
     await window.electronAPI.setConfig('launchAtLogin', elements.launchAtLogin.checked);

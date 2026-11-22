@@ -168,6 +168,37 @@
           <input type="number" id="check-interval" class="input-text" min="10" max="300" value="30">
         </div>
         <div class="setting-item">
+          <label>合并视频编码器</label>
+          <select id="merge-encoder" class="input-text">
+            <option value="auto">自动检测（优先硬件加速，降低CPU占用）</option>
+            <option value="cpu">纯 CPU 编码（兼容性最好）</option>
+            <option value="nvenc">NVIDIA NVENC 硬件加速</option>
+            <option value="qsv">Intel QSV 核显加速</option>
+            <option value="amf">AMD AMF 硬件加速</option>
+          </select>
+          <p class="setting-hint">硬件加速可大幅降低合并时的 CPU 占用并提升速度；不可用时自动回退 CPU</p>
+        </div>
+        <div class="setting-item">
+          <label>合并编码预设（CPU 编码时生效）</label>
+          <select id="merge-preset" class="input-text">
+            <option value="ultrafast">极快（体积最大，CPU 占用最低）</option>
+            <option value="veryfast">很快（推荐：速度与体积平衡）</option>
+            <option value="fast">较快</option>
+            <option value="medium" selected>中等（默认，体积较小）</option>
+            <option value="slow">慢速（体积更小，CPU 占用高）</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label>合并视频质量 CRF（15~23，越小越清晰）</label>
+          <input type="number" id="merge-crf" class="input-text" min="12" max="28" value="15">
+          <p class="setting-hint">15 接近原画质；18~20 视觉几乎无损，编码更快、体积更小</p>
+        </div>
+        <div class="setting-item">
+          <label>编码线程数（0=自动）</label>
+          <input type="number" id="merge-threads" class="input-text" min="0" max="32" value="0">
+          <p class="setting-hint">自动为 CPU 核数-2；合并时电脑卡顿可改为 4 或 2，降低 CPU 占用（合并会更慢）</p>
+        </div>
+        <div class="setting-item">
           <label class="checkbox-label">
             <input type="checkbox" id="auto-start" checked>
             <span>检测到开播自动开始录制</span>

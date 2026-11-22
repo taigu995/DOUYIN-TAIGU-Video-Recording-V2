@@ -17,6 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const { generateFileName } = require('./douyin-utils');
 const { getConfig } = require('./config');
+const videoEncoder = require('./video-encoder');
 const { getLogger } = require('./logger');
 const { CommentRenderer, COMMENT_WIDTH, COMMENT_HEIGHT } = require('./comment-renderer');
 const { LeftPanelRenderer, LEFT_PANEL_WIDTH, LEFT_PANEL_HEIGHT } = require('./left-panel-renderer');
@@ -1886,7 +1887,33 @@ class Recorder {
       }
     }
 
-    await this._runFFmpeg(resolvedPath, mergeArgs, 'Merge-Final', mergeFinalDurationMs, '合并视频');
+    // v2.13.34 编码器选择：主输出是全量重编码（CPU 开销大头），支持 NVENC/QSV/AMF 硬编自动探测；
+    // 同时让 mergeCrf/mergePreset 配置真正生效（此前尾部硬编码 medium/crf15）。
+    // mergeArgs 四分支尾部统一为 '-c:v libx264 -preset medium -crf 15'（6 个元素），统一替换为所选编码器参数。
+    const mergeConfig = getConfig();
+    const enc = await videoEncoder.resolve(resolvedPath, mergeConfig);
+    logger.info(`[Merge] 合并编码器: ${enc.label}${enc.encoder === 'cpu' ? ` (preset=${mergeConfig.mergePreset || 'medium'}, crf=${mergeConfig.mergeCrf || 15})` : ''}`);
+    const buildFinalArgs = (encArgs) => {
+      const args = mergeArgs.slice();
+      const vIdx = args.indexOf('-c:v');
+      if (vIdx >= 0) args.splice(vIdx, 6, ...encArgs);
+      const tIdx = args.indexOf('-threads');
+      if (tIdx >= 0) args[tIdx + 1] = String(videoEncoder.outputThreads(mergeConfig));
+      return args;
+    };
+    try {
+      await this._runFFmpeg(resolvedPath, buildFinalArgs(enc.args), 'Merge-Final', mergeFinalDurationMs, '合并视频');
+    } catch (mergeErr) {
+      if (enc.encoder !== 'cpu') {
+        // 硬编运行失败（驱动/尺寸/资源问题）→ 标记并回退 CPU 重试，不直接放弃合并
+        videoEncoder.markFailed(enc.encoder);
+        logger.warn(`[Merge] 硬编合并失败(${mergeErr.message})，回退 CPU 重试`);
+        this._saveMergeProgress({ phase: 'final', progress: 0, fps: commentInfo.fps, totalFrames: commentInfo.frameCount });
+        await this._runFFmpeg(resolvedPath, buildFinalArgs(videoEncoder.cpuArgs(mergeConfig)), 'Merge-Final-CPU', mergeFinalDurationMs, '合并视频(CPU回退)');
+      } else {
+        throw mergeErr;
+      }
+    }
 
     if (!fs.existsSync(outputFile)) {
       throw new Error('最终视频合并失败');
