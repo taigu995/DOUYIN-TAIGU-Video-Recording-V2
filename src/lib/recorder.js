@@ -1768,9 +1768,12 @@ class Recorder {
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1,tpad=stop_mode=clone:stop_duration=${paddingDurationSec}[stream];` +
             `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[2:v]setpts=PTS+(${offsetPts})/TB,scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
-            `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
-            `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
-            `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
+            // v2.13.33 卡顿修复：必须以直播流为 overlay 主输入（pad 扩展画布，stream 位于 x=leftW+sep）。
+            // 旧写法以 leftpanel(约3.4fps) pad 为底再 overlay stream，overlay 输出节奏跟随主输入，
+            // 45/60fps 直播流被降采样到特效区帧率 → 源画面严重卡顿（音频轨不受影响）
+            `[stream]pad=${totalWithSep}:${streamScaleH}:${leftPanelScaleW + separatorW}:0:black[canvas];` +
+            `[canvas][leftpanel]overlay=0:0:eof_action=repeat[c1];` +
+            `[c1]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c2];` +
             `[c2]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c3];` +
             `[c3][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
           '-map', '[out]',
@@ -1831,9 +1834,10 @@ class Recorder {
             `[0:v]setpts=PTS-STARTPTS,fps=${streamRes.fps || 30},scale=${streamScaleW}:${streamScaleH},setsar=1[stream];` +
             `[1:v]setpts=PTS+(${offsetPts})/TB,scale=${commentScaleW}:${commentScaleH},setsar=1[comments];` +
             `[2:v]setpts=PTS+(${offsetPts})/TB,scale=${leftPanelScaleW}:${leftPanelScaleH},setsar=1[leftpanel];` +
-            `[leftpanel]pad=${totalWithSep}:${streamScaleH}:0:0:black[canvas];` +
-            `[canvas]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c1];` +
-            `[c1][stream]overlay=${leftPanelScaleW + separatorW}:0:eof_action=repeat[c2];` +
+            // v2.13.33 卡顿修复：以直播流为 overlay 主输入（同上，避免低帧率特效区拖垮源画面帧率）
+            `[stream]pad=${totalWithSep}:${streamScaleH}:${leftPanelScaleW + separatorW}:0:black[canvas];` +
+            `[canvas][leftpanel]overlay=0:0:eof_action=repeat[c1];` +
+            `[c1]drawbox=x=${leftPanelScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c2];` +
             `[c2]drawbox=x=${leftPanelScaleW + separatorW + streamScaleW}:y=0:w=${separatorW}:h=${streamScaleH}:color=black@0.5:t=fill[c3];` +
             `[c3][comments]overlay=${leftPanelScaleW + separatorW + streamScaleW + separatorW}:0:eof_action=repeat[out]`,
           '-map', '[out]',
