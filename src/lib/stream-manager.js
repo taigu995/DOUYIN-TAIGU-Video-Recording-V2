@@ -483,9 +483,19 @@ class StreamManager {
               const json = JSON.parse(data);
               const roomInfo = json?.data?.data?.[0];
 
+              // v2.13.35：响应结构异常（风控/接口变动/空数据）≠ 下播！
+              // 旧逻辑 roomInfo 缺失时 status===2 为 false → 误判下播，
+              // 曾致开心元元场启动阶段被误取消（实际主播在播）。
+              // 结构异常应返回 null（状态未知），走页面检测回退。
+              const statusNum = Number(roomInfo?.status);
+              if (!roomInfo || !Number.isFinite(statusNum)) {
+                logger.warn(`[API] 响应结构异常，无法判定直播状态（回退页面检测）: roomId=${roomId}, hasData=${!!json?.data}, roomInfo=${roomInfo ? 'exists' : 'missing'}, status=${roomInfo?.status}`);
+                finish(null);
+                return;
+              }
+
               // status: 2 = 直播中, 其他 = 未开播
-              const status = roomInfo?.status;
-              const isLive = status === 2;
+              const isLive = statusNum === 2;
 
               // 获取主播名称
               const owner = roomInfo?.owner;
@@ -629,17 +639,22 @@ class StreamManager {
 
         const wasLive = streamState.isLive;
 
-        // 录制中检测到"下播"时需二次确认：API 抖动/主播断流重推间隙都可能瞬间返回 false，
+        // 录制中/启动中检测到"下播"时需二次确认：API 抖动/主播断流重推间隙都可能瞬间返回 false，
         // 一次误判就停录代价很大（停录+合并期间无法重录，造成长时间漏录）。
         // 首次检测到 false 时保持原状态不变，15s 后复查；连续 2 次均为 false 才确认下播。
-        if (!isLive && wasLive && streamState.recorder && streamState.recorder.recording) {
+        // v2.13.35：二次确认扩展到启动阶段(_startingUp)——启动期流URL获取较慢，
+        // 一次 API 误判不应直接取消启动（开心元元场教训）。
+        const recForConfirm = streamState.recorder;
+        const isRecordingActive = recForConfirm && (recForConfirm.recording || recForConfirm._startingUp);
+        if (!isLive && wasLive && isRecordingActive) {
           streamState._offlineStreak = (streamState._offlineStreak || 0) + 1;
           if (streamState._offlineStreak < 2) {
             streamState.lastCheck = Date.now();
-            logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，录制中需确认)，15s后复查`);
+            logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，录制/启动中需确认)，15s后复查`);
             setTimeout(() => {
-              // 复查条件：仍在录制且尚未确认下播
-              if (streamState.recorder && streamState.recorder.recording && streamState.isLive) {
+              // 复查条件：仍在录制/启动且尚未确认下播
+              const rec = streamState.recorder;
+              if (rec && (rec.recording || rec._startingUp) && streamState.isLive) {
                 this.checkLiveStatus(streamState).catch(err => {
                   logger.warn(`[Monitor] 下播确认复查失败: ${err.message}`);
                 });
@@ -803,14 +818,18 @@ class StreamManager {
 
     const wasLive = streamState.isLive;
 
-    // 录制中检测到"下播"需二次确认（页面误判/断流重推间隙防护），与 API 分支同策略
-    if (!isLive && wasLive && streamState.recorder && streamState.recorder.recording) {
+    // 录制中/启动中检测到"下播"需二次确认（页面误判/断流重推间隙防护），与 API 分支同策略
+    // v2.13.35：覆盖启动阶段(_startingUp)
+    const recForConfirm = streamState.recorder;
+    const isRecordingActive = recForConfirm && (recForConfirm.recording || recForConfirm._startingUp);
+    if (!isLive && wasLive && isRecordingActive) {
       streamState._offlineStreak = (streamState._offlineStreak || 0) + 1;
       if (streamState._offlineStreak < 2) {
         streamState.lastCheck = Date.now();
-        logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，页面检测/录制中需确认)，15s后复查`);
+        logger.warn(`[Monitor] ${info.streamerName} 疑似下播(第${streamState._offlineStreak}次，页面检测/录制启动中需确认)，15s后复查`);
         setTimeout(() => {
-          if (streamState.recorder && streamState.recorder.recording && streamState.isLive) {
+          const rec = streamState.recorder;
+          if (rec && (rec.recording || rec._startingUp) && streamState.isLive) {
             this.checkLiveStatus(streamState).catch(err => {
               logger.warn(`[Monitor] 下播确认复查失败: ${err.message}`);
             });
